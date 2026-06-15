@@ -60,6 +60,7 @@ body{background:#0b0f19;color:#e4e8ee;font-family:-apple-system,BlinkMacSystemFo
 <button class="btn" id="mcp" style="padding:6px 14px;font-size:12px;background:rgba(99,102,241,0.12);color:#818cf8;border:1px solid rgba(99,102,241,0.25);border-radius:6px;cursor:pointer">📋 复制</button>
 <button class="btn" id="mus" style="padding:6px 14px;font-size:12px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;border:none;border-radius:6px;cursor:pointer">✨ 使用此提示词</button>
 </div></div></div>
+<div class="overlay" id="imgViewer" style="cursor:zoom-out"><img id="vi" style="max-width:95%;max-height:95%;object-fit:contain;border-radius:8px" /></div>
 <button class="mc" id="mcls">✖</button>
 <script>
 var DB_NAME = "PromptCacheV2", DB_VER = 1, STORE = "data";
@@ -164,4 +165,16 @@ document.getElementById("modal").addEventListener("click",function(e){if(e.targe
 document.getElementById("mcp").addEventListener("click",function(){if(currentPrompt>=0&&filteredData[currentPrompt]){navigator.clipboard.writeText(filteredData[currentPrompt].p||"");showToast()}});
 document.getElementById("mus").addEventListener("click",function(){if(currentPrompt>=0&&filteredData[currentPrompt]){sessionStorage.setItem("prompt_to_use",filteredData[currentPrompt].p||"");location.href="/"}});
 function showToast(){var d=document.createElement("div");d.className="ts";d.textContent="✅ 已复制";document.body.appendChild(d);setTimeout(function(){d.remove()},1500)}
+
+// Image viewer
+var vi = document.getElementById("vi");
+document.getElementById("mi").addEventListener("click", function() {
+  if (this.src && this.style.display !== "none") {
+    vi.src = this.src;
+    document.getElementById("imgViewer").classList.add("show");
+  }
+});
+document.getElementById("imgViewer").addEventListener("click", function() {
+  this.classList.remove("show");
+});
 </script></body></html>

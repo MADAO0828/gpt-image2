@@ -163,7 +163,7 @@ document.querySelectorAll('.tab').forEach(function(tab){tab.addEventListener('cl
 
 // Auth
 function init(){
-  fetch('/api/auth/me').then(function(r){return r.json().then(function(d){return{ok:r.ok,data:d}})}).then(function(r){
+  fetch('/api/auth/me?t=\'+Date.now()+').then(function(r){return r.json().then(function(d){return{ok:r.ok,data:d}})}).then(function(r){
     if(!r.ok){location.replace('/login');return}cu=r.data;
     if(cu.role!=='admin'){location.replace('/');return}
     document.getElementById('adminInfo').textContent='管理员: '+cu.username;
@@ -174,7 +174,7 @@ function init(){
 // Users
 function loadUsers(){
   tc.innerHTML='<div class="empty">加载中...</div>';
-  fetch('/api/admin/users').then(function(r){return r.json().then(function(d){return{ok:r.ok,data:d}})}).then(function(r){
+  fetch('/api/admin/users?t=\'+Date.now()+').then(function(r){return r.json().then(function(d){return{ok:r.ok,data:d}})}).then(function(r){
     if(!r.ok){tc.innerHTML='<div class="empty">加载失败</div>';return}all=r.data.users||[];renderUsers();
   }).catch(function(){tc.innerHTML='<div class="empty">网络错误</div>'});
 }
@@ -197,7 +197,7 @@ function renderUsers(){
 
 // Settings
 function loadSettings(){
-  fetch('/api/settings/save').then(function(r){return r.ok?r.json():null}).then(function(d){
+  fetch('/api/settings/save?t=\'+Date.now()+').then(function(r){return r.ok?r.json():null}).then(function(d){
     if(!d||!d.settings)return;var s=d.settings;
     document.getElementById('cfgBaseUrl').value=s.baseUrl||'';
     document.getElementById('cfgApiKey').value=s.apiKey||'';
