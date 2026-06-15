@@ -18,7 +18,6 @@ body{background:#0b0f19;color:#e4e8ee;font-family:-apple-system,BlinkMacSystemFo
       regs.forEach(function(reg){reg.unregister()});
       console.log('[SW] 已注销 ' + regs.length + ' 个 Service Worker');
     });
-    // 阻止后续注册新的 SW
     var origRegister = navigator.serviceWorker.register;
     navigator.serviceWorker.register = function(){
       console.warn('[SW] 注册已禁用');
@@ -34,29 +33,13 @@ body{background:#0b0f19;color:#e4e8ee;font-family:-apple-system,BlinkMacSystemFo
 </script>
 <script>
   var __s='gpt-image-playground';
-  // Prevent redirect loops: use a session flag to track sync
-  if(sessionStorage.getItem('admin_auth')==='1'){
-    sessionStorage.removeItem('admin_auth');doSync()
-  }else if(!sessionStorage.getItem('_synced')){
-    fetch('/api/auth/me').then(function(r){
-      if(!r.ok){location.replace('/login');return}
-      doSync()
-    }).catch(function(){location.replace('/login')})
-  }
+  // 每次页面加载都同步云端设置到 localStorage（覆盖旧数据）
+  // 必须移除之前检查 apiKey 才返回的逻辑，确保管理员设置能实时同步
   function doSync(){
-    sessionStorage.setItem('_synced','1');
-    fetch('/.well-known/img-runtime-config.json').then(function(r){return r.ok?r.json():null}).then(function(cfg){
+    fetch('/.well-known/img-runtime-config.json?v='+Date.now()).then(function(r){return r.ok?r.json():null}).then(function(cfg){
       if(!cfg)return;
-      // Skip if already has settings in URL or localStorage
-      var url=new URL(window.location.href);
-      if(url.searchParams.get('apiUrl'))return;
-      try{var cur=localStorage.getItem(__s);if(cur){var cp=JSON.parse(cur);if(cp&&cp.state&&cp.state.settings&&cp.state.settings.apiKey)return}}catch(e){}
-      // Write cloud settings directly to localStorage - NO page redirect
       try{
-        var cur2=localStorage.getItem(__s);
-        var st=cur2?JSON.parse(cur2):{state:{settings:{}},version:2};
-        if(!st.state)st.state={};
-        if(!st.state.settings)st.state.settings={};
+        var st={state:{settings:{}},version:2};
         if(cfg.defaultApiUrl)st.state.settings.apiUrl=cfg.defaultApiUrl;
         if(cfg.apiKey)st.state.settings.apiKey=cfg.apiKey;
         if(cfg.defaultModel)st.state.settings.model=cfg.defaultModel;
@@ -65,6 +48,7 @@ body{background:#0b0f19;color:#e4e8ee;font-family:-apple-system,BlinkMacSystemFo
         if(cfg.apiProxyEnabled)st.state.settings.apiProxyEnabled=true;
         if(cfg.streamImages)st.state.settings.streamImages=true;
         localStorage.setItem(__s,JSON.stringify(st));
+        console.log('[Sync] 云端设置已同步到本地');
       }catch(e){}
     }).catch(function(){});
     try{
@@ -78,6 +62,23 @@ body{background:#0b0f19;color:#e4e8ee;font-family:-apple-system,BlinkMacSystemFo
         localStorage.setItem(__s,JSON.stringify(st2));
       }
     }catch(e){}
+  }
+
+  // 登录后立即同步（admin_auth 由 login.html 设置）
+  if(sessionStorage.getItem('admin_auth')==='1'){
+    sessionStorage.removeItem('admin_auth');
+    doSync()
+  }
+  // 首次加载：先检查登录状态，再同步
+  if(!sessionStorage.getItem('_synced')){
+    sessionStorage.setItem('_synced','1');
+    fetch('/api/auth/me').then(function(r){
+      if(!r.ok){location.replace('/login');return}
+      doSync()
+    }).catch(function(){location.replace('/login')})
+  }else{
+    // 非首次加载：也执行同步，确保管理员后台修改的设置能更新到所有设备
+    doSync()
   }
 </script>
 <script type="module" crossorigin src="./assets/index-BYu1vyWv.js"></script>
