@@ -17,28 +17,50 @@ body{background:#0b0f19;color:#e4e8ee;font-family:-apple-system,BlinkMacSystemFo
 </script>
 <script>
   var __s='gpt-image-playground';
-  if(sessionStorage.getItem('admin_auth')==='1'){sessionStorage.removeItem('admin_auth');doSync()}else{
-    fetch('/api/auth/me').then(function(r){if(!r.ok){location.replace('/login');return}doSync()}).catch(function(){location.replace('/login')})}
+  // Prevent redirect loops: use a session flag to track sync
+  if(sessionStorage.getItem('admin_auth')==='1'){
+    sessionStorage.removeItem('admin_auth');doSync()
+  }else if(!sessionStorage.getItem('_synced')){
+    fetch('/api/auth/me').then(function(r){
+      if(!r.ok){location.replace('/login');return}
+      doSync()
+    }).catch(function(){location.replace('/login')})
+  }
   function doSync(){
+    sessionStorage.setItem('_synced','1');
     fetch('/.well-known/img-runtime-config.json').then(function(r){return r.ok?r.json():null}).then(function(cfg){
       if(!cfg)return;
+      // Skip if already has settings in URL or localStorage
       var url=new URL(window.location.href);
       if(url.searchParams.get('apiUrl'))return;
       try{var cur=localStorage.getItem(__s);if(cur){var cp=JSON.parse(cur);if(cp&&cp.state&&cp.state.settings&&cp.state.settings.apiKey)return}}catch(e){}
-      var p=[];
-      if(cfg.defaultApiUrl)p.push('apiUrl='+encodeURIComponent(cfg.defaultApiUrl));
-      if(cfg.apiKey)p.push('apiKey='+encodeURIComponent(cfg.apiKey));
-      if(cfg.defaultModel)p.push('model='+encodeURIComponent(cfg.defaultModel));
-      if(cfg.apiMode)p.push('apiMode='+encodeURIComponent(cfg.apiMode));
-      if(cfg.apiProxyEnabled)p.push('apiProxy=true');
-      if(cfg.timeout)p.push('timeout='+cfg.timeout);
-      if(cfg.streamImages)p.push('streamImages=true');
-      if(p.length){url.search=p.join('&');location.replace(url.href)}
+      // Write cloud settings directly to localStorage - NO page redirect
+      try{
+        var cur2=localStorage.getItem(__s);
+        var st=cur2?JSON.parse(cur2):{state:{settings:{}},version:2};
+        if(!st.state)st.state={};
+        if(!st.state.settings)st.state.settings={};
+        if(cfg.defaultApiUrl)st.state.settings.apiUrl=cfg.defaultApiUrl;
+        if(cfg.apiKey)st.state.settings.apiKey=cfg.apiKey;
+        if(cfg.defaultModel)st.state.settings.model=cfg.defaultModel;
+        if(cfg.apiMode)st.state.settings.apiMode=cfg.apiMode;
+        if(cfg.timeout)st.state.settings.timeout=cfg.timeout;
+        if(cfg.apiProxyEnabled)st.state.settings.apiProxyEnabled=true;
+        if(cfg.streamImages)st.state.settings.streamImages=true;
+        localStorage.setItem(__s,JSON.stringify(st));
+      }catch(e){}
     }).catch(function(){});
-    try{var pp=sessionStorage.getItem('prompt_to_use');if(pp){sessionStorage.removeItem('prompt_to_use');
-    var r2=localStorage.getItem(__s),st2=r2?JSON.parse(r2):{state:{},version:2};
-    if(!st2.state)st2.state={};if(!st2.state.galleryInputDraft)st2.state.galleryInputDraft={};
-    st2.state.galleryInputDraft.prompt=pp;localStorage.setItem(__s,JSON.stringify(st2))}}catch(e){}
+    try{
+      var pp=sessionStorage.getItem('prompt_to_use');
+      if(pp){
+        sessionStorage.removeItem('prompt_to_use');
+        var r2=localStorage.getItem(__s),st2=r2?JSON.parse(r2):{state:{},version:2};
+        if(!st2.state)st2.state={};
+        if(!st2.state.galleryInputDraft)st2.state.galleryInputDraft={};
+        st2.state.galleryInputDraft.prompt=pp;
+        localStorage.setItem(__s,JSON.stringify(st2));
+      }
+    }catch(e){}
   }
 </script>
 <script type="module" crossorigin src="./assets/index-BYu1vyWv.js"></script>
