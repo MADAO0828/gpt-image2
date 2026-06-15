@@ -40,12 +40,14 @@ body{background:#0b0f19;color:#e4e8ee;font-family:-apple-system,BlinkMacSystemFo
       if(!cfg)return;
       try{
         var st={state:{settings:{}},version:2};
-        if(cfg.defaultApiUrl)st.state.settings.apiUrl=cfg.defaultApiUrl;
+        // 注意！SPA 内部使用 baseUrl 字段（不是 apiUrl）！！！API URL 参数才用 apiUrl
+        if(cfg.defaultApiUrl)st.state.settings.baseUrl=cfg.defaultApiUrl;
         if(cfg.apiKey)st.state.settings.apiKey=cfg.apiKey;
         if(cfg.defaultModel)st.state.settings.model=cfg.defaultModel;
         if(cfg.apiMode)st.state.settings.apiMode=cfg.apiMode;
         if(cfg.timeout)st.state.settings.timeout=cfg.timeout;
-        if(cfg.apiProxyEnabled)st.state.settings.apiProxyEnabled=true;
+        // 注意！SPA 内部使用 apiProxy 字段（不是 apiProxyEnabled）！！！
+        if(cfg.apiProxyEnabled)st.state.settings.apiProxy=true;
         if(cfg.streamImages)st.state.settings.streamImages=true;
         localStorage.setItem(__s,JSON.stringify(st));
         console.log('[Sync] 云端设置已同步到本地');
