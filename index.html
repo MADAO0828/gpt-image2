@@ -11,6 +11,23 @@ body{background:#0b0f19;color:#e4e8ee;font-family:-apple-system,BlinkMacSystemFo
 [class*=settings i],[class*=Settings i],[id*=settings i]{display:none!important;visibility:hidden!important}.nav{position:fixed;top:10px;right:12px;z-index:999;display:flex;align-items:center;gap:2px;background:rgba(11,15,25,0.7);border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:3px;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}.nav a{width:30px;height:30px;border-radius:7px;display:flex;align-items:center;justify-content:center;text-decoration:none;font-size:14px;color:#64748b;transition:all .2s}.nav a:hover{background:rgba(99,102,241,0.12);color:#a5b4fc}.nav a:active{transform:scale(.93)}.nav .d{width:1px;height:18px;background:rgba(255,255,255,0.06);margin:0 2px}.nav .l{font-size:10px;color:#475569;padding:0 8px 0 4px;letter-spacing:.5px}
 </style>
 <script>
+// 立即注销旧 Service Worker，防止移动端缓存问题
+(function(){
+  if('serviceWorker' in navigator){
+    navigator.serviceWorker.getRegistrations().then(function(regs){
+      regs.forEach(function(reg){reg.unregister()});
+      console.log('[SW] 已注销 ' + regs.length + ' 个 Service Worker');
+    });
+    // 阻止后续注册新的 SW
+    var origRegister = navigator.serviceWorker.register;
+    navigator.serviceWorker.register = function(){
+      console.warn('[SW] 注册已禁用');
+      return Promise.reject(new Error('ServiceWorker disabled'));
+    };
+  }
+})();
+</script>
+<script>
   if(!('noModule' in HTMLScriptElement.prototype)){
     document.write('<body style="background:#0b0f19;color:#8892a6;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;text-align:center;font-family:sans-serif"><div><h2 style="color:#6366f1;margin-bottom:8px">浏览器不兼容</h2><p>请换用 Chrome/Edge/Safari</p></div></body>');
   }
