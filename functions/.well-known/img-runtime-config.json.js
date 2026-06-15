@@ -34,40 +34,72 @@ async function vs(r, env) {
   } catch (e) { return null; }
 }
 
+async function getAdminId(db) {
+  var admin = await db.prepare('SELECT id FROM users WHERE role = ? ORDER BY id ASC LIMIT 1').bind('admin').first();
+  return admin ? admin.id : null;
+}
+
+async function getSettings(db, userId) {
+  if (!userId) return {};
+  var results = await db
+    .prepare('SELECT key, value FROM user_settings WHERE user_id = ?')
+    .bind(userId)
+    .all();
+  var saved = {};
+  (results.results || []).forEach(function(row) {
+    try { saved[row.key] = JSON.parse(row.value); } catch (e) { saved[row.key] = row.value; }
+  });
+  return saved;
+}
+
 export async function onRequest(ctx) {
   var config = {
-    defaultApiUrl: "",
-    defaultModel: "gpt-image-2",
-    apiProxyUrl: "",
+    defaultApiUrl: '',
+    defaultModel: 'gpt-image-2',
+    apiKey: '',
+    apiMode: 'images',
+    timeout: 600,
     apiProxyEnabled: false,
-    apiProxyLocked: false
+    streamImages: false
   };
 
+  // Load global settings from the first admin account
+  try {
+    var adminId = await getAdminId(ctx.env.gpt_image2_db);
+    if (adminId) {
+      var globalSettings = await getSettings(ctx.env.gpt_image2_db, adminId);
+      if (globalSettings.baseUrl) config.defaultApiUrl = globalSettings.baseUrl;
+      if (globalSettings.apiKey) config.apiKey = globalSettings.apiKey;
+      if (globalSettings.model) config.defaultModel = globalSettings.model;
+      if (globalSettings.apiMode) config.apiMode = globalSettings.apiMode;
+      if (globalSettings.timeout) config.timeout = parseInt(globalSettings.timeout) || 600;
+      if (globalSettings.apiProxy) config.apiProxyEnabled = true;
+      if (globalSettings.streamImages) config.streamImages = true;
+    }
+  } catch (e) {}
+
+  // Merge user-specific settings on top (logged-in user can override)
   var user = await vs(ctx.request, ctx.env);
   if (user) {
     try {
-      var results = await ctx.env.gpt_image2_db
-        .prepare("SELECT key, value FROM user_settings WHERE user_id = ?")
-        .bind(user.id)
-        .all();
-
-      var saved = {};
-      (results.results || []).forEach(function(row) {
-        try { saved[row.key] = JSON.parse(row.value); }
-        catch (e) { saved[row.key] = row.value; }
-      });
-
-      // Map cloud settings to SPA-compatible config keys
-      if (saved.baseUrl) config.defaultApiUrl = saved.baseUrl;
-      if (saved.apiKey) config.apiKey = saved.apiKey;
-      if (saved.model) config.defaultModel = saved.model;
-      if (saved.apiProxy) config.apiProxyEnabled = true;
-      if (saved.timeout) config.timeout = parseInt(saved.timeout) || 600;
+      var userSettings = await getSettings(ctx.env.gpt_image2_db, user.id);
+      if (userSettings.baseUrl) config.defaultApiUrl = userSettings.baseUrl;
+      if (userSettings.apiKey) config.apiKey = userSettings.apiKey;
+      if (userSettings.model) config.defaultModel = userSettings.model;
+      if (userSettings.apiMode) config.apiMode = userSettings.apiMode;
+      if (userSettings.timeout) config.timeout = parseInt(userSettings.timeout) || 600;
+      if (userSettings.apiProxy) config.apiProxyEnabled = true;
+      if (userSettings.streamImages) config.streamImages = true;
     } catch (e) {}
   }
 
   return new Response(JSON.stringify(config), {
     status: 200,
-    headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+    headers: { 
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'no-store, no-cache, must-revalidate',
+      'Pragma': 'no-cache'
+    }
   });
 }
