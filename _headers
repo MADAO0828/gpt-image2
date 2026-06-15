@@ -1,0 +1,36 @@
+# 禁止缓存 HTML 管理页面和 API
+/admin*
+  Cache-Control: no-store, no-cache, must-revalidate, max-age=0
+  Pragma: no-cache
+
+/login*
+  Cache-Control: no-store, no-cache, must-revalidate, max-age=0
+  Pragma: no-cache
+
+/prompts*
+  Cache-Control: no-store, no-cache, must-revalidate, max-age=0
+  Pragma: no-cache
+
+# API 接口禁止缓存
+/api/*
+  Cache-Control: no-store, no-cache, must-revalidate, max-age=0
+  Pragma: no-cache
+
+/.well-known/*
+  Cache-Control: no-store, no-cache, must-revalidate, max-age=0
+  Pragma: no-cache
+
+# 静态资源可缓存（assets, 图片等）
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+  Pragma: public
+
+# 提示词数据缓存 1 小时
+/prompts_data.json
+  Cache-Control: public, max-age=3600
+  Pragma: public
+
+# index.html 不缓存
+/index.html
+  Cache-Control: no-store, no-cache, must-revalidate, max-age=0
+  Pragma: no-cache

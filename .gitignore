@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+.wrangler/
+.terraform/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Playwright
+.playwright-cli/
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.local
+
+# Cloudflare
+.wrangler/
+
+# Temp & generated
+*.pyc
+__pycache__/
+*.pyo

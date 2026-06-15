@@ -1,0 +1,13 @@
+{
+  "name": "gpt-image2",
+  "compatibility_date": "2026-06-10",
+  "compatibility_flags": ["nodejs_compat_v2"],
+  "pages_build_output_dir": ".",
+  "d1_databases": [
+    {
+      "binding": "gpt_image2_db",
+      "database_name": "gpt-image2-db",
+      "database_id": "c5da2a72-b769-4210-be93-4465eb23a23d"
+    }
+  ]
+}

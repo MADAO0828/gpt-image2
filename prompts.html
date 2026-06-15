@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+<meta name="referrer" content="no-referrer" />
+<title>提示词仓库 - AI工作台</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0b0f19;color:#e4e8ee;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;min-height:100vh}
+.h{position:sticky;top:0;z-index:50;background:rgba(11,15,25,0.85);backdrop-filter:blur(20px);border-bottom:1px solid rgba(255,255,255,0.06);padding:0 20px;height:56px;display:flex;align-items:center;justify-content:space-between}
+.hl{font-size:18px;font-weight:700;background:linear-gradient(135deg,#6366f1,#8b5cf6);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.b{padding:8px 16px;border-radius:8px;font-size:13px;cursor:pointer;border:none;text-decoration:none;color:#e4e8ee;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.06)}
+.c{max-width:1200px;margin:0 auto;padding:16px}
+.srch input{width:100%;padding:10px 16px;margin-bottom:12px;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.06);border-radius:10px;color:#e4e8ee;font-size:14px;outline:none}
+.srch input:focus{border-color:#6366f1}
+.cats{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:12px}
+.cat{padding:5px 14px;border-radius:16px;font-size:12px;cursor:pointer;border:1px solid rgba(255,255,255,0.06);color:#8892a6;background:transparent;white-space:nowrap;transition:all .2s}
+.cat:hover{background:rgba(255,255,255,0.04);color:#e4e8ee}
+.cat.on{background:rgba(99,102,241,0.12);color:#818cf8;border-color:rgba(99,102,241,0.25)}
+.info{font-size:12px;color:#8892a6;margin-bottom:12px;display:flex;justify-content:space-between}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}
+@media(max-width:640px){.grid{grid-template-columns:repeat(2,1fr);gap:8px}}
+@media(max-width:400px){.grid{grid-template-columns:1fr}}
+.card{background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);border-radius:10px;overflow:hidden;cursor:pointer;transition:all .15s}
+.card:hover{border-color:rgba(99,102,241,0.3);box-shadow:0 4px 15px rgba(0,0,0,.3);transform:translateY(-1px)}
+.card-img{width:100%;height:110px;overflow:hidden;background:rgba(0,0,0,0.3)}
+.card-img img{width:100%;height:100%;object-fit:cover;transition:transform .3s}
+.card:hover .card-img img{transform:scale(1.06)}
+.card-body{padding:8px 10px}
+.card-cat{font-size:9px;color:#818cf8;background:rgba(99,102,241,0.1);display:inline-block;padding:1px 6px;border-radius:8px;margin-bottom:3px}
+.card-t{font-size:12px;font-weight:600;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.card-p{font-size:10px;color:#8892a6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lm{text-align:center;padding:12px}.lm button{padding:6px 20px;border-radius:8px;border:none;font-size:12px;cursor:pointer;background:rgba(99,102,241,0.12);color:#818cf8}
+.ld{text-align:center;padding:40px;color:#8892a6;font-size:13px}
+.overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);backdrop-filter:blur(8px);z-index:100;align-items:center;justify-content:center;padding:20px}
+.overlay.show{display:flex}
+.modal{background:#131826;border:1px solid rgba(255,255,255,0.08);border-radius:14px;width:100%;max-width:600px;max-height:85vh;overflow-y:auto;padding:20px}
+.modal-img{width:100%;max-height:300px;object-fit:contain;border-radius:8px;background:rgba(0,0,0,0.3);margin-bottom:12px}
+.modal-cat{font-size:11px;color:#818cf8;background:rgba(99,102,241,0.1);display:inline-block;padding:2px 8px;border-radius:10px;margin-bottom:6px}
+.modal-t{font-size:16px;font-weight:700;margin-bottom:8px}
+.modal-p{font-size:12px;color:#c4cad8;line-height:1.6;margin-bottom:12px;white-space:pre-wrap;max-height:400px;overflow-y:auto}
+.modal-acts{display:flex;gap:8px;flex-wrap:wrap}
+.mc{position:fixed;top:20px;right:20px;z-index:101;width:32px;height:32px;border-radius:50%;background:rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.1);color:#e4e8ee;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.ts{position:fixed;top:16px;right:16px;z-index:9999;padding:8px 16px;border-radius:8px;font-size:12px;background:rgba(34,197,94,0.12);color:#22c55e;border:1px solid rgba(34,197,94,0.25)}
+</style></head><body>
+<header class="h"><span class="hl">📚 提示词仓库</span><a href="/" class="b">← 返回</a></header>
+<div class="c">
+<div class="srch"><input id="s" placeholder="🔍 搜索提示词..." /></div>
+<div class="cats" id="cats"><div class="ld">加载中...</div></div>
+<div class="info"><span id="info"></span><span id="pi"></span></div>
+<div class="grid" id="grid"></div>
+<div class="lm" id="lm" style="display:none"><button id="lb">加载更多</button></div>
+</div>
+<div class="overlay" id="modal"><div class="modal">
+<img id="mi" class="modal-img" src="" alt="" />
+<div id="mc2" class="modal-cat"></div>
+<div id="mt" class="modal-t"></div>
+<div id="mp" class="modal-p"></div>
+<div class="modal-acts">
+<button class="btn" id="mcp" style="padding:6px 14px;font-size:12px;background:rgba(99,102,241,0.12);color:#818cf8;border:1px solid rgba(99,102,241,0.25);border-radius:6px;cursor:pointer">📋 复制</button>
+<button class="btn" id="mus" style="padding:6px 14px;font-size:12px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;border:none;border-radius:6px;cursor:pointer">✨ 使用此提示词</button>
+</div></div></div>
+<button class="mc" id="mcls">✖</button>
+<script>
+
+var DATA_URL = "/prompts_data.json?v=" + Date.now();
+var ITEMS_PER_PAGE = 50;
+var allData = [], filteredData = [], currentCat = "all", currentIdx = 0, currentPrompt = -1;
+fetch(DATA_URL).then(function(r){return r.json()}).then(function(d){allData=d;filteredData=d;init();loadMore()}).catch(function(){document.getElementById("cats").innerHTML='<div class="ld">加载失败</div>'});
+function init(){var cats=["all"],map={all:1},h="";for(var i=0;i<allData.length;i++){if(!map[allData[i].c]){cats.push(allData[i].c);map[allData[i].c]=1}}for(var j=0;j<cats.length;j++){h+='<span class="cat"'+(currentCat===cats[j]?' data-on="1"':'')+' data-c="'+escAttr(cats[j])+'">'+escHtml(cats[j])+'</span>'}document.getElementById("cats").innerHTML=h;document.getElementById("info").textContent="📌 "+allData.length+" 条提示词";Array.from(document.querySelectorAll(".cat")).forEach(function(el){if(el.getAttribute("data-on"))el.classList.add("on")})}
+function escHtml(s){if(!s)return"";return(""+s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}
+function escAttr(s){if(!s)return"";return(""+s).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
+function trunc(s,n){if(!s)return"";return s.length>n?s.substring(0,n)+"...":s}
+function loadMore(){var end=Math.min(currentIdx+ITEMS_PER_PAGE,filteredData.length),grid=document.getElementById("grid");for(var i=currentIdx;i<end;i++){var p=filteredData[i],card=document.createElement("div");card.className="card";card.setAttribute("data-idx",i);card.onclick=function(){openModal(parseInt(this.getAttribute("data-idx")))};var html="";if(p.i){html+='<div class="card-img"><img src="'+escAttr(p.i)+'" referrerpolicy="no-referrer" alt="" loading="lazy" onerror="this.style.display=\'none\'"></div>'}html+='<div class="card-body"><div class="card-cat">'+escHtml(p.c)+'</div><div class="card-t">'+escHtml(p.t)+'</div><div class="card-p">'+escHtml(trunc(p.p,60))+'</div></div>';card.innerHTML=html;grid.appendChild(card)}currentIdx=end;document.getElementById("lm").style.display=currentIdx<filteredData.length?"block":"none";document.getElementById("pi").textContent=currentIdx+"/"+filteredData.length}
+document.getElementById("lb").addEventListener("click",loadMore);
+document.getElementById("cats").addEventListener("click",function(e){var t=e.target;if(!t.classList.contains("cat"))return;currentCat=t.getAttribute("data-c");Array.from(document.querySelectorAll(".cat")).forEach(function(el){el.classList.remove("on")});t.classList.add("on");filterData()});
+document.getElementById("s").addEventListener("input",filterData);
+function filterData(){var q=document.getElementById("s").value.toLowerCase();filteredData=allData.filter(function(p){if(currentCat!=="all"&&p.c!==currentCat)return false;if(q&&(p.t||"").toLowerCase().indexOf(q)<0&&(p.p||"").toLowerCase().indexOf(q)<0)return false;return true});currentIdx=0;document.getElementById("grid").innerHTML="";loadMore()}
+function openModal(i){if(!filteredData[i])return;currentPrompt=i;var p=filteredData[i];document.getElementById("mc2").textContent=p.c||"";document.getElementById("mt").textContent=p.t||"";document.getElementById("mp").textContent=p.p||"";var img=document.getElementById("mi");if(p.i){img.src=p.i;img.style.display="block"}else{img.style.display="none"}document.getElementById("modal").classList.add("show")}
+function closeModal(){document.getElementById("modal").classList.remove("show")}
+document.getElementById("mcls").addEventListener("click",closeModal);
+document.getElementById("modal").addEventListener("click",function(e){if(e.target===this)closeModal()});
+document.getElementById("mcp").addEventListener("click",function(){if(currentPrompt>=0&&filteredData[currentPrompt]){navigator.clipboard.writeText(filteredData[currentPrompt].p||"");showToast()}});
+document.getElementById("mus").addEventListener("click",function(){if(currentPrompt>=0&&filteredData[currentPrompt]){sessionStorage.setItem("prompt_to_use",filteredData[currentPrompt].p||"");location.href="/"}});
+function showToast(){var d=document.createElement("div");d.className="ts";d.textContent="✅ 已复制";document.body.appendChild(d);setTimeout(function(){d.remove()},1500)}
+
+</script></body></html>
