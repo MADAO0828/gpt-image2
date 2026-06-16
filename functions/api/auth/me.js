@@ -8,7 +8,7 @@ async function vs(r,env){const t=gc(r.headers.get('Cookie')||'','session');if(!t
 export async function onRequestGet(ctx) {
   try {
     const u=await vs(ctx.request,ctx.env);
-    if(!u) return new Response(JSON.stringify({error:'未登录'}),{status:401,headers:{'Content-Type':'application/json'}});
-    return new Response(JSON.stringify({id:u.id,username:u.username,role:u.role}),{status:200,headers:{'Content-Type':'application/json'}});
-  }catch(e){return new Response(JSON.stringify({error:'验证失败'}),{status:500,headers:{'Content-Type':'application/json'}});}
+    if(!u) return new Response(JSON.stringify({error:'未登录'}),{status:401,headers:{'Content-Type':'application/json','Cache-Control':'no-store','Pragma':'no-cache'}});
+    return new Response(JSON.stringify({id:u.id,username:u.username,role:u.role}),{status:200,headers:{'Content-Type':'application/json','Cache-Control':'no-store','Pragma':'no-cache'}});
+  }catch(e){return new Response(JSON.stringify({error:'验证失败'}),{status:500,headers:{'Content-Type':'application/json','Cache-Control':'no-store','Pragma':'no-cache'}});}
 }

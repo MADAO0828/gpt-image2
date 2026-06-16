@@ -37,10 +37,14 @@ async function hp(p) {
   return be(h);
 }
 
+function json(data, status) {
+  return new Response(JSON.stringify(data), { status: status || 200, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Pragma': 'no-cache' } });
+}
+
 async function checkAdmin(ctx) {
   const u = await vs(ctx.request, ctx.env);
   if (!u || u.role !== 'admin') {
-    return new Response(JSON.stringify({ error: '权限不足' }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    return json({ error: '权限不足' }, 403);
   }
   ctx.data = { user: u };
   return null;
@@ -50,16 +54,16 @@ export async function onRequestPut(ctx) {
   const err = await checkAdmin(ctx);
   if (err) return err;
   const uid = parseInt(ctx.params.id);
-  if (!uid || uid < 1) return new Response(JSON.stringify({ error: '无效的用户ID' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+  if (!uid || uid < 1) return json({ error: '无效的用户ID' }, 400);
   try {
     const text = await ctx.request.text();
     const { username, password, role } = JSON.parse(text);
     const ex = await ctx.env.gpt_image2_db.prepare('SELECT id FROM users WHERE id = ?').bind(uid).first();
-    if (!ex) return new Response(JSON.stringify({ error: '用户不存在' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+    if (!ex) return json({ error: '用户不存在' }, 404);
     const up = [], pr = [];
     if (username !== undefined && username.trim()) {
       const d = await ctx.env.gpt_image2_db.prepare('SELECT id FROM users WHERE username = ? AND id != ?').bind(username.trim(), uid).first();
-      if (d) return new Response(JSON.stringify({ error: '用户名已存在' }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+      if (d) return json({ error: '用户名已存在' }, 409);
       up.push('username = ?'); pr.push(username.trim());
     }
     if (password !== undefined && password.trim()) {
@@ -68,12 +72,12 @@ export async function onRequestPut(ctx) {
     if (role !== undefined && ['admin', 'user'].includes(role)) {
       up.push('role = ?'); pr.push(role);
     }
-    if (up.length === 0) return new Response(JSON.stringify({ error: '没有需要更新的字段' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (up.length === 0) return json({ error: '没有需要更新的字段' }, 400);
     up.push("updated_at = datetime('now')"); pr.push(uid);
     await ctx.env.gpt_image2_db.prepare('UPDATE users SET ' + up.join(', ') + ' WHERE id = ?').bind(...pr).run();
-    return new Response(JSON.stringify({ success: true, message: '用户更新成功' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    return json({ success: true, message: '用户更新成功' });
   } catch (e) {
-    return new Response(JSON.stringify({ error: '请求格式错误' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    return json({ error: '请求格式错误' }, 400);
   }
 }
 
@@ -81,10 +85,10 @@ export async function onRequestDelete(ctx) {
   const err = await checkAdmin(ctx);
   if (err) return err;
   const uid = parseInt(ctx.params.id);
-  if (!uid || uid < 1) return new Response(JSON.stringify({ error: '无效的用户ID' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-  if (uid === ctx.data.user.id) return new Response(JSON.stringify({ error: '不能删除自己的账号' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+  if (!uid || uid < 1) return json({ error: '无效的用户ID' }, 400);
+  if (uid === ctx.data.user.id) return json({ error: '不能删除自己的账号' }, 400);
   const ex = await ctx.env.gpt_image2_db.prepare('SELECT id FROM users WHERE id = ?').bind(uid).first();
-  if (!ex) return new Response(JSON.stringify({ error: '用户不存在' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+  if (!ex) return json({ error: '用户不存在' }, 404);
   await ctx.env.gpt_image2_db.prepare('DELETE FROM users WHERE id = ?').bind(uid).run();
-  return new Response(JSON.stringify({ success: true, message: '用户已删除' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  return json({ success: true, message: '用户已删除' });
 }

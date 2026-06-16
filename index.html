@@ -2,27 +2,30 @@
 <html lang="zh-CN"><head>
 <meta charset="UTF-8" />
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+<meta http-equiv="Pragma" content="no-cache" />
+<meta http-equiv="Expires" content="0" />
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover" />
 <meta name="theme-color" content="#0b0f19" />
-<title>AI工作台</title>
+<title>AI 工作台</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#0b0f19;color:#e4e8ee;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
-[class*=settings i],[class*=Settings i],[id*=settings i]{display:none!important;visibility:hidden!important}.nav{position:fixed;top:10px;right:12px;z-index:999;display:flex;align-items:center;gap:2px;background:rgba(11,15,25,0.7);border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:3px;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}.nav a{width:30px;height:30px;border-radius:7px;display:flex;align-items:center;justify-content:center;text-decoration:none;font-size:14px;color:#64748b;transition:all .2s}.nav a:hover{background:rgba(99,102,241,0.12);color:#a5b4fc}.nav a:active{transform:scale(.93)}.nav .d{width:1px;height:18px;background:rgba(255,255,255,0.06);margin:0 2px}.nav .l{font-size:10px;color:#475569;padding:0 8px 0 4px;letter-spacing:.5px}
+/* Hide the built-in settings button/panel in the compiled SPA */
+[class*=settings i],[class*=Settings i],[id*=settings i]{display:none!important;visibility:hidden!important}
+.nav{position:fixed;top:10px;right:12px;z-index:999;display:flex;align-items:center;gap:2px;background:rgba(11,15,25,0.7);border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:3px;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
+.nav a{width:30px;height:30px;border-radius:7px;display:flex;align-items:center;justify-content:center;text-decoration:none;font-size:14px;color:#64748b;transition:all .2s}
+.nav a:hover{background:rgba(99,102,241,0.12);color:#a5b4fc}
+.nav a:active{transform:scale(.93)}
+.nav .d{width:1px;height:18px;background:rgba(255,255,255,0.06);margin:0 2px}
+.nav .l{font-size:10px;color:#475569;padding:0 8px 0 4px;letter-spacing:.5px}
 </style>
 <script>
-// 立即注销旧 Service Worker，防止移动端缓存问题
+// 立即注销旧的 Service Worker，防止移动端缓存问题
 (function(){
   if('serviceWorker' in navigator){
     navigator.serviceWorker.getRegistrations().then(function(regs){
       regs.forEach(function(reg){reg.unregister()});
-      console.log('[SW] 已注销 ' + regs.length + ' 个 Service Worker');
     });
-    var origRegister = navigator.serviceWorker.register;
-    navigator.serviceWorker.register = function(){
-      console.warn('[SW] 注册已禁用');
-      return Promise.reject(new Error('ServiceWorker disabled'));
-    };
   }
 })();
 </script>
@@ -32,59 +35,82 @@ body{background:#0b0f19;color:#e4e8ee;font-family:-apple-system,BlinkMacSystemFo
   }
 </script>
 <script>
-  var __s='gpt-image-playground';
-  // 每次页面加载都同步云端设置到 localStorage（覆盖旧数据）
-  // 必须移除之前检查 apiKey 才返回的逻辑，确保管理员设置能实时同步
-  function doSync(){
-    fetch('/.well-known/img-runtime-config.json?v='+Date.now()).then(function(r){return r.ok?r.json():null}).then(function(cfg){
-      if(!cfg)return;
-      try{
-        var st={state:{settings:{}},version:2};
-        // 注意！SPA 内部使用 baseUrl 字段（不是 apiUrl）！！！API URL 参数才用 apiUrl
-        if(cfg.defaultApiUrl)st.state.settings.baseUrl=cfg.defaultApiUrl;
-        if(cfg.apiKey)st.state.settings.apiKey=cfg.apiKey;
-        if(cfg.defaultModel)st.state.settings.model=cfg.defaultModel;
-        if(cfg.apiMode)st.state.settings.apiMode=cfg.apiMode;
-        if(cfg.timeout)st.state.settings.timeout=cfg.timeout;
-        // 注意！SPA 内部使用 apiProxy 字段（不是 apiProxyEnabled）！！！
-        if(cfg.apiProxyEnabled)st.state.settings.apiProxy=true;
-        if(cfg.streamImages)st.state.settings.streamImages=true;
-        localStorage.setItem(__s,JSON.stringify(st));
-        console.log('[Sync] 云端设置已同步到本地');
-      }catch(e){}
-    }).catch(function(){});
-    try{
-      var pp=sessionStorage.getItem('prompt_to_use');
-      if(pp){
-        sessionStorage.removeItem('prompt_to_use');
-        var r2=localStorage.getItem(__s),st2=r2?JSON.parse(r2):{state:{},version:2};
-        if(!st2.state)st2.state={};
-        if(!st2.state.galleryInputDraft)st2.state.galleryInputDraft={};
-        st2.state.galleryInputDraft.prompt=pp;
-        localStorage.setItem(__s,JSON.stringify(st2));
-      }
-    }catch(e){}
-  }
+var __s = 'gpt-image-playground';
 
-  // 登录后立即同步（admin_auth 由 login.html 设置）
-  if(sessionStorage.getItem('admin_auth')==='1'){
-    sessionStorage.removeItem('admin_auth');
-    doSync()
-  }
-  // 首次加载：先检查登录状态，再同步
-  if(!sessionStorage.getItem('_synced')){
-    sessionStorage.setItem('_synced','1');
-    fetch('/api/auth/me').then(function(r){
-      if(!r.ok){location.replace('/login');return}
-      doSync()
-    }).catch(function(){location.replace('/login')})
-  }else{
-    // 非首次加载：也执行同步，确保管理员后台修改的设置能更新到所有设备
-    doSync()
-  }
+// 核心同步函数：从云端的单一数据源获取设置并写入 localStorage
+// 这会覆盖所有旧数据，确保 SPA 总是读取到管理员设置的最新值
+function doSync() {
+  var url = '/.well-known/img-runtime-config.json?v=' + Date.now();
+  fetch(url).then(function(r){ return r.ok ? r.json() : null; }).then(function(cfg) {
+    if (!cfg) return;
+    try {
+      // 构建 SPA 完整状态结构
+      var st = {
+        state: {
+          settings: {
+            baseUrl: cfg.defaultApiUrl || '',
+            apiKey: cfg.apiKey || '',
+            model: cfg.defaultModel || 'gpt-image-2',
+            apiMode: cfg.apiMode || 'images',
+            timeout: cfg.timeout || 600,
+            apiProxy: !!cfg.apiProxy,
+            streamImages: !!cfg.streamImages,
+            size: cfg.size || '',
+            quality: cfg.quality || 'standard',
+            output_format: cfg.output_format || 'png',
+            codexCli: !!cfg.codexCli,
+            moderation: !!cfg.moderation,
+            persistInput: !!cfg.persistInput,
+            scrollAfterSubmit: !!cfg.scrollAfterSubmit,
+            apiProvider: cfg.apiProvider || 'openai',
+            agentWebSearch: !!cfg.agentWebSearch,
+            agentMaxRounds: cfg.agentMaxRounds || 32,
+            agentScrollAfterSubmit: !!cfg.agentScrollAfterSubmit
+          }
+        },
+        version: 2
+      };
+      localStorage.setItem(__s, JSON.stringify(st));
+      console.log('[Sync] 云端设置已同步到本地');
+    } catch(e) {}
+  }).catch(function(){});
+
+  // 处理提示词仓库跳转：sessionStorage 中有待使用的提示词
+  try {
+    var pp = sessionStorage.getItem('prompt_to_use');
+    if (pp) {
+      sessionStorage.removeItem('prompt_to_use');
+      var r2 = localStorage.getItem(__s);
+      var st2 = r2 ? JSON.parse(r2) : { state: {}, version: 2 };
+      if (!st2.state) st2.state = {};
+      if (!st2.state.galleryInputDraft) st2.state.galleryInputDraft = {};
+      st2.state.galleryInputDraft.prompt = pp;
+      localStorage.setItem(__s, JSON.stringify(st2));
+    }
+  } catch(e) {}
+}
+
+// 页面初始化流程：
+// 1. 先检查登录状态（同步缓存后直接执行 doSync）
+// 2. 登录成功后，清空旧的 localStorage 再同步 
+// 3. 非首次加载同样执行同步，确保管理员设置始终覆盖本地
+(function(){
+  // 首次加载：检查登录状态
+  fetch('/api/auth/me', { cache: 'no-store' }).then(function(r) {
+    if (!r.ok) { 
+      location.replace('/login'); 
+      return; 
+    }
+    // 已登录：先清空旧的 localStorage 缓存，再从云端同步
+    try { localStorage.removeItem(__s); } catch(e) {}
+    doSync();
+  }).catch(function(){
+    location.replace('/login');
+  });
+})();
 </script>
-<script type="module" crossorigin src="./assets/index-BYu1vyWv.js"></script>
-<link rel="stylesheet" crossorigin href="./assets/index-QZ9aJizP.css">
+<script type="module" crossorigin src="./assets/index-BYu1vyWv.js?v=2"></script>
+<link rel="stylesheet" crossorigin href="./assets/index-QZ9aJizP.css?v=2">
 </head>
 <body class="bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-gray-100 min-h-screen">
 <div id="root"></div>

@@ -3,7 +3,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
 <meta name="referrer" content="no-referrer" />
-<title>提示词仓库 - AI工作台</title>
+<title>提示词仓库 - AI 工作台</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#0b0f19;color:#e4e8ee;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;min-height:100vh}
@@ -45,7 +45,7 @@ body{background:#0b0f19;color:#e4e8ee;font-family:-apple-system,BlinkMacSystemFo
 </style></head><body>
 <header class="h"><span class="hl">📚 提示词仓库</span><a href="/" class="b">← 返回</a></header>
 <div class="c">
-<div class="srch"><input id="s" placeholder="🔍 搜索提示词..." /></div>
+<div class="srch"><input id="s" placeholder="🔍 搜索提示词.." /></div>
 <div class="cats" id="cats"><div class="ld">准备加载...</div></div>
 <div class="info"><span id="info"></span><span id="pi"></span></div>
 <div class="grid" id="grid"></div>
@@ -61,7 +61,7 @@ body{background:#0b0f19;color:#e4e8ee;font-family:-apple-system,BlinkMacSystemFo
 <button class="btn" id="mus" style="padding:6px 14px;font-size:12px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;border:none;border-radius:6px;cursor:pointer">✨ 使用此提示词</button>
 </div></div></div>
 <div class="overlay" id="imgViewer" style="cursor:zoom-out"><img id="vi" style="max-width:95%;max-height:95%;object-fit:contain;border-radius:8px" /></div>
-<button class="mc" id="mcls">✖</button>
+<button class="mc" id="mcls">✕</button>
 <script>
 var DB_NAME = "PromptCacheV2", DB_VER = 1, STORE = "data";
 var DATA_URL = "/prompts_data.json?v=" + Date.now();
@@ -99,7 +99,7 @@ function saveToDB(db, data) {
 
 function fetchFromNetwork() {
   var cats = document.getElementById("cats");
-  cats.innerHTML = '<div class="ld">正在加载 ' + (10) + 'MB 提示词数据...</div>';
+  cats.innerHTML = '<div class="ld">正在加载提示词数据...</div>';
   fetch(DATA_URL).then(function(r){ return r.json(); }).then(function(d) {
     allData = d; filteredData = d;
     openDB().then(function(db) { saveToDB(db, d); });
@@ -114,7 +114,6 @@ openDB().then(function(db) {
     if (cached && cached.length > 0) {
       allData = cached; filteredData = cached;
       init(); loadMore();
-      // Background refresh
       fetch(DATA_URL).then(function(r){ return r.json(); }).then(function(fresh) {
         allData = fresh; filteredData = fresh;
         saveToDB(db, fresh);
@@ -133,7 +132,7 @@ function init(){
   for(var i=0;i<allData.length;i++){if(!map[allData[i].c]){cats.push(allData[i].c);map[allData[i].c]=1}}
   for(var j=0;j<cats.length;j++){h+='<span class="cat"'+(currentCat===cats[j]?' data-on="1"':'')+' data-c="'+escAttr(cats[j])+'">'+escHtml(cats[j])+'</span>'}
   document.getElementById("cats").innerHTML=h;
-  document.getElementById("info").textContent="📌 "+allData.length+" 条提示词";
+  document.getElementById("info").textContent="🗃️ "+allData.length+" 条提示词";
   Array.from(document.querySelectorAll(".cat")).forEach(function(el){if(el.getAttribute("data-on"))el.classList.add("on")})
 }
 function escHtml(s){if(!s)return"";return(""+s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}

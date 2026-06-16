@@ -46,6 +46,18 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;b
   </form>
 </div>
 <script>
+// 登录前清空所有缓存，确保全新状态
+(function(){
+  try {
+    // 清除旧 localStorage 缓存
+    var keys = ['gpt-image-playground', 'gpt-image2-settings', 'settings_cache'];
+    keys.forEach(function(k) { localStorage.removeItem(k); });
+    // 清除 sessionStorage
+    sessionStorage.removeItem('admin_auth');
+    sessionStorage.removeItem('_synced');
+  } catch(e) {}
+})();
+
 var e = document.getElementById('err');
 var b = document.getElementById('btn');
 document.getElementById('f').addEventListener('submit', function(ev) {
@@ -75,6 +87,7 @@ document.getElementById('f').addEventListener('submit', function(ev) {
       b.textContent = '登 录';
       return;
     }
+    // 登录成功：根据角色跳转
     if (r.data.role === 'admin') {
       sessionStorage.setItem('admin_auth', '1');
       location.href = '/admin';

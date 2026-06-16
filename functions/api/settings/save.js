@@ -45,13 +45,14 @@ function json(data, status) {
     status: status || 200, 
     headers: { 
       'Content-Type': 'application/json',
-      'Cache-Control': 'no-store, no-cache, must-revalidate',
-      'Pragma': 'no-cache'
+      'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+      'Pragma': 'no-cache',
+      'Expires': '0'
     }
   });
 }
 
-// Helper: load settings for a specific user
+// Load settings for a specific user
 async function loadUserSettings(db, userId) {
   if (!userId) return {};
   var results = await db
@@ -65,69 +66,55 @@ async function loadUserSettings(db, userId) {
   return settings;
 }
 
-// POST /api/settings/save - Save user settings
-// Admin saves are ALSO stored globally (under admin account) for all users
+// POST /api/settings/save - ONLY admin can save global settings
+// Regular users cannot save settings - admin is the single source of truth
 export async function onRequestPost(ctx) {
   var user = await vs(ctx.request, ctx.env);
   if (!user) return json({ error: 'no login' }, 401);
+  // Only admin can modify global settings
+  if (user.role !== 'admin') return json({ error: 'insufficient permissions' }, 403);
 
   try {
     var text = await ctx.request.text();
     var body = JSON.parse(text);
     var settings = body.settings || body;
-    if (body.key) {
-      settings = [{ key: body.key, value: body.value }];
-    }
+    
+    // Convert object to array of {key, value}
     if (!Array.isArray(settings)) {
       settings = Object.entries(settings).map(function(e) { 
         return { key: e[0], value: typeof e[1] === 'string' ? e[1] : JSON.stringify(e[1]) }; 
       });
     }
-    // Save to current user
+    
+    // Save to the FIRST admin account (global settings)
+    var adminId = await getAdminId(ctx.env.gpt_image2_db);
+    if (!adminId) return json({ error: 'no admin user found' }, 500);
+    
     for (var i = 0; i < settings.length; i++) {
       var s = settings[i];
       if (!s.key) continue;
       var val = typeof s.value === 'string' ? s.value : JSON.stringify(s.value);
       await ctx.env.gpt_image2_db
         .prepare('INSERT INTO user_settings (user_id, key, value) VALUES (?, ?, ?) ON CONFLICT(user_id, key) DO UPDATE SET value = ?, updated_at = datetime(\'now\')')
-        .bind(user.id, s.key, val, val)
+        .bind(adminId, s.key, val, val)
         .run();
     }
-    // If admin, ALSO save globally (to the first admin account)
-    if (user.role === 'admin') {
-      var adminId = await getAdminId(ctx.env.gpt_image2_db);
-      if (adminId && adminId !== user.id) {
-        for (var j = 0; j < settings.length; j++) {
-          var s2 = settings[j];
-          if (!s2.key) continue;
-          var val2 = typeof s2.value === 'string' ? s2.value : JSON.stringify(s2.value);
-          await ctx.env.gpt_image2_db
-            .prepare('INSERT INTO user_settings (user_id, key, value) VALUES (?, ?, ?) ON CONFLICT(user_id, key) DO UPDATE SET value = ?, updated_at = datetime(\'now\')')
-            .bind(adminId, s2.key, val2, val2)
-            .run();
-        }
-      }
-    }
-    return json({ success: true, message: 'ok' });
+    
+    return json({ success: true, message: 'settings saved to global config' });
   } catch (e) {
     return json({ error: 'format error: ' + e.message }, 400);
   }
 }
 
-// GET /api/settings/save - Return merged settings (global defaults + user overrides)
+// GET /api/settings/save - Return ONLY global settings (admin = single source of truth)
+// No user overrides - everyone gets same settings from admin
 export async function onRequestGet(ctx) {
   var user = await vs(ctx.request, ctx.env);
   if (!user) return json({ error: 'no login' }, 401);
   
-  // 1. Load global defaults (from the first admin account)
+  // Load ONLY global defaults (from the first admin account)
   var adminId = await getAdminId(ctx.env.gpt_image2_db);
   var globalSettings = adminId ? await loadUserSettings(ctx.env.gpt_image2_db, adminId) : {};
-  // 2. Load current user's own settings
-  var userSettings = await loadUserSettings(ctx.env.gpt_image2_db, user.id);
-  // 3. Merge: user settings override global defaults
-  var merged = {};
-  Object.keys(globalSettings).forEach(function(k) { merged[k] = globalSettings[k]; });
-  Object.keys(userSettings).forEach(function(k) { merged[k] = userSettings[k]; });
   
-  return json({ settings: merged });
+  return json({ settings: globalSettings });
 }

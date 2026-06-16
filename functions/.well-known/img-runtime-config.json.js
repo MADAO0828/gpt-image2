@@ -59,11 +59,23 @@ export async function onRequest(ctx) {
     apiKey: '',
     apiMode: 'images',
     timeout: 600,
-    apiProxyEnabled: false,
-    streamImages: false
+    apiProxy: false,
+    streamImages: false,
+    size: '',
+    quality: 'standard',
+    output_format: 'png',
+    codexCli: false,
+    moderation: false,
+    persistInput: false,
+    scrollAfterSubmit: false,
+    apiProvider: 'openai',
+    agentWebSearch: false,
+    agentMaxRounds: 32,
+    agentScrollAfterSubmit: false
   };
 
-  // Load global settings from the first admin account
+  // Load ONLY global settings from the first admin account
+  // THIS IS THE SINGLE SOURCE OF TRUTH for all users
   try {
     var adminId = await getAdminId(ctx.env.gpt_image2_db);
     if (adminId) {
@@ -73,33 +85,30 @@ export async function onRequest(ctx) {
       if (globalSettings.model) config.defaultModel = globalSettings.model;
       if (globalSettings.apiMode) config.apiMode = globalSettings.apiMode;
       if (globalSettings.timeout) config.timeout = parseInt(globalSettings.timeout) || 600;
-      if (globalSettings.apiProxy) config.apiProxyEnabled = true;
-      if (globalSettings.streamImages) config.streamImages = true;
+      if (globalSettings.apiProxy !== undefined) config.apiProxy = globalSettings.apiProxy;
+      if (globalSettings.streamImages !== undefined) config.streamImages = globalSettings.streamImages;
+      if (globalSettings.size) config.size = globalSettings.size;
+      if (globalSettings.quality) config.quality = globalSettings.quality;
+      if (globalSettings.output_format) config.output_format = globalSettings.output_format;
+      if (globalSettings.codexCli !== undefined) config.codexCli = globalSettings.codexCli;
+      if (globalSettings.moderation !== undefined) config.moderation = globalSettings.moderation;
+      if (globalSettings.persistInput !== undefined) config.persistInput = globalSettings.persistInput;
+      if (globalSettings.scrollAfterSubmit !== undefined) config.scrollAfterSubmit = globalSettings.scrollAfterSubmit;
+      if (globalSettings.apiProvider) config.apiProvider = globalSettings.apiProvider;
+      if (globalSettings.agentWebSearch !== undefined) config.agentWebSearch = globalSettings.agentWebSearch;
+      if (globalSettings.agentMaxRounds) config.agentMaxRounds = parseInt(globalSettings.agentMaxRounds) || 32;
+      if (globalSettings.agentScrollAfterSubmit !== undefined) config.agentScrollAfterSubmit = globalSettings.agentScrollAfterSubmit;
     }
   } catch (e) {}
-
-  // Merge user-specific settings on top (logged-in user can override)
-  var user = await vs(ctx.request, ctx.env);
-  if (user) {
-    try {
-      var userSettings = await getSettings(ctx.env.gpt_image2_db, user.id);
-      if (userSettings.baseUrl) config.defaultApiUrl = userSettings.baseUrl;
-      if (userSettings.apiKey) config.apiKey = userSettings.apiKey;
-      if (userSettings.model) config.defaultModel = userSettings.model;
-      if (userSettings.apiMode) config.apiMode = userSettings.apiMode;
-      if (userSettings.timeout) config.timeout = parseInt(userSettings.timeout) || 600;
-      if (userSettings.apiProxy) config.apiProxyEnabled = true;
-      if (userSettings.streamImages) config.streamImages = true;
-    } catch (e) {}
-  }
 
   return new Response(JSON.stringify(config), {
     status: 200,
     headers: { 
       'Content-Type': 'application/json',
       'Access-Control-Allow-Origin': '*',
-      'Cache-Control': 'no-store, no-cache, must-revalidate',
-      'Pragma': 'no-cache'
+      'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+      'Pragma': 'no-cache',
+      'Expires': '0'
     }
   });
 }

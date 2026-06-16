@@ -1,18 +1,8 @@
 {
-  "name": "AI工作台",
-  "short_name": "AI工作台",
-  "description": "AI图像生成平台",
-  "start_url": "./",
-  "scope": "./",
+  "name": "AI 工作台",
+  "short_name": "AI 工作台",
+  "start_url": "/login",
   "display": "browser",
-  "background_color": "#030712",
-  "theme_color": "#111827",
-  "icons": [
-    {
-      "src": "./pwa-icon.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
-      "purpose": "any maskable"
-    }
-  ]
+  "background_color": "#0b0f19",
+  "theme_color": "#0b0f19"
 }

@@ -37,10 +37,14 @@ async function hp(p) {
   return be(h);
 }
 
+function json(data, status) {
+  return new Response(JSON.stringify(data), { status: status || 200, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Pragma': 'no-cache' } });
+}
+
 async function checkAdmin(ctx) {
   const u = await vs(ctx.request, ctx.env);
   if (!u || u.role !== 'admin') {
-    return new Response(JSON.stringify({ error: '权限不足' }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    return json({ error: '权限不足' }, 403);
   }
   ctx.data = { user: u };
   return null;
@@ -50,7 +54,7 @@ export async function onRequestGet(ctx) {
   const err = await checkAdmin(ctx);
   if (err) return err;
   const { results } = await ctx.env.gpt_image2_db.prepare('SELECT id, username, role, last_login, last_ip, created_at, updated_at FROM users ORDER BY id ASC').all();
-  return new Response(JSON.stringify({ users: results }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  return json({ users: results });
 }
 
 export async function onRequestPost(ctx) {
@@ -59,14 +63,14 @@ export async function onRequestPost(ctx) {
   try {
     const text = await ctx.request.text();
     const { username, password, role } = JSON.parse(text);
-    if (!username || !username.trim()) return new Response(JSON.stringify({ error: '用户名不能为空' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-    if (!password || !password.trim()) return new Response(JSON.stringify({ error: '密码不能为空' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-    if (!role || !['admin', 'user'].includes(role)) return new Response(JSON.stringify({ error: '角色无效' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!username || !username.trim()) return json({ error: '用户名不能为空' }, 400);
+    if (!password || !password.trim()) return json({ error: '密码不能为空' }, 400);
+    if (!role || !['admin', 'user'].includes(role)) return json({ error: '角色无效' }, 400);
     const ex = await ctx.env.gpt_image2_db.prepare('SELECT id FROM users WHERE username = ?').bind(username.trim()).first();
-    if (ex) return new Response(JSON.stringify({ error: '用户名已存在' }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+    if (ex) return json({ error: '用户名已存在' }, 409);
     await ctx.env.gpt_image2_db.prepare('INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)').bind(username.trim(), await hp(password.trim()), role).run();
-    return new Response(JSON.stringify({ success: true, message: '用户创建成功' }), { status: 201, headers: { 'Content-Type': 'application/json' } });
+    return json({ success: true, message: '用户创建成功' }, 201);
   } catch (e) {
-    return new Response(JSON.stringify({ error: '请求格式错误' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    return json({ error: '请求格式错误: ' + e.message }, 400);
   }
 }
