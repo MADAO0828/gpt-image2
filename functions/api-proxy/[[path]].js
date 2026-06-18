@@ -87,6 +87,16 @@ function isJsonResponse(headers) {
          ct.indexOf('text/event-stream') === 0;
 }
 
+function isEventStream(headers) {
+  var ct = (headers.get('Content-Type') || '').toLowerCase();
+  return ct.indexOf('text/event-stream') === 0;
+}
+
+function truncateBody(text) {
+  if (!text) return '';
+  return text.length > 2000 ? text.substring(0, 2000) + '...' : text;
+}
+
 export async function onRequest(ctx) {
   if (ctx.request.method === 'OPTIONS') {
     return json({ ok: true });
@@ -138,39 +148,54 @@ export async function onRequest(ctx) {
     clearTimeout(timeoutId);
 
     var respHeaders = new Headers(response.headers);
-
-    // Check: if upstream returned non-JSON content (e.g. HTML error page),
-    // wrap it in a proper JSON error so the frontend doesn't crash
-    if (!response.ok || !isJsonResponse(response.headers)) {
-      // For non-JSON responses, read the body and wrap as JSON error
-      var bodyText = '';
-      try {
-        bodyText = await response.text();
-        // Truncate very long responses
-        if (bodyText.length > 2000) bodyText = bodyText.substring(0, 2000) + '...';
-      } catch (e) {
-        bodyText = '(unable to read response body)';
-      }
-
-      return json({
-        error: 'API \u4e0a\u6e38\u8fd4\u56de\u975e\u6cd5\u54cd\u5e94',
-        status: response.status,
-        upstreamType: response.headers.get('Content-Type'),
-        detail: bodyText,
-        hint: '\u8bf7\u68c0\u67e5 API \u5730\u5740\u662f\u5426\u6b63\u786e\u3001\u670d\u52a1\u662f\u5426\u6b63\u5e38\u8fd0\u884c\uff0c\u6216\u8005\u8bd5\u8bd5\u91cd\u65b0\u53d1\u9001\u8bf7\u6c42'
-      }, response.status >= 200 && response.status < 600 ? response.status : 502);
-    }
-
     respHeaders.set('Access-Control-Allow-Origin', '*');
     respHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     respHeaders.set('Access-Control-Allow-Headers', '*');
     respHeaders.set('Cache-Control', 'no-store');
 
-    return new Response(response.body, {
+    if (isEventStream(response.headers) && response.ok) {
+      return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: respHeaders
+      });
+    }
+
+    var bodyText = '';
+    try {
+      bodyText = await response.text();
+    } catch (e) {
+      bodyText = '(unable to read response body)';
+    }
+
+    var parsedOk = false;
+    var parseError = '';
+    try {
+      JSON.parse(bodyText);
+      parsedOk = true;
+    } catch (e) {
+      parseError = e.message || String(e);
+    }
+
+    if (parsedOk) {
+      respHeaders.set('Content-Type', 'application/json');
+      return new Response(bodyText, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: respHeaders
+      });
+    }
+
+    return json({
+      error: isJsonResponse(response.headers)
+        ? 'API \u4e0a\u6e38\u8fd4\u56de\u975e\u6cd5 JSON \u54cd\u5e94'
+        : 'API \u4e0a\u6e38\u8fd4\u56de\u975e\u6cd5\u54cd\u5e94',
       status: response.status,
-      statusText: response.statusText,
-      headers: respHeaders
-    });
+      upstreamType: response.headers.get('Content-Type'),
+      parseError: parseError,
+      detail: truncateBody(bodyText),
+      hint: '\u8bf7\u68c0\u67e5 API \u5730\u5740\u662f\u5426\u6b63\u786e\u3001\u670d\u52a1\u662f\u5426\u6b63\u5e38\u8fd0\u884c\uff0c\u6216\u8005\u8bd5\u8bd5\u91cd\u65b0\u53d1\u9001\u8bf7\u6c42'
+    }, response.ok ? 502 : (response.status >= 400 && response.status < 600 ? response.status : 502));
   } catch (e) {
     var errorMsg = e.message || String(e);
     var isTimeout = e.name === 'AbortError';
