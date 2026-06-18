@@ -1,5 +1,3 @@
-const DEFAULT_SK = 'gpt-image2-jwt-secret-key-2026-secure';
-
 function json(data, status) {
   return new Response(JSON.stringify(data), {
     status: status || 200,
@@ -23,7 +21,7 @@ function gc(h, n) {
   return m ? decodeURIComponent(m[1]) : null;
 }
 async function gk(secret) {
-  return crypto.subtle.importKey('raw', new TextEncoder().encode(secret || DEFAULT_SK),
+  return crypto.subtle.importKey('raw', new TextEncoder().encode(secret),
     { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
 }
 async function vt(t, secret) {

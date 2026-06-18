@@ -1,4 +1,3 @@
-const DEFAULT_SK = 'gpt-image2-jwt-secret-key-2026-secure';
 const SL = 'gpt-image2-auth-salt-2026';
 
 function bd(s) {
@@ -11,7 +10,7 @@ function gc(h, n) {
   return m ? decodeURIComponent(m[1]) : null;
 }
 async function gk(secret) {
-  return crypto.subtle.importKey('raw', new TextEncoder().encode(secret || DEFAULT_SK), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
+  return crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
 }
 async function vt(t, secret) {
   const [h, p, s] = t.split('.');

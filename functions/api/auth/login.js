@@ -1,6 +1,6 @@
-const DEFAULT_SK = 'gpt-image2-jwt-secret-key-2026-secure';const SL='gpt-image2-auth-salt-2026';
+const SL='gpt-image2-auth-salt-2026';
 function be(b){return btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
-async function gk(secret){return crypto.subtle.importKey('raw', new TextEncoder().encode(secret || DEFAULT_SK),{name:'HMAC',hash:'SHA-256'},!1,['sign']);}
+async function gk(secret){return crypto.subtle.importKey('raw', new TextEncoder().encode(secret),{name:'HMAC',hash:'SHA-256'},!1,['sign']);}
 async function hp(p){const h=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(p+':'+SL));return be(h);}
 async function ct(p, secret){const k=await gk(secret),e=new TextEncoder(),hb=be(e.encode(JSON.stringify({alg:'HS256',typ:'JWT'}))),pb=be(e.encode(JSON.stringify(p))),sig=await crypto.subtle.sign('HMAC',k,e.encode(hb+'.'+pb));return hb+'.'+pb+'.'+be(sig);}
 
