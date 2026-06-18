@@ -1,4 +1,4 @@
-const SK = 'gpt-image2-jwt-secret-key-2026-secure';
+const DEFAULT_SK = 'gpt-image2-jwt-secret-key-2026-secure';
 
 function bd(s) {
   s = s.replace(/-/g, '+').replace(/_/g, '/');
@@ -9,14 +9,14 @@ function gc(h, n) {
   var m = h.match(new RegExp('(?:^|;\\s*)' + n + '=([^;]*)'));
   return m ? decodeURIComponent(m[1]) : null;
 }
-async function gk() {
-  return crypto.subtle.importKey('raw', new TextEncoder().encode(SK),
+async function gk(secret) {
+  return crypto.subtle.importKey('raw', new TextEncoder().encode(secret || DEFAULT_SK),
     { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
 }
-async function vt(t) {
+async function vt(t, secret) {
   var parts = t.split('.');
   if (parts.length !== 3) throw new Error('invalid');
-  var k = await gk();
+  var k = await gk(secret);
   var valid = await crypto.subtle.verify('HMAC', k, bd(parts[2]),
     new TextEncoder().encode(parts[0] + '.' + parts[1]));
   if (!valid) throw new Error('bad');
@@ -26,7 +26,7 @@ async function vs(r, env) {
   var t = gc(r.headers.get('Cookie') || '', 'session');
   if (!t) return null;
   try {
-    var p = await vt(t);
+    var p = await vt(t, env.JWT_SECRET);
     if (p.exp && p.exp < Math.floor(Date.now() / 1000)) return null;
     return await env.gpt_image2_db
       .prepare('SELECT id, username, role FROM users WHERE id = ?')

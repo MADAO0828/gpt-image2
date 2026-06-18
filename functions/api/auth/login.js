@@ -1,8 +1,8 @@
-const SK='gpt-image2-jwt-secret-key-2026-secure';const SL='gpt-image2-auth-salt-2026';
+const DEFAULT_SK = 'gpt-image2-jwt-secret-key-2026-secure';const SL='gpt-image2-auth-salt-2026';
 function be(b){return btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
-async function gk(){return crypto.subtle.importKey('raw',new TextEncoder().encode(SK),{name:'HMAC',hash:'SHA-256'},!1,['sign']);}
+async function gk(secret){return crypto.subtle.importKey('raw', new TextEncoder().encode(secret || DEFAULT_SK),{name:'HMAC',hash:'SHA-256'},!1,['sign']);}
 async function hp(p){const h=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(p+':'+SL));return be(h);}
-async function ct(p){const k=await gk(),e=new TextEncoder(),hb=be(e.encode(JSON.stringify({alg:'HS256',typ:'JWT'}))),pb=be(e.encode(JSON.stringify(p))),sig=await crypto.subtle.sign('HMAC',k,e.encode(hb+'.'+pb));return hb+'.'+pb+'.'+be(sig);}
+async function ct(p, secret){const k=await gk(secret),e=new TextEncoder(),hb=be(e.encode(JSON.stringify({alg:'HS256',typ:'JWT'}))),pb=be(e.encode(JSON.stringify(p))),sig=await crypto.subtle.sign('HMAC',k,e.encode(hb+'.'+pb));return hb+'.'+pb+'.'+be(sig);}
 
 export async function onRequestPost(ctx) {
   try {
@@ -17,7 +17,7 @@ export async function onRequestPost(ctx) {
     // Record login time and IP
     const ip=ctx.request.headers.get('CF-Connecting-IP')||ctx.request.headers.get('X-Forwarded-For')||'';
     ctx.waitUntil(ctx.env.gpt_image2_db.prepare("UPDATE users SET last_login=datetime('now'), last_ip=? WHERE id=?").bind(ip,u.id).run());
-    const tk=await ct({userId:u.id,username:u.username,role:u.role,exp:Math.floor(Date.now()/1000)+86400});
+    const tk=await ct({userId:u.id,username:u.username,role:u.role,exp:Math.floor(Date.now()/1000)+86400}, ctx.env.JWT_SECRET);
     return new Response(JSON.stringify({success:!0,userId:u.id,username:u.username,role:u.role}),{status:200,headers:{'Content-Type':'application/json','Cache-Control':'no-store','Pragma':'no-cache','Set-Cookie':'session='+encodeURIComponent(tk)+'; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=86400'}});
   }catch(e){return new Response(JSON.stringify({error:'请求格式错误'}),{status:400,headers:{'Content-Type':'application/json','Cache-Control':'no-store','Pragma':'no-cache'}});}
 }
