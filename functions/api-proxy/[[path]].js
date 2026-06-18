@@ -1,4 +1,4 @@
-function json(data, status) {
+﻿function json(data, status) {
   return new Response(JSON.stringify(data), {
     status: status || 200,
     headers: {
@@ -80,13 +80,20 @@ function normalizeBaseUrl(raw) {
   }
 }
 
+// Check if upstream response is valid JSON content (including SSE streaming)
+function isJsonResponse(headers) {
+  var ct = (headers.get('Content-Type') || '').toLowerCase();
+  return ct.indexOf('application/json') === 0 ||
+         ct.indexOf('text/event-stream') === 0;
+}
+
 export async function onRequest(ctx) {
   if (ctx.request.method === 'OPTIONS') {
     return json({ ok: true });
   }
 
   var user = await vs(ctx.request, ctx.env);
-  if (!user) return json({ error: '未登录' }, 401);
+  if (!user) return json({ error: '\u672a\u767b\u5f55' }, 401);
 
   var settings = {};
   try {
@@ -95,7 +102,7 @@ export async function onRequest(ctx) {
 
   var targetBase = normalizeBaseUrl(settings.baseUrl);
   var apiKey = String(settings.apiKey || '').trim();
-  if (!apiKey) return json({ error: '尚未完成 API Key 配置' }, 500);
+  if (!apiKey) return json({ error: '\u5c1a\u672a\u5b8c\u6210 API Key \u914d\u7f6e' }, 500);
 
   var url = new URL(ctx.request.url);
   var apiPath = url.pathname.replace('/api-proxy', '') + url.search;
@@ -115,15 +122,45 @@ export async function onRequest(ctx) {
       headers.set('Content-Type', 'application/json');
     }
 
+    // Use AbortController for timeout (Cloudflare free plan subrequest limit ~100s)
+    var controller = new AbortController();
+    var timeoutId = setTimeout(function() { controller.abort(); }, 300000); // 5 minute timeout
+
     var response = await fetch(new Request(targetUrl, {
       method: ctx.request.method,
       headers: headers,
       body: ctx.request.method !== 'GET' && ctx.request.method !== 'HEAD'
         ? ctx.request.body : undefined,
-      redirect: 'follow'
+      redirect: 'follow',
+      signal: controller.signal
     }));
 
+    clearTimeout(timeoutId);
+
     var respHeaders = new Headers(response.headers);
+
+    // Check: if upstream returned non-JSON content (e.g. HTML error page),
+    // wrap it in a proper JSON error so the frontend doesn't crash
+    if (!response.ok || !isJsonResponse(response.headers)) {
+      // For non-JSON responses, read the body and wrap as JSON error
+      var bodyText = '';
+      try {
+        bodyText = await response.text();
+        // Truncate very long responses
+        if (bodyText.length > 2000) bodyText = bodyText.substring(0, 2000) + '...';
+      } catch (e) {
+        bodyText = '(unable to read response body)';
+      }
+
+      return json({
+        error: 'API \u4e0a\u6e38\u8fd4\u56de\u975e\u6cd5\u54cd\u5e94',
+        status: response.status,
+        upstreamType: response.headers.get('Content-Type'),
+        detail: bodyText,
+        hint: '\u8bf7\u68c0\u67e5 API \u5730\u5740\u662f\u5426\u6b63\u786e\u3001\u670d\u52a1\u662f\u5426\u6b63\u5e38\u8fd0\u884c\uff0c\u6216\u8005\u8bd5\u8bd5\u91cd\u65b0\u53d1\u9001\u8bf7\u6c42'
+      }, response.status >= 200 && response.status < 600 ? response.status : 502);
+    }
+
     respHeaders.set('Access-Control-Allow-Origin', '*');
     respHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     respHeaders.set('Access-Control-Allow-Headers', '*');
@@ -135,9 +172,13 @@ export async function onRequest(ctx) {
       headers: respHeaders
     });
   } catch (e) {
+    var errorMsg = e.message || String(e);
+    var isTimeout = e.name === 'AbortError';
     return json({
-      error: 'API 代理请求失败: ' + e.message,
-      hint: '请检查 API 地址是否正确、服务是否正常运行'
+      error: isTimeout
+        ? 'API \u8bf7\u6c42\u8d85\u65f6\uff0c\u751f\u56fe\u65f6\u95f4\u8fc7\u957f'
+        : 'API \u4ee3\u7406\u8bf7\u6c42\u5931\u8d25: ' + errorMsg,
+      hint: '\u8bf7\u68c0\u67e5 API \u5730\u5740\u662f\u5426\u6b63\u786e\u3001\u670d\u52a1\u662f\u5426\u6b63\u5e38\u8fd0\u884c'
     }, 502);
   }
 }
