@@ -111,6 +111,7 @@ export async function onRequestPost(ctx) {
 export async function onRequestGet(ctx) {
   var user = await vs(ctx.request, ctx.env);
   if (!user) return json({ error: 'no login' }, 401);
+  if (user.role !== 'admin') return json({ error: 'insufficient permissions' }, 403);
   
   // Load ONLY global defaults (from the first admin account)
   var adminId = await getAdminId(ctx.env.gpt_image2_db);

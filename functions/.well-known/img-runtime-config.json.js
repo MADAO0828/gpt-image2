@@ -59,7 +59,7 @@ export async function onRequest(ctx) {
     apiKey: '',
     apiMode: 'images',
     timeout: 600,
-    apiProxy: false,
+    apiProxy: true,
     streamImages: false,
     size: '',
     quality: 'standard',
@@ -74,18 +74,15 @@ export async function onRequest(ctx) {
     agentScrollAfterSubmit: false
   };
 
-  // Load ONLY global settings from the first admin account
-  // THIS IS THE SINGLE SOURCE OF TRUTH for all users
   try {
     var adminId = await getAdminId(ctx.env.gpt_image2_db);
     if (adminId) {
       var globalSettings = await getSettings(ctx.env.gpt_image2_db, adminId);
       if (globalSettings.baseUrl) config.defaultApiUrl = globalSettings.baseUrl;
-      if (globalSettings.apiKey) config.apiKey = globalSettings.apiKey;
       if (globalSettings.model) config.defaultModel = globalSettings.model;
       if (globalSettings.apiMode) config.apiMode = globalSettings.apiMode;
       if (globalSettings.timeout) config.timeout = parseInt(globalSettings.timeout) || 600;
-      if (globalSettings.apiProxy !== undefined) config.apiProxy = globalSettings.apiProxy;
+      config.apiProxy = true;
       if (globalSettings.streamImages !== undefined) config.streamImages = globalSettings.streamImages;
       if (globalSettings.size) config.size = globalSettings.size;
       if (globalSettings.quality) config.quality = globalSettings.quality;
@@ -103,7 +100,7 @@ export async function onRequest(ctx) {
 
   return new Response(JSON.stringify(config), {
     status: 200,
-    headers: { 
+    headers: {
       'Content-Type': 'application/json',
       'Access-Control-Allow-Origin': '*',
       'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',

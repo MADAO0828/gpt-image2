@@ -40,7 +40,6 @@ body{background:#0b0f19;color:#e4e8ee;font-family:-apple-system,BlinkMacSystemFo
 .modal-t{font-size:16px;font-weight:700;margin-bottom:8px}
 .modal-p{font-size:12px;color:#c4cad8;line-height:1.6;margin-bottom:12px;white-space:pre-wrap;max-height:400px;overflow-y:auto}
 .modal-acts{display:flex;gap:8px;flex-wrap:wrap}
-.mc{position:fixed;top:20px;right:20px;z-index:101;width:32px;height:32px;border-radius:50%;background:rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.1);color:#e4e8ee;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center}
 .ts{position:fixed;top:16px;right:16px;z-index:9999;padding:8px 16px;border-radius:8px;font-size:12px;background:rgba(34,197,94,0.12);color:#22c55e;border:1px solid rgba(34,197,94,0.25)}
 </style></head><body>
 <header class="h"><span class="hl">📚 提示词仓库</span><a href="/" class="b">← 返回</a></header>
@@ -61,119 +60,111 @@ body{background:#0b0f19;color:#e4e8ee;font-family:-apple-system,BlinkMacSystemFo
 <button class="btn" id="mus" style="padding:6px 14px;font-size:12px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;border:none;border-radius:6px;cursor:pointer">✨ 使用此提示词</button>
 </div></div></div>
 <div class="overlay" id="imgViewer" style="cursor:zoom-out"><img id="vi" style="max-width:95%;max-height:95%;object-fit:contain;border-radius:8px" /></div>
-<button class="mc" id="mcls">✕</button>
 <script>
-var DB_NAME = "PromptCacheV2", DB_VER = 1, STORE = "data";
-var DATA_URL = "/prompts_data.json?v=" + Date.now();
 var ITEMS_PER_PAGE = 50;
-var allData = [], filteredData = [], currentCat = "all", currentIdx = 0, currentPrompt = -1;
+var allData = [], filteredData = [], currentCat = "all", currentPage = 1, totalItems = 0, currentPrompt = -1;
+var useServerMode = true;
 
-function openDB() {
-  return new Promise(function(resolve, reject) {
-    var req = indexedDB.open(DB_NAME, DB_VER);
-    req.onupgradeneeded = function(e) {
-      e.target.result.createObjectStore(STORE);
-    };
-    req.onsuccess = function(e) { resolve(e.target.result); };
-    req.onerror = function() { resolve(null); };
-  });
-}
-
-function loadFromDB(db) {
-  return new Promise(function(resolve) {
-    if (!db) { resolve(null); return; }
-    var tx = db.transaction(STORE, "readonly");
-    var get = tx.objectStore(STORE).get("prompts");
-    get.onsuccess = function() { resolve(get.result || null); };
-    get.onerror = function() { resolve(null); };
-  });
-}
-
-function saveToDB(db, data) {
-  if (!db) return;
-  try {
-    var tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).put(data, "prompts");
-  } catch(e) {}
-}
-
-function fetchFromNetwork() {
-  var cats = document.getElementById("cats");
-  cats.innerHTML = '<div class="ld">正在加载提示词数据...</div>';
-  fetch(DATA_URL).then(function(r){ return r.json(); }).then(function(d) {
-    allData = d; filteredData = d;
-    openDB().then(function(db) { saveToDB(db, d); });
-    init(); loadMore();
-  }).catch(function() {
-    cats.innerHTML = '<div class="ld">加载失败，请刷新重试</div>';
-  });
-}
-
-openDB().then(function(db) {
-  return loadFromDB(db).then(function(cached) {
-    if (cached && cached.length > 0) {
-      allData = cached; filteredData = cached;
-      init(); loadMore();
-      fetch(DATA_URL).then(function(r){ return r.json(); }).then(function(fresh) {
-        allData = fresh; filteredData = fresh;
-        saveToDB(db, fresh);
-        filterData();
-      }).catch(function(){});
-    } else {
-      fetchFromNetwork();
-    }
-  });
-}).catch(function() {
-  fetchFromNetwork();
-});
-
-function init(){
-  var cats=["all"],map={all:1},h="";
-  for(var i=0;i<allData.length;i++){if(!map[allData[i].c]){cats.push(allData[i].c);map[allData[i].c]=1}}
-  for(var j=0;j<cats.length;j++){h+='<span class="cat"'+(currentCat===cats[j]?' data-on="1"':'')+' data-c="'+escAttr(cats[j])+'">'+escHtml(cats[j])+'</span>'}
-  document.getElementById("cats").innerHTML=h;
-  document.getElementById("info").textContent="🗃️ "+allData.length+" 条提示词";
-  Array.from(document.querySelectorAll(".cat")).forEach(function(el){if(el.getAttribute("data-on"))el.classList.add("on")})
-}
 function escHtml(s){if(!s)return"";return(""+s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}
 function escAttr(s){if(!s)return"";return(""+s).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
 function trunc(s,n){if(!s)return"";return s.length>n?s.substring(0,n)+"...":s}
-function loadMore(){
-  var end=Math.min(currentIdx+ITEMS_PER_PAGE,filteredData.length),grid=document.getElementById("grid");
-  for(var i=currentIdx;i<end;i++){
-    var p=filteredData[i],card=document.createElement("div");
-    card.className="card";card.setAttribute("data-idx",i);
+function norm(p){return{c:p.c||p.category||"",t:p.t||p.title||"",p:p.p||p.prompt||"",i:p.i||p.image_url||""}}
+
+function setLoading(text){document.getElementById("cats").innerHTML='<div class="ld">'+escHtml(text)+'</div>'}
+function apiUrl(page){var q=document.getElementById("s").value.trim();var url="/api/prompts?page="+page+"&limit="+ITEMS_PER_PAGE;if(currentCat!=="all")url+="&cat="+encodeURIComponent(currentCat);if(q)url+="&q="+encodeURIComponent(q);return url}
+
+function loadCategories(){
+  setLoading("??????...");
+  fetch("/api/prompts?categories=1").then(function(r){return r.json()}).then(function(d){
+    renderCats((d.categories&&d.categories.length)?d.categories:["all"]);
+    loadPage(1,true);
+  }).catch(function(){
+    fetchStaticFallback();
+  });
+}
+
+function renderCats(cats){
+  var h="";
+  for(var j=0;j<cats.length;j++)h+='<span class="cat'+(currentCat===cats[j]?' on':'')+'" data-c="'+escAttr(cats[j])+'">'+escHtml(cats[j])+'</span>';
+  document.getElementById("cats").innerHTML=h;
+}
+
+function loadPage(page, reset){
+  if(reset){currentPage=1;filteredData=[];document.getElementById("grid").innerHTML="";document.getElementById("lm").style.display="none";}
+  if(useServerMode){
+    fetch(apiUrl(page)).then(function(r){return r.json()}).then(function(d){
+      var rows=(d.prompts||[]).map(norm);
+      totalItems=d.total||rows.length;
+      currentPage=d.page||page;
+      filteredData=filteredData.concat(rows);
+      renderItems(rows, filteredData.length-rows.length);
+      updateInfo();
+      document.getElementById("lm").style.display=filteredData.length<totalItems?"block":"none";
+    }).catch(function(){fetchStaticFallback()});
+  }else{
+    renderStaticPage(page, reset);
+  }
+}
+
+function fetchStaticFallback(){
+  useServerMode=false;
+  setLoading("???????????...");
+  fetch("/prompts_data.json?v="+Date.now()).then(function(r){return r.json()}).then(function(d){
+    allData=(Array.isArray(d)?d:[]).map(norm);
+    var cats=["all"],map={all:1};
+    for(var i=0;i<allData.length;i++){if(allData[i].c&&!map[allData[i].c]){cats.push(allData[i].c);map[allData[i].c]=1}}
+    renderCats(cats);
+    renderStaticPage(1,true);
+  }).catch(function(){setLoading("??????????")});
+}
+
+function renderStaticPage(page, reset){
+  if(reset){currentPage=1;filteredData=[];document.getElementById("grid").innerHTML="";}
+  var q=document.getElementById("s").value.toLowerCase();
+  var matched=allData.filter(function(p){if(currentCat!=="all"&&p.c!==currentCat)return false;if(q&&p.t.toLowerCase().indexOf(q)<0&&p.p.toLowerCase().indexOf(q)<0)return false;return true});
+  totalItems=matched.length;
+  var start=(page-1)*ITEMS_PER_PAGE,end=Math.min(start+ITEMS_PER_PAGE,matched.length);
+  var rows=matched.slice(start,end);
+  currentPage=page;
+  filteredData=filteredData.concat(rows);
+  renderItems(rows, start);
+  updateInfo();
+  document.getElementById("lm").style.display=filteredData.length<totalItems?"block":"none";
+}
+
+function renderItems(rows, startIdx){
+  var grid=document.getElementById("grid");
+  for(var i=0;i<rows.length;i++){
+    var p=rows[i],idx=startIdx+i,card=document.createElement("div");
+    card.className="card";card.setAttribute("data-idx",idx);
     card.onclick=function(){openModal(parseInt(this.getAttribute("data-idx")))};
     var html="";
-    if(p.i){html+='<div class="card-img"><img src="'+escAttr(p.i)+'" referrerpolicy="no-referrer" alt="" loading="lazy" onerror="this.style.display=\'none\'"></div>'}
+    if(p.i)html+='<div class="card-img"><img src="'+escAttr(p.i)+'" referrerpolicy="no-referrer" alt="" loading="lazy" onerror="this.style.display=\'none\'"></div>';
     html+='<div class="card-body"><div class="card-cat">'+escHtml(p.c)+'</div><div class="card-t">'+escHtml(p.t)+'</div><div class="card-p">'+escHtml(trunc(p.p,60))+'</div></div>';
-    card.innerHTML=html;grid.appendChild(card)
+    card.innerHTML=html;grid.appendChild(card);
   }
-  currentIdx=end;
-  document.getElementById("lm").style.display=currentIdx<filteredData.length?"block":"none";
-  document.getElementById("pi").textContent=currentIdx+"/"+filteredData.length
 }
-document.getElementById("lb").addEventListener("click",loadMore);
-document.getElementById("cats").addEventListener("click",function(e){var t=e.target;if(!t.classList.contains("cat"))return;currentCat=t.getAttribute("data-c");Array.from(document.querySelectorAll(".cat")).forEach(function(el){el.classList.remove("on")});t.classList.add("on");filterData()});
-document.getElementById("s").addEventListener("input",filterData);
-function filterData(){var q=document.getElementById("s").value.toLowerCase();filteredData=allData.filter(function(p){if(currentCat!=="all"&&p.c!==currentCat)return false;if(q&&(p.t||"").toLowerCase().indexOf(q)<0&&(p.p||"").toLowerCase().indexOf(q)<0)return false;return true});currentIdx=0;document.getElementById("grid").innerHTML="";loadMore()}
+
+function updateInfo(){
+  document.getElementById("info").textContent="? "+totalItems+" ????";
+  document.getElementById("pi").textContent=filteredData.length+"/"+totalItems;
+}
+
+function reloadList(){filteredData=[];document.getElementById("grid").innerHTML="";loadPage(1,true)}
+
+document.getElementById("lb").addEventListener("click",function(){loadPage(currentPage+1,false)});
+document.getElementById("cats").addEventListener("click",function(e){var t=e.target;if(!t.classList.contains("cat"))return;currentCat=t.getAttribute("data-c");Array.from(document.querySelectorAll(".cat")).forEach(function(el){el.classList.remove("on")});t.classList.add("on");reloadList()});
+var timer=null;document.getElementById("s").addEventListener("input",function(){clearTimeout(timer);timer=setTimeout(reloadList,250)});
+
 function openModal(i){if(!filteredData[i])return;currentPrompt=i;var p=filteredData[i];document.getElementById("mc2").textContent=p.c||"";document.getElementById("mt").textContent=p.t||"";document.getElementById("mp").textContent=p.p||"";var img=document.getElementById("mi");if(p.i){img.src=p.i;img.style.display="block"}else{img.style.display="none"}document.getElementById("modal").classList.add("show")}
 function closeModal(){document.getElementById("modal").classList.remove("show")}
-document.getElementById("mcls").addEventListener("click",closeModal);
 document.getElementById("modal").addEventListener("click",function(e){if(e.target===this)closeModal()});
 document.getElementById("mcp").addEventListener("click",function(){if(currentPrompt>=0&&filteredData[currentPrompt]){navigator.clipboard.writeText(filteredData[currentPrompt].p||"");showToast()}});
 document.getElementById("mus").addEventListener("click",function(){if(currentPrompt>=0&&filteredData[currentPrompt]){sessionStorage.setItem("prompt_to_use",filteredData[currentPrompt].p||"");location.href="/"}});
-function showToast(){var d=document.createElement("div");d.className="ts";d.textContent="✅ 已复制";document.body.appendChild(d);setTimeout(function(){d.remove()},1500)}
+function showToast(){var d=document.createElement("div");d.className="ts";d.textContent="???";document.body.appendChild(d);setTimeout(function(){d.remove()},1500)}
 
-// Image viewer
-var vi = document.getElementById("vi");
-document.getElementById("mi").addEventListener("click", function() {
-  if (this.src && this.style.display !== "none") {
-    vi.src = this.src;
-    document.getElementById("imgViewer").classList.add("show");
-  }
-});
-document.getElementById("imgViewer").addEventListener("click", function() {
-  this.classList.remove("show");
-});
+var vi=document.getElementById("vi");
+document.getElementById("mi").addEventListener("click",function(){if(this.src&&this.style.display!=="none"){vi.src=this.src;document.getElementById("imgViewer").classList.add("show")}});
+document.getElementById("imgViewer").addEventListener("click",function(){this.classList.remove("show")});
+loadCategories();
 </script></body></html>

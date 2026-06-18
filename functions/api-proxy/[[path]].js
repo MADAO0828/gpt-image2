@@ -1,7 +1,17 @@
-// API Proxy - forwards requests to the user's configured API URL
-// Handles /api-proxy/* paths
-
 const SK = 'gpt-image2-jwt-secret-key-2026-secure';
+
+function json(data, status) {
+  return new Response(JSON.stringify(data), {
+    status: status || 200,
+    headers: {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers': '*',
+      'Cache-Control': 'no-store'
+    }
+  });
+}
 
 function bd(s) {
   s = s.replace(/-/g, '+').replace(/_/g, '/');
@@ -31,81 +41,105 @@ async function vs(r, env) {
   try {
     var p = await vt(t);
     if (p.exp && p.exp < Math.floor(Date.now() / 1000)) return null;
-    return await env.gpt_image2_db.prepare('SELECT id, username, role FROM users WHERE id = ?')
+    return await env.gpt_image2_db
+      .prepare('SELECT id, username, role FROM users WHERE id = ?')
       .bind(p.userId).first();
   } catch (e) { return null; }
 }
 
+async function getGlobalSettings(db) {
+  var settings = {};
+  var admin = await db
+    .prepare("SELECT id FROM users WHERE role = 'admin' ORDER BY id ASC LIMIT 1")
+    .first();
+  if (!admin) return settings;
+  var rows = await db
+    .prepare("SELECT key, value FROM user_settings WHERE user_id = ? AND key IN ('baseUrl', 'apiKey')")
+    .bind(admin.id)
+    .all();
+  (rows.results || []).forEach(function(row) {
+    var val = row.value;
+    try { val = JSON.parse(val); } catch (e) {}
+    settings[row.key] = val;
+  });
+  return settings;
+}
+
+function normalizeBaseUrl(raw) {
+  var value = String(raw || 'https://api.openai.com').trim().replace(/\/+$/, '');
+  if (!value) value = 'https://api.openai.com';
+  if (!/^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(value)) value = 'https://' + value;
+  try {
+    var url = new URL(value);
+    var parts = url.pathname.split('/').filter(Boolean);
+    if (parts.indexOf('v1') < 0) parts.push('v1');
+    url.pathname = '/' + parts.join('/');
+    url.search = '';
+    url.hash = '';
+    return url.toString().replace(/\/+$/, '');
+  } catch (e) {
+    return value.replace(/\/+$/, '') + '/v1';
+  }
+}
+
 export async function onRequest(ctx) {
-  var user = await vs(ctx.request, ctx.env);
-  
-  // Get the user's configured API base URL from their settings
-  var targetBase = 'https://api.openai.com'; // default
-  if (user) {
-    try {
-      var result = await ctx.env.gpt_image2_db
-        .prepare("SELECT value FROM user_settings WHERE user_id = ? AND key = 'baseUrl'")
-        .bind(user.id)
-        .first();
-      if (result && result.value) {
-        var val = result.value;
-        try { val = JSON.parse(val); } catch (e) {}
-        if (val && val !== '') targetBase = val;
-      }
-    } catch (e) {}
+  if (ctx.request.method === 'OPTIONS') {
+    return json({ ok: true });
   }
 
-  // Get the API path from the URL (everything after /api-proxy/)
+  var user = await vs(ctx.request, ctx.env);
+  if (!user) return json({ error: '未登录' }, 401);
+
+  var settings = {};
+  try {
+    settings = await getGlobalSettings(ctx.env.gpt_image2_db);
+  } catch (e) {}
+
+  var targetBase = normalizeBaseUrl(settings.baseUrl);
+  var apiKey = String(settings.apiKey || '').trim();
+  if (!apiKey) return json({ error: '尚未完成 API Key 配置' }, 500);
+
   var url = new URL(ctx.request.url);
   var apiPath = url.pathname.replace('/api-proxy', '') + url.search;
   if (!apiPath || apiPath === '/') {
-    return new Response('API Proxy - no path specified', { status: 400 });
+    return json({ error: 'API Proxy - no path specified' }, 400);
   }
 
-  // Build the target URL
-  var targetUrl = targetBase.replace(/\/+$/, '') + apiPath;
-  
-  // Forward the request
+  var targetUrl = targetBase + apiPath;
   try {
     var headers = new Headers(ctx.request.headers);
-    // Remove host and cookie headers (don't forward to API)
     headers.delete('Host');
     headers.delete('Cookie');
     headers.delete('Origin');
     headers.delete('Referer');
-    // Ensure content-type is set
+    headers.set('Authorization', 'Bearer ' + apiKey);
     if (!headers.has('Content-Type') && ctx.request.method !== 'GET') {
       headers.set('Content-Type', 'application/json');
     }
 
-    var proxyReq = new Request(targetUrl, {
+    var response = await fetch(new Request(targetUrl, {
       method: ctx.request.method,
       headers: headers,
-      body: ctx.request.method !== 'GET' && ctx.request.method !== 'HEAD' 
+      body: ctx.request.method !== 'GET' && ctx.request.method !== 'HEAD'
         ? ctx.request.body : undefined,
       redirect: 'follow'
-    });
+    }));
 
-    var response = await fetch(proxyReq);
-    
-    // Return with CORS headers
     var respHeaders = new Headers(response.headers);
     respHeaders.set('Access-Control-Allow-Origin', '*');
     respHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     respHeaders.set('Access-Control-Allow-Headers', '*');
-    
+    respHeaders.set('Cache-Control', 'no-store');
+
     return new Response(response.body, {
       status: response.status,
       statusText: response.statusText,
       headers: respHeaders
     });
   } catch (e) {
-    return new Response(JSON.stringify({ 
+    return json({
       error: 'API 代理请求失败: ' + e.message,
       hint: '请检查 API 地址是否正确、服务是否正常运行'
-    }), {
-      status: 502,
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-    });
+    }, 502);
   }
 }
