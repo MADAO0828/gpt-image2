@@ -1,112 +1,197 @@
 <!DOCTYPE html>
-<html lang="zh-CN"><head>
+<html lang="zh-CN">
+<head>
 <meta charset="UTF-8" />
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
 <meta http-equiv="Pragma" content="no-cache" />
 <meta http-equiv="Expires" content="0" />
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover" />
-<meta name="theme-color" content="#0b0f19" />
-<title>AI 工作台</title>
+<meta name="theme-color" content="#111827" />
+<meta name="apple-mobile-web-app-capable" content="no" />
+<meta name="apple-mobile-web-app-title" content="GPT Image" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<link rel="manifest" href="./manifest.webmanifest" />
+<link rel="apple-touch-icon" href="./pwa-icon.svg" />
+<link rel="icon" href="./pwa-icon.svg" type="image/svg+xml" />
+<title>AI &#24037;&#20316;&#21488;</title>
 <style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:#0b0f19;color:#e4e8ee;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
-[class*=settings i],[class*=Settings i],[id*=settings i]{display:none!important;visibility:hidden!important}
-.nav{position:fixed;top:10px;right:12px;z-index:999;display:flex;align-items:center;gap:2px;background:rgba(11,15,25,0.7);border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:3px;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
-.nav a{width:30px;height:30px;border-radius:7px;display:flex;align-items:center;justify-content:center;text-decoration:none;font-size:14px;color:#64748b;transition:all .2s}
-.nav a:hover{background:rgba(99,102,241,0.12);color:#a5b4fc}
-.nav a:active{transform:scale(.93)}
-.nav .d{width:1px;height:18px;background:rgba(255,255,255,0.06);margin:0 2px}
-.nav .l{font-size:10px;color:#475569;padding:0 8px 0 4px;letter-spacing:.5px}
+*{box-sizing:border-box}
+body{min-height:100vh}
+[aria-label="settings"],[aria-label="Settings"]{display:none!important;visibility:hidden!important}
+.site-nav{position:fixed;top:10px;right:12px;z-index:9999;display:flex;align-items:center;gap:2px;background:rgba(17,24,39,.78);border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:3px;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
+.site-nav a{width:32px;height:32px;border-radius:7px;display:flex;align-items:center;justify-content:center;text-decoration:none;font-size:15px;color:#cbd5e1;transition:background .18s,color .18s,transform .18s}
+.site-nav a:hover{background:rgba(59,130,246,.18);color:#fff}
+.site-nav a:active{transform:scale(.94)}
+.site-nav .label{font-size:11px;color:#94a3b8;padding:0 7px 0 5px;letter-spacing:.02em}
+.site-nav .divider{width:1px;height:18px;background:rgba(255,255,255,.12);margin:0 2px}
+@media(max-width:640px){.site-nav{top:8px;right:8px}.site-nav .label{display:none}.site-nav a{width:34px;height:34px}}
 </style>
 <script>
 (function(){
   if('serviceWorker' in navigator){
     navigator.serviceWorker.getRegistrations().then(function(regs){
-      regs.forEach(function(reg){reg.unregister()});
+      regs.forEach(function(reg){reg.unregister();});
     });
   }
 })();
 </script>
 <script>
-  if(!('noModule' in HTMLScriptElement.prototype)){
-    document.write('<body style="background:#0b0f19;color:#8892a6;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;text-align:center;font-family:sans-serif"><div><h2 style="color:#6366f1;margin-bottom:8px">浏览器不兼容</h2><p>请换用 Chrome/Edge/Safari</p></div></body>');
-  }
+if(!('noModule' in HTMLScriptElement.prototype)){
+  document.write('<body style="background:#111827;color:#cbd5e1;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;text-align:center;font-family:sans-serif"><div><h2 style="color:#60a5fa;margin-bottom:8px">&#27983;&#35272;&#22120;&#19981;&#20860;&#23481;</h2><p>&#35831;&#20351;&#29992;&#26368;&#26032;&#29256; Chrome&#12289;Edge &#25110; Safari</p></div></body>');
+}
 </script>
 <script>
-var __s = 'gpt-image-playground';
-
-try {
-  var pp = sessionStorage.getItem('prompt_to_use');
-  if (pp) {
-    sessionStorage.removeItem('prompt_to_use');
-    var existing = localStorage.getItem(__s);
-    var st = existing ? JSON.parse(existing) : { state: {}, version: 2 };
-    if (!st.state) st.state = {};
-    if (!st.state.galleryInputDraft) st.state.galleryInputDraft = {};
-    st.state.galleryInputDraft.prompt = pp;
-    localStorage.setItem(__s, JSON.stringify(st));
-  }
-} catch(e) {}
-
-function doSync() {
-  var url = '/.well-known/img-runtime-config.json?v=' + Date.now();
-  fetch(url).then(function(r) { return r.ok ? r.json() : null; }).then(function(cfg) {
-    if (!cfg) return;
-    try {
-      var st = {
-        state: {
-          settings: {
-            baseUrl: cfg.defaultApiUrl || '',
-            apiKey: '',
-            model: cfg.defaultModel || 'gpt-image-2',
-            apiMode: cfg.apiMode || 'images',
-            timeout: cfg.timeout || 600,
-            apiProxy: true,
-            streamImages: !!cfg.streamImages,
-            size: cfg.size || '',
-            quality: cfg.quality || 'standard',
-            output_format: cfg.output_format || 'png',
-            codexCli: !!cfg.codexCli,
-            moderation: !!cfg.moderation,
-            persistInput: !!cfg.persistInput,
-            scrollAfterSubmit: !!cfg.scrollAfterSubmit,
-            apiProvider: cfg.apiProvider || 'openai',
-            agentWebSearch: !!cfg.agentWebSearch,
-            agentMaxRounds: cfg.agentMaxRounds || 32,
-            agentScrollAfterSubmit: !!cfg.agentScrollAfterSubmit
-          }
-        },
-        version: 2
-      };
-      try {
-        var ex = JSON.parse(localStorage.getItem(__s) || '{}');
-        if (ex.state && ex.state.galleryInputDraft) {
-          st.state.galleryInputDraft = ex.state.galleryInputDraft;
-        }
-      } catch(e) {}
-      localStorage.setItem(__s, JSON.stringify(st));
-    } catch(e) {}
-  }).catch(function(){});
-}
-
 (function(){
-  fetch('/api/auth/me', { cache: 'no-store' }).then(function(r) {
-    if (!r.ok) { location.replace('/login'); return; }
-    doSync();
+  var storeKey = 'gpt-image-playground';
+
+  function readStore(){
+    try {
+      var raw = localStorage.getItem(storeKey);
+      return raw ? JSON.parse(raw) : { state: {}, version: 2 };
+    } catch(e) {
+      return { state: {}, version: 2 };
+    }
+  }
+
+  function writeStore(next){
+    try { localStorage.setItem(storeKey, JSON.stringify(next)); } catch(e) {}
+  }
+
+  function getProfile(cfg){
+    return {
+      id: 'default-openai',
+      name: '\u4e91\u7aef\u914d\u7f6e',
+      provider: 'openai',
+      baseUrl: cfg.defaultApiUrl || '',
+      apiKey: 'cloudflare-proxy',
+      model: cfg.defaultModel || 'gpt-image-2',
+      timeout: Number(cfg.timeout) || 6000,
+      apiMode: cfg.apiMode || 'images',
+      codexCli: !!cfg.codexCli,
+      apiProxy: true,
+      responseFormatB64Json: false,
+      streamImages: !!cfg.streamImages,
+      streamPartialImages: Number(cfg.streamPartialImages) || 1
+    };
+  }
+
+  function applyPromptFromRepository(st){
+    try {
+      var prompt = sessionStorage.getItem('prompt_to_use');
+      if (!prompt) return st;
+      sessionStorage.removeItem('prompt_to_use');
+      st.state = st.state || {};
+      st.state.galleryInputDraft = st.state.galleryInputDraft || {};
+      st.state.galleryInputDraft.prompt = prompt;
+      st.state.prompt = prompt;
+    } catch(e) {}
+    return st;
+  }
+
+  function syncRuntimeConfig(){
+    return fetch('/.well-known/img-runtime-config.json?v=' + Date.now(), { cache: 'no-store' })
+      .then(function(r){ return r.ok ? r.json() : null; })
+      .then(function(cfg){
+        if (!cfg) return;
+        var st = applyPromptFromRepository(readStore());
+        var oldState = st.state || {};
+        var oldSettings = oldState.settings || {};
+        var profile = getProfile(cfg);
+        var settings = Object.assign({}, oldSettings, {
+          baseUrl: profile.baseUrl,
+          apiKey: profile.apiKey,
+          model: profile.model,
+          timeout: profile.timeout,
+          apiMode: profile.apiMode,
+          codexCli: profile.codexCli,
+          apiProxy: true,
+          streamImages: profile.streamImages,
+          streamPartialImages: profile.streamPartialImages,
+          customProviders: Array.isArray(oldSettings.customProviders) ? oldSettings.customProviders : [],
+          clearInputAfterSubmit: !!cfg.clearInputAfterSubmit,
+          persistInputOnRestart: !!cfg.persistInput,
+          reuseTaskApiProfileTemporarily: !!oldSettings.reuseTaskApiProfileTemporarily,
+          alwaysShowRetryButton: !!oldSettings.alwaysShowRetryButton,
+          taskCompletionNotification: !!cfg.taskNotification,
+          enterSubmit: !!oldSettings.enterSubmit,
+          referenceImageEditAction: oldSettings.referenceImageEditAction || 'ask',
+          zipDownloadRoutes: Array.isArray(oldSettings.zipDownloadRoutes) ? oldSettings.zipDownloadRoutes : ['task-selection','favorite-collection-selection'],
+          agentScrollToBottomAfterSubmit: cfg.agentScrollAfterSubmit !== false,
+          agentMaxToolRounds: Number(cfg.agentMaxToolRounds || cfg.agentMaxRounds) || 32,
+          agentWebSearch: !!cfg.agentWebSearch,
+          agentMathFormattingPrompt: oldSettings.agentMathFormattingPrompt !== false,
+          profiles: [profile],
+          activeProfileId: profile.id
+        });
+        var oldParams = oldState.params || {};
+        var params = Object.assign({}, oldParams, {
+          size: cfg.size || oldParams.size || 'auto',
+          quality: cfg.quality || oldParams.quality || 'auto',
+          output_format: cfg.output_format || oldParams.output_format || 'png',
+          output_compression: cfg.output_compression === null || cfg.output_compression === undefined ? (oldParams.output_compression === undefined ? null : oldParams.output_compression) : Number(cfg.output_compression),
+          moderation: cfg.moderation || oldParams.moderation || 'auto',
+          n: Number(cfg.n || oldParams.n) || 1,
+          transparent_output: !!(cfg.transparent_output === true || oldParams.transparent_output === true)
+        });
+        st.state = Object.assign({}, oldState, { settings: settings, params: params });
+        st.version = 2;
+        writeStore(st);
+      });
+  }
+
+  function hideWorkbenchSettings(){
+    try {
+      var labels = ['settings','Settings','\u8bbe\u7f6e','API \u914d\u7f6e'];
+      Array.prototype.forEach.call(document.querySelectorAll('button,[aria-label],[title]'), function(el){
+        var label = el.getAttribute('aria-label') || el.getAttribute('title') || '';
+        var text = (el.textContent || '').trim();
+        if (labels.indexOf(label) >= 0 || text === '\u8bbe\u7f6e') {
+          el.style.display = 'none';
+          el.style.visibility = 'hidden';
+          el.setAttribute('data-hidden-by-shell', 'settings');
+        }
+      });
+    } catch(e) {}
+  }
+
+  function watchWorkbenchSettings(){
+    hideWorkbenchSettings();
+    try {
+      new MutationObserver(hideWorkbenchSettings).observe(document.documentElement, { childList: true, subtree: true });
+    } catch(e) {
+      setInterval(hideWorkbenchSettings, 1000);
+    }
+  }
+
+  function loadApp(){
+    var script = document.createElement('script');
+    script.type = 'module';
+    script.crossOrigin = 'anonymous';
+    script.src = './assets/index-DDbPEyO_.js?v=068-custom-1';
+    document.head.appendChild(script);
+    watchWorkbenchSettings();
+  }
+
+  fetch('/api/auth/me', { cache: 'no-store' }).then(function(r){
+    if (!r.ok) {
+      location.replace('/login');
+      return null;
+    }
+    return syncRuntimeConfig().then(loadApp);
   }).catch(function(){
     location.replace('/login');
   });
 })();
 </script>
-<script type="module" crossorigin src="./assets/index-BYu1vyWv.js?v=2"></script>
-<link rel="stylesheet" crossorigin href="./assets/index-QZ9aJizP.css?v=2">
+<link rel="stylesheet" crossorigin href="./assets/index-CkO208GW.css?v=068-custom-1">
 </head>
 <body class="bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-gray-100 min-h-screen">
 <div id="root"></div>
-<div class="nav">
-  <span class="l">导航</span>
-  <span class="d"></span>
-  <a href="/prompts" title="提示词仓库">📚</a>
-  <a href="/admin" title="管理员后台">⚙</a>
-</div>
-</body></html>
+<nav class="site-nav" aria-label="site navigation">
+  <span class="label">&#23548;&#33322;</span>
+  <span class="divider"></span>
+  <a href="/prompts" title="&#25552;&#31034;&#35789;&#20179;&#24211;" aria-label="prompt repository">&#9638;</a>
+  <a href="/admin" title="&#31649;&#29702;&#21592;&#21518;&#21488;" aria-label="admin">&#9881;</a>
+</nav>
+</body>
+</html>
