@@ -92,6 +92,15 @@ function isEventStream(headers) {
   return ct.indexOf('text/event-stream') === 0;
 }
 
+
+// Detect upstream timeout/524 error
+function detectUpstreamTimeout(bodyText, status) {
+  if (status === 524) return true;
+  if (bodyText.indexOf('524: A timeout occurred') >= 0 || bodyText.indexOf('Error code 524') >= 0) return true;
+  if (bodyText.indexOf('cloudflare') >= 0 && bodyText.indexOf('timeout') >= 0) return true;
+  if (status >= 502 && status < 600 && bodyText.indexOf('<!DOCTYPE') === 0) return true;
+  return false;
+}
 function truncateBody(text) {
   if (!text) return '';
   return text.length > 2000 ? text.substring(0, 2000) + '...' : text;
@@ -186,10 +195,20 @@ export async function onRequest(ctx) {
       });
     }
 
+    if (detectUpstreamTimeout(bodyText, response.status)) {
+      return json({
+        error: 'API \u4e0a\u6e38\u8d85\u65f6(524)\uff0c\u751f\u56fe\u65f6\u95f4\u8fc7\u957f\u5bfc\u81f4\u8fde\u63a5\u65ad\u5f00\u3002'
+          + '\u5efa\u8bae\uff1a\u5728\u7ba1\u7406\u5458\u540e\u53f0\u5f00\u542f\u201c\u6d41\u5f0f\u8f93\u51fa\u201d\u5e76\u5207\u6362\u4e3a Responses API \u6a21\u5f0f\uff0c'
+          + '\u6216\u4f7f\u7528\u66f4\u5feb\u7684 API \u670d\u52a1\u5546\u3001\u964d\u4f4e\u56fe\u7247\u5c3a\u5bf8/\u8d28\u91cf\u3001\u51cf\u5c11\u6bcf\u6b21\u751f\u6210\u6570\u91cf\u3002'
+          + '\u5f53\u524d\u8bf7\u6c42\u72b6\u6001: ' + response.status + ' ' + response.statusText,
+        status: 504,
+        upstreamType: response.headers.get('Content-Type'),
+        detail: truncateBody(bodyText)
+      }, 504);
+    }
+
     return json({
-      error: isJsonResponse(response.headers)
-        ? 'API \u4e0a\u6e38\u8fd4\u56de\u975e\u6cd5 JSON \u54cd\u5e94'
-        : 'API \u4e0a\u6e38\u8fd4\u56de\u975e\u6cd5\u54cd\u5e94',
+      error: 'API \u4e0a\u6e38\u8fd4\u56de\u975e\u6cd5\u54cd\u5e94',
       status: response.status,
       upstreamType: response.headers.get('Content-Type'),
       parseError: parseError,

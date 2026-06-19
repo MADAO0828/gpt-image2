@@ -60,7 +60,7 @@ export async function onRequest(ctx) {
     apiMode: 'images',
     timeout: 600,
     apiProxy: true,
-    streamImages: false,
+    streamImages: true,
     size: '',
     quality: 'standard',
     output_format: 'png',
