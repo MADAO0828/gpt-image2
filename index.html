@@ -25,12 +25,12 @@ body{margin:0;min-height:100vh;background:#111827;color:#cbd5e1;font-family:-app
 .spinner{width:40px;height:40px;border:3px solid rgba(255,255,255,0.04);border-top-color:#6366f1;border-radius:50%;animation:spin .7s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 .loading-screen p{margin-top:20px;font-size:14px;color:#64748b;letter-spacing:.3px}
-.site-nav{position:fixed;top:10px;right:12px;z-index:9999;display:flex;align-items:center;gap:2px;background:rgba(17,24,39,.78);border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:3px;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
-.site-nav a{width:32px;height:32px;border-radius:7px;display:flex;align-items:center;justify-content:center;text-decoration:none;font-size:15px;color:#cbd5e1;transition:background .18s,color .18s,transform .18s}
-.site-nav a:hover{background:rgba(59,130,246,.18);color:#fff}
+.site-nav{position:fixed;top:10px;right:12px;z-index:9999;display:flex;align-items:center;gap:2px;background:rgba(255,255,255,.85);border:1px solid rgba(0,0,0,0.08);border-radius:10px;padding:3px;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);box-shadow:0 2px 8px rgba(0,0,0,0.06)}html.dark .site-nav{background:rgba(17,24,39,.78);border-color:rgba(255,255,255,.1)}
+.site-nav a{width:32px;height:32px;border-radius:7px;display:flex;align-items:center;justify-content:center;text-decoration:none;font-size:15px;color:#475569;transition:background .18s,color .18s,transform .18s}html.dark .site-nav a{color:#cbd5e1}
+.site-nav a:hover{background:rgba(99,102,241,0.12);color:#6366f1}html.dark .site-nav a:hover{background:rgba(59,130,246,.18);color:#fff}
 .site-nav a:active{transform:scale(.94)}
-.site-nav .label{font-size:11px;color:#94a3b8;padding:0 7px 0 5px;letter-spacing:.02em}
-.site-nav .divider{width:1px;height:18px;background:rgba(255,255,255,.12);margin:0 2px}
+.site-nav .label{font-size:11px;color:#64748b;padding:0 7px 0 5px;letter-spacing:.02em}html.dark .site-nav .label{color:#94a3b8}
+.site-nav .divider{width:1px;height:18px;background:rgba(0,0,0,0.08);margin:0 2px}html.dark .site-nav .divider{background:rgba(255,255,255,.12)}
 @media(max-width:640px){.site-nav{top:8px;right:8px}.site-nav .label{display:none}.site-nav a{width:34px;height:34px}}
 </style>
 <script>
@@ -50,10 +50,8 @@ if(!('noModule' in HTMLScriptElement.prototype)){
 <script>
 (function(){
   var storeKey = 'gpt-image-playground';
-  var loadingEl = document.getElementById('loading-screen');
-
   function hideLoading(){
-    if (loadingEl) { loadingEl.classList.add('hidden'); }
+    var el=document.getElementById('loading-screen');if(el){el.classList.add('hidden');}
   }
 
   function readStore(){
@@ -192,15 +190,28 @@ if(!('noModule' in HTMLScriptElement.prototype)){
     return r;
   });
 
+  // Safety timeout: if nothing happens within 25s, force redirect to login
+  window.toggleTheme=function(){var t=localStorage.getItem("theme")||"dark";var n=t==="dark"?"light":"dark";localStorage.setItem("theme",n);document.documentElement.classList.toggle("dark",n==="dark");var b=document.getElementById("theme-toggle");if(b)b.textContent=n==="dark"?"\u2600\ufe0f":"\uD83C\uDF19";};
+  var safetyTimer = setTimeout(function(){
+    location.replace('/login');
+  }, 25000);
+
   Promise.all([authPromise, configPromise]).then(function(){
+    clearTimeout(safetyTimer);
     loadApp();
   }).catch(function(){
+    clearTimeout(safetyTimer);
     location.replace('/login');
   });
 })();
 </script>
 <link rel="stylesheet" crossorigin href="./assets/index-CkO208GW.css?v=068-custom-1">
-</head>
+<script>
+(function(){
+  var t=localStorage.getItem("theme")||"dark";
+  document.documentElement.classList.toggle("dark",t==="dark");
+})();
+</script></head>
 <body>
 <div id="loading-screen" class="loading-screen">
   <div class="spinner"></div>
@@ -211,7 +222,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
   <span class="label">&#23548;&#33322;</span>
   <span class="divider"></span>
   <a href="/prompts" title="&#25552;&#31034;&#35789;&#20179;&#24211;" aria-label="prompt repository">&#9638;</a>
-  <a href="/admin" title="&#31649;&#29702;&#21592;&#21518;&#21488;" aria-label="admin">&#9881;</a>
+  <a href="javascript:toggleTheme()" id="theme-toggle" title="\u5207\u6362\u4e3b\u9898" style="font-size:16px">\u2600\ufe0f</a><a href="/admin" title="&#31649;&#29702;&#21592;&#21518;&#21488;" aria-label="admin">&#9881;</a>
 </nav>
 </body>
 </html>

@@ -6,7 +6,7 @@
 <title>提示词仓库 - AI 工作台</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#0b0f19;color:#e4e8ee;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;min-height:100vh}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;min-height:100vh}
 .h{position:sticky;top:0;z-index:50;background:rgba(11,15,25,0.85);backdrop-filter:blur(20px);border-bottom:1px solid rgba(255,255,255,0.06);padding:0 20px;height:56px;display:flex;align-items:center;justify-content:space-between}
 .hl{font-size:18px;font-weight:700;background:linear-gradient(135deg,#6366f1,#8b5cf6);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
 .b{padding:8px 16px;border-radius:8px;font-size:13px;cursor:pointer;border:none;text-decoration:none;color:#e4e8ee;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.06)}
@@ -41,8 +41,38 @@ body{background:#0b0f19;color:#e4e8ee;font-family:-apple-system,BlinkMacSystemFo
 .modal-p{font-size:12px;color:#c4cad8;line-height:1.6;margin-bottom:12px;white-space:pre-wrap;max-height:400px;overflow-y:auto}
 .modal-acts{display:flex;gap:8px;flex-wrap:wrap}
 .ts{position:fixed;top:16px;right:16px;z-index:9999;padding:8px 16px;border-radius:8px;font-size:12px;background:rgba(34,197,94,0.12);color:#22c55e;border:1px solid rgba(34,197,94,0.25)}
-</style></head><body>
-<header class="h"><span class="hl">📚 提示词仓库</span><a href="/" class="b">← 返回</a></header>
+</style>
+<style>
+:root{--bg:#f5f7fa;--surface:#fff;--border:rgba(0,0,0,0.08);--text:#1e293b;--text2:#64748b;--accent:#6366f1;--card-bg:#fff;--input-bg:#fff;--overlay:rgba(0,0,0,0.4);--modal-bg:#fff;--toast-bg:rgba(34,197,94,0.12)}
+html.dark{--bg:#0b0f19;--surface:rgba(255,255,255,0.02);--border:rgba(255,255,255,0.06);--text:#e4e8ee;--text2:#8892a6;--card-bg:rgba(255,255,255,0.02);--input-bg:rgba(0,0,0,0.3);--overlay:rgba(0,0,0,0.7);--modal-bg:#131826;--toast-bg:rgba(34,197,94,0.12)}
+body{background:var(--bg);color:var(--text)}
+.card{background:var(--card-bg);border-color:var(--border)}
+.modal{background:var(--modal-bg);border-color:var(--border)}
+.overlay{background:var(--overlay)}
+.srch input{background:var(--input-bg);color:var(--text);border-color:var(--border)}
+.cat{color:var(--text2);border-color:var(--border)}
+.cat.on{background:rgba(99,102,241,0.12);color:#818cf8;border-color:rgba(99,102,241,0.25)}
+.h{background:rgba(255,255,255,0.85);backdrop-filter:blur(20px);border-color:var(--border)}
+html.dark .h{background:rgba(11,15,25,0.85)}
+.hl{background:linear-gradient(135deg,#6366f1,#8b5cf6);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.btn{color:var(--text);background:var(--surface);border-color:var(--border)}
+.ts{background:var(--toast-bg);color:#22c55e;border-color:rgba(34,197,94,0.25)}
+</style>
+<script>
+(function(){
+  function gt(){return localStorage.getItem("theme")||"dark"}
+  function st(t){
+    localStorage.setItem("theme",t);
+    document.documentElement.classList.toggle("dark",t==="dark");
+    var b=document.getElementById("theme-toggle");
+    if(b)b.textContent=t==="dark"?"\u2600\ufe0f":"\uD83C\uDF19";
+  }
+  st(gt());
+  window.toggleTheme=function(){st(gt()==="dark"?"light":"dark")};
+})();
+</script>
+</head><body>
+<header class="h"><span class="hl">📚 提示词仓库</span><button onclick="toggleTheme()" id="theme-toggle" class="b" style="font-size:16px;padding:5px 10px;margin-right:4px">\u2600\ufe0f</button><a href="/" class="b">← 返回</a></header>
 <div class="c">
 <div class="srch"><input id="s" placeholder="🔍 搜索提示词.." /></div>
 <div class="cats" id="cats"><div class="ld">准备加载...</div></div>
