@@ -227,7 +227,7 @@ document.querySelectorAll('.tab').forEach(function(tab) {
     if (tab.dataset.tab === 'api') loadSettings();
   });
 });
-function init() { try {
+function init() {
   fetch('/api/auth/me?t=' + Date.now(), { cache: 'no-store' }).then(function(r) {
     return r.json().then(function(d) { return { ok: r.ok, data: d }; });
   }).then(function(r) {
@@ -235,7 +235,8 @@ function init() { try {
     cu = r.data;
     if (cu.role !== 'admin') { location.replace('/'); return; }
     document.getElementById('adminInfo').textContent = '管理员 ' + cu.username;
-    loadUsers(); } catch(e) { tc.innerHTML = '<div class="empty">Error: ' + e.message + '</div>'; } }.catch(function() {
+    loadUsers();
+  }).catch(function() {
     tc.innerHTML = '<div class="empty">验证失败</div>';
   });
 }
@@ -245,12 +246,14 @@ function loadUsers() {
   var tmr = setTimeout(function(){ ac.abort(); tc.innerHTML = '<div class="empty">加载超时</div>'; }, 20000);
   fetch('/api/admin/users?t=' + Date.now(), { cache: 'no-store', signal: ac.signal }).then(function(r) {
     clearTimeout(tmr);
-    return r.json().then(function(d) { return { ok: r.ok, data: d }; }); } catch(e) { tc.innerHTML = '<div class="empty">Error: ' + e.message + '</div>'; } }.then(function(r) {
+    return r.json().then(function(d) { return { ok: r.ok, data: d }; });
+  }).then(function(r) {
     if (!r) return;
     if (!r.ok) { tc.innerHTML = '<div class="empty">加载失败: ' + (r.data.error || '') + '</div>'; return; }
     all = r.data.users || [];
     renderUsers();
-    updateStats(); } catch(e) { tc.innerHTML = '<div class="empty">Error: ' + e.message + '</div>'; } }.catch(function(err) {
+    updateStats();
+  }).catch(function(err) {
     if (err.name === 'AbortError') { return; }
     clearTimeout(tmr);
     tc.innerHTML = '<div class="empty">网络错误: ' + err.message + '</div>';
@@ -290,7 +293,8 @@ function renderUsers() {
       atd.appendChild(db);
     }
     tr.appendChild(atd);
-    tb.appendChild(tr); } catch(e) { tc.innerHTML = '<div class="empty">Error: ' + e.message + '</div>'; } };
+    tb.appendChild(tr);
+  });
   tbl.appendChild(tb);
   wrap.appendChild(tbl);
 }
@@ -353,7 +357,8 @@ function doSaveSettings(isAuto) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data)
   }).then(function(r) {
-    return r.json(); } catch(e) { tc.innerHTML = '<div class="empty">Error: ' + e.message + '</div>'; } }.then(function(d) {
+    return r.json();
+  }).then(function(d) {
     if (!isAuto) {
       var btn = document.getElementById('saveSettingsBtn');
       btn.disabled = false;
@@ -373,7 +378,8 @@ function doSaveSettings(isAuto) {
       btn.textContent = '保存设置';
     }
     T('网络错误', 'e');
-    setSaveStatus('idle'); } catch(e) { tc.innerHTML = '<div class="empty">Error: ' + e.message + '</div>'; } };
+    setSaveStatus('idle');
+  });
 }
 function scheduleAutoSave() {
   clearTimeout(autoSaveTimer);
@@ -383,13 +389,14 @@ function bindAutoSave() {
   var fields = ['cfgBaseUrl','cfgApiKey','cfgModel','cfgTimeout','cfgApiMode',
     'cfgApiProxy','cfgSize','cfgQuality','cfgOutput','cfgCodexCli','cfgStreamImages',
     'cfgStreamPartial','cfgPersistInput','cfgClearInput','cfgTaskNotif',
-    'cfgAgentSearch','cfgAgentRounds','cfgAgentScroll','cfgActiveProfile', 'cfgAlwaysRetry','cfgReuseProfile','cfgMathFormat','cfgRefEditAction','cfgEnterSubmit',
+    'cfgAgentSearch','cfgAgentRounds','cfgAgentScroll','cfgActiveProfile',\n    'cfgAlwaysRetry','cfgReuseProfile','cfgMathFormat','cfgRefEditAction','cfgEnterSubmit',
     'cfgCustomProviders','cfgProfiles'];
   fields.forEach(function(id) {
     var el = document.getElementById(id);
     if (!el) return;
     el.addEventListener('change', scheduleAutoSave);
-    el.addEventListener('input', scheduleAutoSave); } catch(e) { tc.innerHTML = '<div class="empty">Error: ' + e.message + '</div>'; } };
+    el.addEventListener('input', scheduleAutoSave);
+  });
 }
 function loadSettings() {
   var ac = new AbortController();
@@ -429,7 +436,8 @@ function loadSettings() {
     if (s.profiles && Array.isArray(s.profiles)) { profilesData = s.profiles; renderProfiles(); }
   }).catch(function(err) {
     if (err.name === 'AbortError') return;
-    clearTimeout(tmr); } catch(e) { tc.innerHTML = '<div class="empty">Error: ' + e.message + '</div>'; } };
+    clearTimeout(tmr);
+  });
 }
 /* ===== Profile Management ===== */
 var profilesData = [];
@@ -544,7 +552,8 @@ document.getElementById('fetchModelsBtn').addEventListener('click', function() {
     .catch(function() {
       btn.disabled = false; btn.textContent = '\uD83D\uDD04';
       listEl.innerHTML = '<span style="color:var(--red)">网络错误</span>';
-    }); } catch(e) { tc.innerHTML = '<div class="empty">Error: ' + e.message + '</div>'; } };
+    });
+});
 document.getElementById('saveSettingsBtn').addEventListener('click', function() { doSaveSettings(false); });
 function openAdd() {
   document.getElementById('mt').textContent = '添加用户';
@@ -563,9 +572,11 @@ function closeModal() { modal.style.display = 'none'; }
 function delUser(u) {
   if (!confirm('确定删除 ' + u.username + ' ？')) return;
   fetch('/api/admin/users/' + u.id, { method: 'DELETE' }).then(function(r) {
-    return r.json(); } catch(e) { tc.innerHTML = '<div class="empty">Error: ' + e.message + '</div>'; } }.then(function(r) {
+    return r.json();
+  }).then(function(r) {
     if (r.success) { T('已删除', 's'); loadUsers(); }
-    else T(r.error || '失败', 'e'); } catch(e) { tc.innerHTML = '<div class="empty">Error: ' + e.message + '</div>'; } }.catch(function() { T('网络错误', 'e'); });
+    else T(r.error || '失败', 'e');
+  }).catch(function() { T('网络错误', 'e'); });
 }
 function saveUser(ev) {
   ev.preventDefault();
@@ -583,7 +594,8 @@ function saveUser(ev) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   }).then(function(t) {
-    return t.json().then(function(o) { return { ok: t.ok, data: o }; }); } catch(e) { tc.innerHTML = '<div class="empty">Error: ' + e.message + '</div>'; } }.then(function(t) {
+    return t.json().then(function(o) { return { ok: t.ok, data: o }; });
+  }).then(function(t) {
     if (t.ok) { T(id ? '已更新' : '已创建', 's'); closeModal(); loadUsers(); }
     else { T(t.data.error || '失败', 'e'); }
   }).catch(function() { T('网络错误', 'e'); });
@@ -616,7 +628,8 @@ document.getElementById('fetchModelsBtn').addEventListener('click', function() {
     .catch(function() {
       btn.disabled = false; btn.textContent = '\uD83D\uDD04';
       listEl.innerHTML = '<span style="color:var(--red)">网络错误</span>';
-    }); } catch(e) { tc.innerHTML = '<div class="empty">Error: ' + e.message + '</div>'; } };
+    });
+});
 bindAutoSave();
 init();
 </script>
