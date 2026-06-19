@@ -6,23 +6,23 @@
 <meta http-equiv="Pragma" content="no-cache" />
 <meta http-equiv="Expires" content="0" />
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover" />
-<meta name="theme-color" content="#111827" />
+<meta name="theme-color" id="meta-theme-color" content="#111827" />
 <meta name="apple-mobile-web-app-capable" content="no" />
 <meta name="apple-mobile-web-app-title" content="GPT Image" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <link rel="manifest" href="./manifest.webmanifest" />
 <link rel="apple-touch-icon" href="./pwa-icon.svg" />
 <link rel="icon" href="./pwa-icon.svg" type="image/svg+xml" />
-<title>AI &#24037;&#20316;&#21488;</title>
-<link rel="preload" href="./assets/index-DDbPEyO_.js?v=068-custom-1" as="script" crossorigin="anonymous">
-<link rel="preload" href="./assets/index-CkO208GW.css?v=068-custom-1" as="style" crossorigin="anonymous">
+<title>AI 工作台</title>
+<link rel="preload" href="./assets/index-BEND6-M4.js?v=068-custom-1" as="script" crossorigin="anonymous">
+<link rel="preload" href="./assets/index-BCs8_ts3.css?v=068-custom-1" as="style" crossorigin="anonymous">
 <style>
 *{box-sizing:border-box}
-body{margin:0;min-height:100vh;background:#111827;color:#cbd5e1;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+body{margin:0;min-height:100vh;background:var(--loading-bg);color:#cbd5e1;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
 [aria-label="settings"],[aria-label="Settings"]{display:none!important;visibility:hidden!important}
-.loading-screen{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#111827;z-index:99999}
+.loading-screen{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--loading-bg);z-index:99999}
 .loading-screen.hidden{opacity:0;pointer-events:none;transition:opacity .35s}
-.spinner{width:40px;height:40px;border:3px solid rgba(255,255,255,0.04);border-top-color:#6366f1;border-radius:50%;animation:spin .7s linear infinite}
+.spinner{width:40px;height:40px;border:3px solid var(--loading-spinner);border-top-color:var(--loading-spinner-top);border-radius:50%;animation:spin .7s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 .loading-screen p{margin-top:20px;font-size:14px;color:#64748b;letter-spacing:.3px}
 .site-nav{position:fixed;top:10px;right:12px;z-index:9999;display:flex;align-items:center;gap:2px;background:#fff;border:1px solid rgba(0,0,0,0.08);border-radius:10px;padding:3px;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);box-shadow:0 2px 8px rgba(0,0,0,0.06)}html.dark .site-nav{background:rgba(17,24,39,.78);border-color:rgba(255,255,255,.1)}
@@ -32,9 +32,8 @@ body{margin:0;min-height:100vh;background:#111827;color:#cbd5e1;font-family:-app
 .site-nav .label{font-size:11px;color:#64748b;padding:0 7px 0 5px;letter-spacing:.02em}html.dark .site-nav .label{color:#94a3b8}
 .site-nav .divider{width:1px;height:18px;background:rgba(0,0,0,0.08);margin:0 2px}html.dark .site-nav .divider{background:rgba(255,255,255,.12)}
 @media(max-width:640px){.site-nav{top:8px;right:8px}.site-nav .label{display:none}.site-nav a{width:34px;height:34px}}
-
-html:not(.dark) body{background:#fff!important;color:#000!important}
-html.dark body{background:#000!important;color:#fff!important}
+:root{--loading-bg:#e5e7eb;--loading-text:#475569;--loading-spinner:rgba(99,102,241,0.3);--loading-spinner-top:#6366f1}
+html.dark{--loading-bg:#111827;--loading-text:#64748b;--loading-spinner:rgba(255,255,255,0.04);--loading-spinner-top:#6366f1}
 </style>
 <script>
 (function(){
@@ -47,7 +46,7 @@ html.dark body{background:#000!important;color:#fff!important}
 </script>
 <script>
 if(!('noModule' in HTMLScriptElement.prototype)){
-  document.write('<body style="background:#111827;color:#cbd5e1;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;text-align:center;font-family:sans-serif"><div><h2 style="color:#60a5fa;margin-bottom:8px">&#27983;&#35272;&#22120;&#19981;&#20860;&#23481;</h2><p>&#35831;&#20351;&#29992;&#26368;&#26032;&#29256; Chrome&#12289;Edge &#25110; Safari</p></div></body>');
+  document.write('<body style="background:#111827;color:#cbd5e1;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;text-align:center;font-family:sans-serif"><div><h2 style="color:#60a5fa;margin-bottom:8px">浏览器不兼容</h2><p>请使用最新版 Chrome、Edge 或 Safari</p></div></body>');
 }
 </script>
 <script>
@@ -56,7 +55,6 @@ if(!('noModule' in HTMLScriptElement.prototype)){
   function hideLoading(){
     var el=document.getElementById('loading-screen');if(el){el.classList.add('hidden');}
   }
-
   function readStore(){
     try {
       var raw = localStorage.getItem(storeKey);
@@ -65,18 +63,16 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       return { state: {}, version: 2 };
     }
   }
-
   function writeStore(next){
     try { localStorage.setItem(storeKey, JSON.stringify(next)); } catch(e) {}
   }
-
   function getProfile(cfg){
     return {
       id: 'default-openai',
-      name: '\u4e91\u7aef\u914d\u7f6e',
+      name: '云端配置',
       provider: 'openai',
       baseUrl: cfg.defaultApiUrl || '',
-      apiKey: 'cloudflare-proxy',
+      apiKey: cfg.apiKey || 'cloudflare-proxy',
       model: cfg.defaultModel || 'gpt-image-2',
       timeout: Number(cfg.timeout) || 6000,
       apiMode: cfg.apiMode || 'images',
@@ -87,7 +83,6 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       streamPartialImages: Number(cfg.streamPartialImages) || 1
     };
   }
-
   function applyPromptFromRepository(st){
     try {
       var prompt = sessionStorage.getItem('prompt_to_use');
@@ -100,7 +95,6 @@ if(!('noModule' in HTMLScriptElement.prototype)){
     } catch(e) {}
     return st;
   }
-
   function syncRuntimeConfig(){
     return fetch('/.well-known/img-runtime-config.json?v=' + Date.now(), { cache: 'no-store' })
       .then(function(r){ return r.ok ? r.json() : null; })
@@ -110,6 +104,8 @@ if(!('noModule' in HTMLScriptElement.prototype)){
         var oldState = st.state || {};
         var oldSettings = oldState.settings || {};
         var profile = getProfile(cfg);
+        var cfgProfiles = Array.isArray(cfg.profiles) && cfg.profiles.length > 0 ? cfg.profiles : null;
+        var cfgProviders = Array.isArray(cfg.customProviders) && cfg.customProviders.length > 0 ? cfg.customProviders : null;
         var settings = Object.assign({}, oldSettings, {
           baseUrl: profile.baseUrl,
           apiKey: profile.apiKey,
@@ -120,21 +116,21 @@ if(!('noModule' in HTMLScriptElement.prototype)){
           apiProxy: true,
           streamImages: profile.streamImages,
           streamPartialImages: profile.streamPartialImages,
-          customProviders: Array.isArray(oldSettings.customProviders) ? oldSettings.customProviders : [],
+          customProviders: cfgProviders || (Array.isArray(oldSettings.customProviders) ? oldSettings.customProviders : []),
           clearInputAfterSubmit: !!cfg.clearInputAfterSubmit,
           persistInputOnRestart: !!cfg.persistInput,
-          reuseTaskApiProfileTemporarily: !!oldSettings.reuseTaskApiProfileTemporarily,
-          alwaysShowRetryButton: !!oldSettings.alwaysShowRetryButton,
           taskCompletionNotification: !!cfg.taskNotification,
-          enterSubmit: !!oldSettings.enterSubmit,
-          referenceImageEditAction: oldSettings.referenceImageEditAction || 'ask',
+          reuseTaskApiProfileTemporarily: cfg.reuseProfile !== undefined ? !!cfg.reuseProfile : !!oldSettings.reuseTaskApiProfileTemporarily,
+          alwaysShowRetryButton: cfg.alwaysShowRetry !== undefined ? !!cfg.alwaysShowRetry : !!oldSettings.alwaysShowRetryButton,
+          enterSubmit: cfg.enterSubmit !== undefined ? !!cfg.enterSubmit : !!oldSettings.enterSubmit,
+          referenceImageEditAction: cfg.refEditAction || oldSettings.referenceImageEditAction || 'ask',
           zipDownloadRoutes: Array.isArray(oldSettings.zipDownloadRoutes) ? oldSettings.zipDownloadRoutes : ['task-selection','favorite-collection-selection'],
           agentScrollToBottomAfterSubmit: cfg.agentScrollAfterSubmit !== false,
           agentMaxToolRounds: Number(cfg.agentMaxToolRounds || cfg.agentMaxRounds) || 32,
           agentWebSearch: !!cfg.agentWebSearch,
-          agentMathFormattingPrompt: oldSettings.agentMathFormattingPrompt !== false,
-          profiles: [profile],
-          activeProfileId: profile.id
+          agentMathFormattingPrompt: cfg.mathFormatting !== undefined ? !!cfg.mathFormatting : oldSettings.agentMathFormattingPrompt !== false,
+          profiles: cfgProfiles || [profile],
+          activeProfileId: cfg.activeProfileId || profile.id
         });
         var oldParams = oldState.params || {};
         var params = Object.assign({}, oldParams, {
@@ -151,14 +147,13 @@ if(!('noModule' in HTMLScriptElement.prototype)){
         writeStore(st);
       });
   }
-
   function hideWorkbenchSettings(){
     try {
-      var labels = ['settings','Settings','\u8bbe\u7f6e','API \u914d\u7f6e'];
+      var labels = ['settings','Settings','设置','API 配置'];
       Array.prototype.forEach.call(document.querySelectorAll('button,[aria-label],[title]'), function(el){
         var label = el.getAttribute('aria-label') || el.getAttribute('title') || '';
         var text = (el.textContent || '').trim();
-        if (labels.indexOf(label) >= 0 || text === '\u8bbe\u7f6e') {
+        if (labels.indexOf(label) >= 0 || text === '设置') {
           el.style.display = 'none';
           el.style.visibility = 'hidden';
           el.setAttribute('data-hidden-by-shell', 'settings');
@@ -166,7 +161,6 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       });
     } catch(e) {}
   }
-
   function watchWorkbenchSettings(){
     hideWorkbenchSettings();
     try {
@@ -175,30 +169,44 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       setInterval(hideWorkbenchSettings, 1000);
     }
   }
-
   function loadApp(){
     hideLoading();
     var script = document.createElement('script');
     script.type = 'module';
     script.crossOrigin = 'anonymous';
-    script.src = './assets/index-DDbPEyO_.js?v=068-custom-1';
+    script.src = './assets/index-BEND6-M4.js?v=068-custom-1';
     document.head.appendChild(script);
     watchWorkbenchSettings();
   }
-
-  // Parallel: start config fetch + auth check at the same time
   var configPromise = syncRuntimeConfig();
   var authPromise = fetch('/api/auth/me', { cache: 'no-store' }).then(function(r){
     if (!r.ok) throw new Error('not_authenticated');
     return r;
   });
-
-  // Safety timeout: if nothing happens within 25s, force redirect to login
-  window.toggleTheme=function(){var t=localStorage.getItem("theme")||"light";var n=t==="dark"?"light":"dark";localStorage.setItem("theme",n);document.documentElement.classList.toggle("dark",n==="dark");var b=document.getElementById("theme-toggle");if(b)b.textContent=n==="dark"?"\u2600\ufe0f":"\uD83C\uDF19";};
-  var safetyTimer = setTimeout(function(){
-    location.replace('/login');
-  }, 25000);
-
+  window.__themeState={themeKey:'gpt-image2-theme'};
+  window.__applyTheme=function(){
+    var t=localStorage.getItem(window.__themeState.themeKey)||'system';
+    var isDark=t==='dark'||(t==='system'&&window.matchMedia('(prefers-color-scheme: dark)').matches);
+    document.documentElement.classList.toggle('dark',isDark);
+    var meta=document.getElementById('meta-theme-color');
+    if(meta)meta.content=isDark?'#111827':'#f8fafc';
+    var btn=document.getElementById('theme-toggle');
+    if(btn){btn.textContent=t==='light'?'☀️':t==='dark'?'🌙':'💻';btn.setAttribute('data-theme',t);}
+  };
+  window.toggleTheme=function(){
+    var t=localStorage.getItem(window.__themeState.themeKey)||'system';
+    var n=t==='light'?'dark':t==='dark'?'system':'light';
+    localStorage.setItem(window.__themeState.themeKey,n);
+    window.__applyTheme();
+  };
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change',function(){
+    if((localStorage.getItem(window.__themeState.themeKey)||'system')==='system')window.__applyTheme();
+  });
+  var safetyTimer = setTimeout(function(){ location.replace('/login'); }, 30000);
+  authPromise.then(function(){
+    clearTimeout(safetyTimer);
+    safetyTimer = setTimeout(function(){ location.replace('/login'); }, 25000);
+  });
   Promise.all([authPromise, configPromise]).then(function(){
     clearTimeout(safetyTimer);
     loadApp();
@@ -208,24 +216,21 @@ if(!('noModule' in HTMLScriptElement.prototype)){
   });
 })();
 </script>
-<link rel="stylesheet" crossorigin href="./assets/index-CkO208GW.css?v=068-custom-1">
-<script>
-(function(){
-  var t=localStorage.getItem("theme")||"light";
-  document.documentElement.classList.toggle("dark",t==="dark");
-})();
-</script></head>
+<link rel="stylesheet" crossorigin href="./assets/index-BCs8_ts3.css?v=068-custom-1">
+</head>
 <body>
 <div id="loading-screen" class="loading-screen">
   <div class="spinner"></div>
-  <p>&#21152;&#36733;&#20013;...</p>
+  <p>加载中...</p>
 </div>
 <div id="root"></div>
 <nav class="site-nav" aria-label="site navigation">
-  <span class="label">&#23548;&#33322;</span>
+  <span class="label">导航</span>
   <span class="divider"></span>
-  <a href="/prompts" title="&#25552;&#31034;&#35789;&#20179;&#24211;" aria-label="prompt repository">&#9638;</a>
-  <a href="javascript:toggleTheme()" id="theme-toggle" title="\u5207\u6362\u4e3b\u9898" style="font-size:16px">\u2600\ufe0f</a><a href="/admin" title="&#31649;&#29702;&#21592;&#21518;&#21488;" aria-label="admin">&#9881;</a>
+  <a href="/prompts" title="提示词仓库" aria-label="prompt repository">📚</a>
+  <a href="javascript:toggleTheme()" id="theme-toggle" title="切换主题" style="font-size:16px">☀️</a>
+  <a href="/admin" title="管理员后台" aria-label="admin">⚙</a>
 </nav>
+<script>window.__applyTheme();</script>
 </body>
 </html>

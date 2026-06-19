@@ -4,81 +4,112 @@
 <meta charset="UTF-8" />
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-<title>AI工作台 - 登录</title>
+<meta name="theme-color" id="meta-theme-color" content="#0f172a" />
+<title>AI 工作台 - 登录</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:linear-gradient(135deg,#0f172a 0%,#1e293b 50%,#0f172a 100%);min-height:100vh;display:flex;align-items:center;justify-content:center;color:#e2e8f0;padding:20px}
-.card{background:rgba(30,41,59,0.8);backdrop-filter:blur(20px);border:1px solid rgba(148,163,184,0.15);border-radius:16px;padding:32px 24px;width:100%;max-width:380px;box-shadow:0 25px 50px rgba(0,0,0,0.4)}
-@media(max-width:400px){.card{padding:24px 20px;border-radius:12px}}
-.logo{text-align:center;margin-bottom:28px}
-.logo h1{font-size:26px;font-weight:700;background:linear-gradient(135deg,#38bdf8,#818cf8);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
-.logo p{color:#64748b;font-size:13px;margin-top:4px}
-.fg{margin-bottom:18px}
-.fg label{display:block;font-size:13px;font-weight:500;color:#94a3b8;margin-bottom:6px}
-.fg input{width:100%;padding:12px 14px;background:rgba(15,23,42,0.6);border:1px solid rgba(148,163,184,0.2);border-radius:10px;color:#e2e8f0;font-size:15px;outline:none;transition:border-color 0.2s}
-.fg input:focus{border-color:#38bdf8;box-shadow:0 0 0 3px rgba(56,189,248,0.1)}
-.fg input::placeholder{color:#475569}
-.btn{width:100%;padding:12px;background:linear-gradient(135deg,#38bdf8,#818cf8);border:none;border-radius:10px;color:#fff;font-size:16px;font-weight:600;cursor:pointer;transition:opacity 0.2s,transform 0.1s;-webkit-appearance:none}
-.btn:hover{opacity:0.9}
-.btn:active{transform:scale(0.98)}
-.btn:disabled{opacity:0.5;cursor:not-allowed}
-.err{background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.3);border-radius:10px;padding:10px 14px;font-size:13px;color:#fca5a5;margin-bottom:16px;display:none}
-.err.show{display:block}
-</style>
-
-<style>
-:root{--bg-gradient:#fff;--card-bg:#fff;--card-border:rgba(0,0,0,0.08);--text:#000;--text2:#475569;--text3:#000;--input-bg:#fff;--input-border:rgba(0,0,0,0.12);--input-text:#000;--input-placeholder:#94a3b8;--shadow:rgba(0,0,0,0.06)}
-html.dark{--bg-gradient:#000;--card-bg:rgba(0,0,0,0.8);--card-border:rgba(255,255,255,0.08);--text:#fff;--text2:#94a3b8;--text3:#fff;--input-bg:rgba(0,0,0,0.6);--input-border:rgba(255,255,255,0.08);--input-text:#fff;--input-placeholder:#64748b;--shadow:rgba(0,0,0,0.6)}
-body{background:var(--bg-gradient);color:var(--text)}
-.card{background:var(--card-bg);border-color:var(--card-border);box-shadow:0 25px 50px var(--shadow)}
-.logo p{color:var(--text2)}
-.fg label{color:var(--text2)}
-.fg input{background:var(--input-bg);border-color:var(--input-border);color:var(--input-text)}
+:root{--bg:linear-gradient(135deg,#0f172a 0%,#1e293b 50%,#0f172a 100%);--card-bg:rgba(30,41,59,0.7);--card-border:rgba(148,163,184,0.12);--shadow:rgba(0,0,0,0.3);--text:#e2e8f0;--text2:#94a3b8;--input-bg:rgba(15,23,42,0.6);--input-border:rgba(148,163,184,0.15);--input-text:#e2e8f0;--input-placeholder:#475569;--accent:#38bdf8;--accent2:#818cf8;--err-bg:rgba(239,68,68,0.12);--err-border:rgba(239,68,68,0.25);--err-text:#fca5a5}
+html.light{--bg:linear-gradient(135deg,#e2e8f0 0%,#f1f5f9 50%,#e2e8f0 100%);--card-bg:rgba(255,255,255,0.75);--card-border:rgba(0,0,0,0.08);--shadow:rgba(0,0,0,0.08);--text:#1e293b;--text2:#64748b;--input-bg:rgba(255,255,255,0.8);--input-border:rgba(0,0,0,0.1);--input-text:#1e293b;--input-placeholder:#94a3b8;--accent:#2563eb;--accent2:#7c3aed;--err-bg:rgba(239,68,68,0.08);--err-border:rgba(239,68,68,0.2);--err-text:#dc2626}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);min-height:100vh;display:flex;align-items:center;justify-content:center;color:var(--text);padding:20px;-webkit-font-smoothing:antialiased;position:relative;overflow:hidden}
+body::before,body::after{content:'';position:fixed;border-radius:50%;pointer-events:none;z-index:0;opacity:.4}
+body::before{width:500px;height:500px;background:radial-gradient(circle,rgba(56,189,248,0.15),transparent 70%);top:-150px;right:-100px}
+body::after{width:400px;height:400px;background:radial-gradient(circle,rgba(129,140,248,0.12),transparent 70%);bottom:-100px;left:-80px}
+html.light body::before{background:radial-gradient(circle,rgba(37,99,235,0.1),transparent 70%)}
+html.light body::after{background:radial-gradient(circle,rgba(124,58,237,0.08),transparent 70%)}
+.card{position:relative;z-index:1;background:var(--card-bg);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border:1px solid var(--card-border);border-radius:20px;padding:36px 28px;width:100%;max-width:380px;box-shadow:0 25px 50px var(--shadow);animation:cardIn .5s ease}
+@keyframes cardIn{0%{opacity:0;transform:translateY(12px) scale(.97)}to{opacity:1;transform:translateY(0) scale(1)}}
+@media(max-width:400px){.card{padding:28px 20px;border-radius:16px}}
+.logo{text-align:center;margin-bottom:32px}
+.logo h1{font-size:28px;font-weight:700;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;letter-spacing:-.5px}
+.logo p{color:var(--text2);font-size:13px;margin-top:6px;letter-spacing:.3px}
+.fg{margin-bottom:20px}
+.fg label{display:block;font-size:13px;font-weight:500;color:var(--text2);margin-bottom:7px;transition:color .2s}
+.fg input{width:100%;padding:12px 16px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:12px;color:var(--input-text);font-size:15px;outline:none;transition:border-color .25s,box-shadow .25s;font-family:inherit}
+.fg input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(56,189,248,0.12)}
 .fg input::placeholder{color:var(--input-placeholder)}
+.fg .input-icon{position:relative}
+.fg .input-icon input{padding-left:40px}
+.fg .input-icon .icon{position:absolute;left:14px;top:50%;transform:translateY(-50%);color:var(--text2);font-size:16px;pointer-events:none;opacity:.6}
+.btn{width:100%;padding:12px;background:linear-gradient(135deg,var(--accent),var(--accent2));border:none;border-radius:12px;color:#fff;font-size:15px;font-weight:600;cursor:pointer;transition:opacity .2s,transform .1s,box-shadow .2s;-webkit-appearance:none;font-family:inherit}
+.btn:hover{opacity:.92;transform:translateY(-1px);box-shadow:0 8px 20px rgba(56,189,248,.25)}
+.btn:active{transform:scale(.98)}
+.btn:disabled{opacity:.5;cursor:not-allowed;transform:none;box-shadow:none}
+.err{background:var(--err-bg);border:1px solid var(--err-border);border-radius:10px;padding:10px 14px;font-size:13px;color:var(--err-text);margin-bottom:18px;display:none;animation:shake .3s ease}
+.err.show{display:block}
+@keyframes shake{0%,to{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+#theme-toggle{position:absolute;top:14px;right:14px;font-size:18px;padding:6px;border:none;border-radius:10px;background:transparent;cursor:pointer;line-height:1;color:var(--text2);transition:background .2s,color .2s;z-index:2}
+#theme-toggle:hover{background:rgba(255,255,255,.08);color:var(--text)}
+html.light #theme-toggle:hover{background:rgba(0,0,0,.06)}
 </style>
 <script>
 (function(){
-  function gt(){return localStorage.getItem("theme")||"light"}
-  function st(t){
-    localStorage.setItem("theme",t);
-    document.documentElement.classList.toggle("dark",t==="dark");
-  }
-  st(gt());
+  window.__themeState={themeKey:'gpt-image2-theme'};
+  window.__applyTheme=function(){
+    var t=localStorage.getItem(window.__themeState.themeKey)||'system';
+    var isSystem=t==='system';
+    var prefersDark=window.matchMedia('(prefers-color-scheme: dark)').matches;
+    var isDark=isSystem?prefersDark:t==='dark';
+    document.documentElement.classList.remove('light','dark','system');
+    document.documentElement.classList.add(isSystem?'system':t);
+    if(isDark){
+      document.documentElement.classList.remove('light');
+      document.documentElement.classList.add('dark');
+    }else{
+      document.documentElement.classList.remove('dark');
+      document.documentElement.classList.add('light');
+    }
+    var meta=document.getElementById('meta-theme-color');
+    if(meta)meta.content=isDark?'#0f172a':'#f8fafc';
+    var btn=document.getElementById('theme-toggle');
+    if(btn){btn.textContent=t==='light'?'☀️':t==='dark'?'🌙':'💻';btn.setAttribute('data-theme',t);btn.title='current: '+t+' | click to toggle';}
+  };
+  window.toggleTheme=function(){
+    var t=localStorage.getItem(window.__themeState.themeKey)||'system';
+    var n=t==='light'?'dark':t==='dark'?'system':'light';
+    localStorage.setItem(window.__themeState.themeKey,n);
+    window.__applyTheme();
+  };
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change',function(){
+    if((localStorage.getItem(window.__themeState.themeKey)||'system')==='system')window.__applyTheme();
+  });
 })();
 </script>
 </head>
 <body>
-<div class="card" style="position:relative"><button onclick="toggleTheme()" id="theme-toggle" style="position:absolute;top:12px;right:12px;font-size:18px;padding:4px 8px;border:none;border-radius:8px;background:transparent;cursor:pointer;line-height:1">\u2600\ufe0f</button>
+<div class="card">
+<button onclick="toggleTheme()" id="theme-toggle">💻</button><script>window.__applyTheme();</script>
   <div class="logo">
     <h1>AI 工作台</h1>
-    <p>图像生成 · 请登录后使用</p>
+    <p>图像生成 - 请登录后使用</p>
   </div>
   <div id="err" class="err"></div>
   <form id="f">
     <div class="fg">
       <label>用户名</label>
-      <input id="u" placeholder="请输入用户名" required autocomplete="username" />
+      <div class="input-icon">
+        <span class="icon">👤</span>
+        <input id="u" placeholder="请输入用户名" required autocomplete="username" />
+      </div>
     </div>
     <div class="fg">
       <label>密码</label>
-      <input type="password" id="p" placeholder="请输入密码" required autocomplete="current-password" />
+      <div class="input-icon">
+        <span class="icon">🔑</span>
+        <input type="password" id="p" placeholder="请输入密码" required autocomplete="current-password" />
+      </div>
     </div>
     <button type="submit" class="btn" id="btn">登 录</button>
   </form>
 </div>
 <script>
-// 登录前清空所有缓存，确保全新状态
 (function(){
   try {
-    // 清除旧 localStorage 缓存
     var keys = ['gpt-image-playground', 'gpt-image2-settings', 'settings_cache'];
     keys.forEach(function(k) { localStorage.removeItem(k); });
-    // 清除 sessionStorage
     sessionStorage.removeItem('admin_auth');
     sessionStorage.removeItem('_synced');
   } catch(e) {}
 })();
-
 var e = document.getElementById('err');
 var b = document.getElementById('btn');
 document.getElementById('f').addEventListener('submit', function(ev) {
@@ -108,7 +139,6 @@ document.getElementById('f').addEventListener('submit', function(ev) {
       b.textContent = '登 录';
       return;
     }
-    // 登录成功：根据角色跳转
     if (r.data.role === 'admin') {
       sessionStorage.setItem('admin_auth', '1');
       location.href = '/admin';

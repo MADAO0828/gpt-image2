@@ -52,7 +52,7 @@ async function getSettings(db, userId) {
   return saved;
 }
 
-export async function onRequest(ctx) {
+export async function onRequest (ctx) {
   var config = {
     defaultApiUrl: '',
     defaultModel: 'gpt-image-2',
@@ -61,17 +61,26 @@ export async function onRequest(ctx) {
     timeout: 600,
     apiProxy: true,
     streamImages: true,
+    streamPartialImages: 1,
     size: '',
     quality: 'standard',
     output_format: 'png',
     codexCli: false,
-    moderation: false,
     persistInput: false,
+    clearInputAfterSubmit: false,
+    taskNotification: false,
     scrollAfterSubmit: false,
-    apiProvider: 'openai',
+    alwaysShowRetry: false,
+    reuseProfile: false,
+    mathFormatting: false,
+    refEditAction: 'ask',
+    enterSubmit: false,
     agentWebSearch: false,
     agentMaxRounds: 32,
-    agentScrollAfterSubmit: false
+    agentScrollAfterSubmit: false,
+    profiles: [],
+    customProviders: [],
+    activeProfileId: 'default-openai'
   };
 
   try {
@@ -83,18 +92,28 @@ export async function onRequest(ctx) {
       if (globalSettings.apiMode) config.apiMode = globalSettings.apiMode;
       if (globalSettings.timeout) config.timeout = parseInt(globalSettings.timeout) || 600;
       config.apiProxy = true;
+      if (globalSettings.apiKey !== undefined) config.apiKey = globalSettings.apiKey;
       if (globalSettings.streamImages !== undefined) config.streamImages = globalSettings.streamImages;
+      if (globalSettings.streamPartialImages !== undefined) config.streamPartialImages = parseInt(globalSettings.streamPartialImages) || 1;
       if (globalSettings.size) config.size = globalSettings.size;
       if (globalSettings.quality) config.quality = globalSettings.quality;
       if (globalSettings.output_format) config.output_format = globalSettings.output_format;
       if (globalSettings.codexCli !== undefined) config.codexCli = globalSettings.codexCli;
-      if (globalSettings.moderation !== undefined) config.moderation = globalSettings.moderation;
       if (globalSettings.persistInput !== undefined) config.persistInput = globalSettings.persistInput;
+      if (globalSettings.clearInputAfterSubmit !== undefined) config.clearInputAfterSubmit = globalSettings.clearInputAfterSubmit;
+      if (globalSettings.taskNotification !== undefined) config.taskNotification = globalSettings.taskNotification;
       if (globalSettings.scrollAfterSubmit !== undefined) config.scrollAfterSubmit = globalSettings.scrollAfterSubmit;
-      if (globalSettings.apiProvider) config.apiProvider = globalSettings.apiProvider;
+      if (globalSettings.alwaysShowRetry !== undefined) config.alwaysShowRetry = globalSettings.alwaysShowRetry;
+      if (globalSettings.reuseProfile !== undefined) config.reuseProfile = globalSettings.reuseProfile;
+      if (globalSettings.mathFormatting !== undefined) config.mathFormatting = globalSettings.mathFormatting;
+      if (globalSettings.refEditAction) config.refEditAction = globalSettings.refEditAction;
+      if (globalSettings.enterSubmit !== undefined) config.enterSubmit = globalSettings.enterSubmit;
       if (globalSettings.agentWebSearch !== undefined) config.agentWebSearch = globalSettings.agentWebSearch;
       if (globalSettings.agentMaxRounds) config.agentMaxRounds = parseInt(globalSettings.agentMaxRounds) || 32;
       if (globalSettings.agentScrollAfterSubmit !== undefined) config.agentScrollAfterSubmit = globalSettings.agentScrollAfterSubmit;
+      if (globalSettings.profiles) config.profiles = globalSettings.profiles;
+      if (globalSettings.customProviders) config.customProviders = globalSettings.customProviders;
+      if (globalSettings.activeProfileId) config.activeProfileId = globalSettings.activeProfileId;
     }
   } catch (e) {}
 
