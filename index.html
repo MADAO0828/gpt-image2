@@ -25,13 +25,16 @@ body{margin:0;min-height:100vh;background:#111827;color:#cbd5e1;font-family:-app
 .spinner{width:40px;height:40px;border:3px solid rgba(255,255,255,0.04);border-top-color:#6366f1;border-radius:50%;animation:spin .7s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 .loading-screen p{margin-top:20px;font-size:14px;color:#64748b;letter-spacing:.3px}
-.site-nav{position:fixed;top:10px;right:12px;z-index:9999;display:flex;align-items:center;gap:2px;background:rgba(255,255,255,.85);border:1px solid rgba(0,0,0,0.08);border-radius:10px;padding:3px;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);box-shadow:0 2px 8px rgba(0,0,0,0.06)}html.dark .site-nav{background:rgba(17,24,39,.78);border-color:rgba(255,255,255,.1)}
+.site-nav{position:fixed;top:10px;right:12px;z-index:9999;display:flex;align-items:center;gap:2px;background:#fff;border:1px solid rgba(0,0,0,0.08);border-radius:10px;padding:3px;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);box-shadow:0 2px 8px rgba(0,0,0,0.06)}html.dark .site-nav{background:rgba(17,24,39,.78);border-color:rgba(255,255,255,.1)}
 .site-nav a{width:32px;height:32px;border-radius:7px;display:flex;align-items:center;justify-content:center;text-decoration:none;font-size:15px;color:#475569;transition:background .18s,color .18s,transform .18s}html.dark .site-nav a{color:#cbd5e1}
 .site-nav a:hover{background:rgba(99,102,241,0.12);color:#6366f1}html.dark .site-nav a:hover{background:rgba(59,130,246,.18);color:#fff}
 .site-nav a:active{transform:scale(.94)}
 .site-nav .label{font-size:11px;color:#64748b;padding:0 7px 0 5px;letter-spacing:.02em}html.dark .site-nav .label{color:#94a3b8}
 .site-nav .divider{width:1px;height:18px;background:rgba(0,0,0,0.08);margin:0 2px}html.dark .site-nav .divider{background:rgba(255,255,255,.12)}
 @media(max-width:640px){.site-nav{top:8px;right:8px}.site-nav .label{display:none}.site-nav a{width:34px;height:34px}}
+
+html:not(.dark) body{background:#fff!important;color:#000!important}
+html.dark body{background:#000!important;color:#fff!important}
 </style>
 <script>
 (function(){
@@ -191,7 +194,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
   });
 
   // Safety timeout: if nothing happens within 25s, force redirect to login
-  window.toggleTheme=function(){var t=localStorage.getItem("theme")||"dark";var n=t==="dark"?"light":"dark";localStorage.setItem("theme",n);document.documentElement.classList.toggle("dark",n==="dark");var b=document.getElementById("theme-toggle");if(b)b.textContent=n==="dark"?"\u2600\ufe0f":"\uD83C\uDF19";};
+  window.toggleTheme=function(){var t=localStorage.getItem("theme")||"light";var n=t==="dark"?"light":"dark";localStorage.setItem("theme",n);document.documentElement.classList.toggle("dark",n==="dark");var b=document.getElementById("theme-toggle");if(b)b.textContent=n==="dark"?"\u2600\ufe0f":"\uD83C\uDF19";};
   var safetyTimer = setTimeout(function(){
     location.replace('/login');
   }, 25000);
@@ -208,7 +211,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
 <link rel="stylesheet" crossorigin href="./assets/index-CkO208GW.css?v=068-custom-1">
 <script>
 (function(){
-  var t=localStorage.getItem("theme")||"dark";
+  var t=localStorage.getItem("theme")||"light";
   document.documentElement.classList.toggle("dark",t==="dark");
 })();
 </script></head>

@@ -7,8 +7,8 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
 <title>管理员后台 - AI 工作台</title>
 <style>
-:root{--bg:#f8fafc;--surface:rgba(255,255,255,0.85);--border:rgba(0,0,0,0.08);--text:#1e293b;--text2:#64748b;--accent:#6366f1;--accent2:#8b5cf6;--green:#22c55e;--red:#ef4444;--radius:12px;--radius-sm:8px}
-html.dark{--bg:#0b0f19;--surface:rgba(255,255,255,0.03);--border:rgba(255,255,255,0.06);--text:#e4e8ee;--text2:#8892a6}
+:root{--bg:#fff;--surface:#fff;--border:rgba(0,0,0,0.08);--text:#000;--text2:#475569;--accent:#6366f1;--accent2:#8b5cf6;--green:#22c55e;--red:#ef4444;--radius:12px;--radius-sm:8px}
+html.dark{--bg:#000;--surface:rgba(255,255,255,0.03);--border:rgba(255,255,255,0.08);--text:#fff;--text2:#94a3b8}
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--text);min-height:100vh;line-height:1.5;-webkit-font-smoothing:antialiased}
 .h{position:sticky;top:0;z-index:50;background:rgba(11,15,25,0.85);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-bottom:1px solid var(--border);padding:0 20px;height:56px;display:flex;align-items:center;justify-content:space-between}
@@ -62,7 +62,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Micr
 
 <script>
 (function(){
-  function gt(){return localStorage.getItem("theme")||"dark"}
+  function gt(){return localStorage.getItem("theme")||"light"}
   function st(t){
     localStorage.setItem("theme",t);
     document.documentElement.classList.toggle("dark",t==="dark");

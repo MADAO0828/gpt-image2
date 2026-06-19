@@ -43,8 +43,8 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 .ts{position:fixed;top:16px;right:16px;z-index:9999;padding:8px 16px;border-radius:8px;font-size:12px;background:rgba(34,197,94,0.12);color:#22c55e;border:1px solid rgba(34,197,94,0.25)}
 </style>
 <style>
-:root{--bg:#f5f7fa;--surface:#fff;--border:rgba(0,0,0,0.08);--text:#1e293b;--text2:#64748b;--accent:#6366f1;--card-bg:#fff;--input-bg:#fff;--overlay:rgba(0,0,0,0.4);--modal-bg:#fff;--toast-bg:rgba(34,197,94,0.12)}
-html.dark{--bg:#0b0f19;--surface:rgba(255,255,255,0.02);--border:rgba(255,255,255,0.06);--text:#e4e8ee;--text2:#8892a6;--card-bg:rgba(255,255,255,0.02);--input-bg:rgba(0,0,0,0.3);--overlay:rgba(0,0,0,0.7);--modal-bg:#131826;--toast-bg:rgba(34,197,94,0.12)}
+:root{--bg:#fff;--surface:#fff;--border:rgba(0,0,0,0.08);--text:#000;--text2:#475569;--accent:#6366f1;--card-bg:#fff;--input-bg:#fff;--overlay:rgba(0,0,0,0.4);--modal-bg:#fff;--toast-bg:rgba(34,197,94,0.12)}
+html.dark{--bg:#000;--surface:rgba(255,255,255,0.02);--border:rgba(255,255,255,0.08);--text:#fff;--text2:#94a3b8;--card-bg:rgba(255,255,255,0.02);--input-bg:rgba(0,0,0,0.3);--overlay:rgba(0,0,0,0.7);--modal-bg:#000;--toast-bg:rgba(34,197,94,0.12)}
 body{background:var(--bg);color:var(--text)}
 .card{background:var(--card-bg);border-color:var(--border)}
 .modal{background:var(--modal-bg);border-color:var(--border)}
@@ -60,7 +60,7 @@ html.dark .h{background:rgba(11,15,25,0.85)}
 </style>
 <script>
 (function(){
-  function gt(){return localStorage.getItem("theme")||"dark"}
+  function gt(){return localStorage.getItem("theme")||"light"}
   function st(t){
     localStorage.setItem("theme",t);
     document.documentElement.classList.toggle("dark",t==="dark");
