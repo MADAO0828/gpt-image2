@@ -254,8 +254,8 @@ function loadUsers() {
     renderUsers();
     updateStats();
   }).catch(function(err) {
+    if (err.name === 'AbortError') { return; }
     clearTimeout(tmr);
-    if (err.name === 'AbortError') return;
     tc.innerHTML = '<div class="empty">网络错误: ' + err.message + '</div>';
   });
 }
@@ -434,7 +434,10 @@ function loadSettings() {
     document.getElementById('cfgCustomProviders').value = s.customProviders ? JSON.stringify(s.customProviders, null, 2) : '';
     document.getElementById('cfgProfiles').value = s.profiles ? JSON.stringify(s.profiles, null, 2) : '';
     if (s.profiles && Array.isArray(s.profiles)) { profilesData = s.profiles; renderProfiles(); }
-  }).catch(function() {});
+  }).catch(function(err) {
+    if (err.name === 'AbortError') return;
+    clearTimeout(tmr);
+  });
 }
 /* ===== Profile Management ===== */
 var profilesData = [];
