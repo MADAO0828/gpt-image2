@@ -32,7 +32,8 @@ function selectedProfile(settings, apiPath = '') { const profiles = Array.isArra
   apiProxy: asBool(base.apiProxy, asBool(settings.apiProxy, true)),
   responseFormatB64Json: asBool(base.responseFormatB64Json, asBool(settings.responseFormatB64Json, false)),
   streamImages: asBool(base.streamImages, asBool(settings.streamImages, false)),
-  streamPartialImages: asNum(base.streamPartialImages, asNum(settings.streamPartialImages, 1))
+  streamPartialImages: asNum(base.streamPartialImages, asNum(settings.streamPartialImages, 1)),
+  agentReasoningEffort: settings.agentReasoningEffort || 'medium'
 }; }
 function clientProfile(profile) { const useProxy = profile.apiProxy !== false; return { ...profile, baseUrl: profile.baseUrl || '', apiKey: useProxy ? (profile.apiKey ? 'cloudflare-proxy' : '') : profile.apiKey, apiProxy: useProxy } }
 function sanitizeProfiles(settings) { const profiles = Array.isArray(settings.profiles) ? settings.profiles : []; if (!profiles.length) return []; return profiles.map((p, index) => clientProfile({
@@ -58,6 +59,11 @@ function looksLikeHtml(text, contentType) { const lowerType = String(contentType
 function isMobileRequest(request) { return /Android|iPhone|iPad|iPod|Mobile|MicroMessenger|MQQBrowser|XWEB|TBS/i.test(request.headers.get('User-Agent') || ''); }
 function isImageApiPath(apiPath) { return /^images\//i.test(String(apiPath || '').replace(/^\/+/, '')); }
 function isResponsesApiPath(apiPath) { return /^responses(?:$|\?|\/)/i.test(String(apiPath || '').replace(/^\/+/, '')); }
+function normalizeReasoningEffort(value) {
+  value = String(value || 'medium').toLowerCase();
+  if (value === 'xhigh' || value === 'highest' || value === 'max') return 'high';
+  return value === 'low' || value === 'medium' || value === 'high' ? value : 'medium';
+}
 async function proxyBody(request, headers, apiPath, profile) {
   if (request.method === 'GET' || request.method === 'HEAD') return undefined;
   const contentType = String(headers.get('Content-Type') || '').toLowerCase();
@@ -67,6 +73,10 @@ async function proxyBody(request, headers, apiPath, profile) {
     const body = JSON.parse(raw || '{}');
     if (body && typeof body === 'object' && !Array.isArray(body)) {
       if ((isResponsesApiPath(apiPath) || isImageApiPath(apiPath)) && profile && profile.model) body.model = profile.model;
+      if (isResponsesApiPath(apiPath)) {
+        const effort = normalizeReasoningEffort(profile.agentReasoningEffort || profile.reasoningEffort || undefined);
+        body.reasoning = { ...(body.reasoning && typeof body.reasoning === 'object' ? body.reasoning : {}), effort };
+      }
       if (isMobileRequest(request) && isImageApiPath(apiPath)) {
         if (body.stream !== undefined) body.stream = false;
         delete body.partial_images;

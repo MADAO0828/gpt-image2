@@ -95,6 +95,7 @@ export async function onRequest(ctx) {
     enterSubmit: !!settings.enterSubmit,
     zipDownloadRoutes: Array.isArray(settings.zipDownloadRoutes) ? settings.zipDownloadRoutes : undefined,
     agentWebSearch: !!settings.agentWebSearch,
+    agentReasoningEffort: settings.agentReasoningEffort || 'medium',
     agentMaxRounds: asNum(settings.agentMaxRounds, asNum(settings.agentMaxToolRounds, 15)),
     agentMaxToolRounds: asNum(settings.agentMaxToolRounds, asNum(settings.agentMaxRounds, 15)),
     agentScrollAfterSubmit: settings.agentScrollAfterSubmit !== undefined ? !!settings.agentScrollAfterSubmit : settings.agentScrollToBottomAfterSubmit !== false,
