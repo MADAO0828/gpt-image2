@@ -54,6 +54,16 @@ html.dark body,html.dark #root,html.dark [data-home-main]{background:#000!import
 #root header.safe-area-top .safe-header-inner>.flex-1 button.text-sm.font-semibold.truncate{display:none!important}
 /* Agent 桌面顶栏修复：隐藏原仓库居中的当前会话标题块，它会覆盖「画廊 / Agent」切换按钮 */
 #root header.safe-area-top .safe-header-inner>div[class*="left-1/2"][class*="max-w-[30%]"]{display:none!important;pointer-events:none!important}
+.agent-current-session-box{display:none;align-items:center;gap:6px;min-width:160px;max-width:260px;height:32px;padding:0 10px;border:1px solid rgba(148,163,184,.35);border-radius:12px;background:rgba(15,23,42,.04);color:#111827;font-size:13px;line-height:1;transition:background .16s ease,border-color .16s ease,transform .12s ease}
+.dark .agent-current-session-box{background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.12);color:#fff}
+.agent-current-session-box[data-visible="1"]{display:flex}
+.agent-current-session-box:hover{background:rgba(99,102,241,.10);border-color:rgba(99,102,241,.42);transform:translateY(-1px)}
+.agent-current-session-box .session-label{color:#64748b;font-weight:600;white-space:nowrap}
+.dark .agent-current-session-box .session-label{color:#a1a1aa}
+.agent-current-session-box .session-title{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700}
+.agent-current-session-box .session-edit{opacity:.72;font-size:14px}
+.agent-current-session-box input{width:100%;min-width:80px;border:0;outline:0;background:transparent;color:inherit;font:inherit;font-weight:700}
+@media(max-width:900px){.agent-current-session-box{max-width:170px;min-width:120px;padding:0 8px}.agent-current-session-box .session-label{display:none}}
 </style>
 <script>
 (function(){
@@ -211,7 +221,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       if((ready||mounted&&Date.now()-started>3000)&&authReady){
         clearInterval(timer);
         hideLoading();
-        setTimeout(function(){watchWorkbenchSettings();watchSiteNavDock();installPromptRepoWheel();installAgentGuard();installAgentNavConflictFix();},300);
+        setTimeout(function(){watchWorkbenchSettings();watchSiteNavDock();installPromptRepoWheel();installAgentGuard();installAgentNavConflictFix();installAgentCurrentSessionBox();},300);
       } else if(!mounted&&Date.now()-started>20000){
         clearInterval(timer);
         showLoadError('\u4e3b\u7a0b\u5e8f\u542f\u52a8\u8d85\u65f6\uff1a\u4e3b\u811a\u672c\u5df2\u8bf7\u6c42\uff0c\u4f46\u9875\u9762\u6839\u8282\u70b9\u6ca1\u6709\u6210\u529f\u6302\u8f7d\u3002\u8bf7\u5237\u65b0\u91cd\u8bd5\uff0c\u6216\u8fdb\u5165\u540e\u53f0\u68c0\u67e5\u5f53\u524d\u7528\u6237\u914d\u7f6e\u3002');
@@ -379,6 +389,109 @@ if(!('noModule' in HTMLScriptElement.prototype)){
           if(text==='\u753b\u5eca'||text==='Agent')setTimeout(closeAgentConversationPanel,0);
         }catch(e){}
       },true);
+    }catch(e){}
+  }
+  function ensureAgentCurrentSessionBox(){
+    try{
+      var header=document.querySelector('#root header.safe-area-top')||document.querySelector('#root header');
+      if(!header)return null;
+      var left=header.querySelector('.safe-header-inner>.flex-1');
+      if(!left)return null;
+      var box=document.getElementById('agentCurrentSessionBox');
+      if(!box){
+        box=document.createElement('button');
+        box.type='button';
+        box.id='agentCurrentSessionBox';
+        box.className='agent-current-session-box';
+        box.title='\u70b9\u51fb\u4fee\u6539\u5f53\u524d\u4f1a\u8bdd\u540d\u79f0';
+        box.innerHTML='<span class="session-label">\u5f53\u524d\u4f1a\u8bdd</span><span class="session-title"></span><span class="session-edit">\u270e</span>';
+        left.appendChild(box);
+      }else if(box.parentElement!==left){
+        left.appendChild(box);
+      }
+      return box;
+    }catch(e){return null;}
+  }
+  function activeAgentConversation(){
+    try{
+      var store=window.__gptImageStore, st=store&&store.getState&&store.getState();
+      if(!st||st.appMode!=='agent')return null;
+      var list=Array.isArray(st.agentConversations)?st.agentConversations:[];
+      return list.find(function(c){return c&&c.id===st.activeAgentConversationId;})||list[0]||null;
+    }catch(e){return null;}
+  }
+  function updateAgentCurrentSessionBox(){
+    try{
+      var box=ensureAgentCurrentSessionBox(); if(!box)return;
+      var conv=activeAgentConversation();
+      box.setAttribute('data-visible',conv?'1':'0');
+      if(!conv||box.getAttribute('data-editing')==='1')return;
+      var title=String(conv.title||'\u65b0\u5bf9\u8bdd').trim()||'\u65b0\u5bf9\u8bdd';
+      var el=box.querySelector('.session-title');
+      if(el)el.textContent=title;
+      box.title='\u70b9\u51fb\u4fee\u6539\u5f53\u524d\u4f1a\u8bdd\u540d\u79f0\uff1a'+title;
+    }catch(e){}
+  }
+  function renameActiveAgentConversation(title){
+    try{
+      title=String(title||'').trim();
+      var conv=activeAgentConversation();
+      if(!conv||!title)return false;
+      var store=window.__gptImageStore, st=store&&store.getState&&store.getState();
+      if(st&&typeof st.renameAgentConversation==='function'){
+        st.renameAgentConversation(conv.id,title);
+        setTimeout(updateAgentCurrentSessionBox,80);
+        return true;
+      }
+    }catch(e){}
+    return false;
+  }
+  function startAgentSessionTitleEdit(){
+    try{
+      var box=ensureAgentCurrentSessionBox(), conv=activeAgentConversation();
+      if(!box||!conv)return;
+      if(box.getAttribute('data-editing')==='1')return;
+      var oldTitle=String(conv.title||'\u65b0\u5bf9\u8bdd').trim()||'\u65b0\u5bf9\u8bdd';
+      box.setAttribute('data-editing','1');
+      box.innerHTML='<input aria-label="\u5f53\u524d\u4f1a\u8bdd\u540d\u79f0" maxlength="80" value="'+escHtml(oldTitle)+'">';
+      var input=box.querySelector('input');
+      var done=false;
+      function finish(save){
+        if(done)return; done=true;
+        var next=input?input.value:oldTitle;
+        box.removeAttribute('data-editing');
+        box.innerHTML='<span class="session-label">\u5f53\u524d\u4f1a\u8bdd</span><span class="session-title"></span><span class="session-edit">\u270e</span>';
+        if(save&&String(next||'').trim())renameActiveAgentConversation(next);
+        else updateAgentCurrentSessionBox();
+      }
+      if(input){
+        input.focus(); input.select();
+        input.addEventListener('keydown',function(ev){
+          if(ev.key==='Enter'){ev.preventDefault();finish(true);}
+          else if(ev.key==='Escape'){ev.preventDefault();finish(false);}
+        });
+        input.addEventListener('blur',function(){finish(true);});
+      }
+    }catch(e){updateAgentCurrentSessionBox();}
+  }
+  function installAgentCurrentSessionBox(){
+    try{
+      if(window.__gptImageCurrentSessionBoxInstalled)return;
+      window.__gptImageCurrentSessionBoxInstalled=true;
+      document.addEventListener('click',function(ev){
+        var box=ev.target&&ev.target.closest&&ev.target.closest('#agentCurrentSessionBox');
+        if(!box)return;
+        ev.preventDefault(); ev.stopPropagation();
+        startAgentSessionTitleEdit();
+      },true);
+      updateAgentCurrentSessionBox();
+      var root=document.getElementById('root')||document.documentElement;
+      try{new MutationObserver(function(){setTimeout(updateAgentCurrentSessionBox,60);}).observe(root,{childList:true,subtree:true});}catch(e){}
+      var store=window.__gptImageStore;
+      if(store&&store.subscribe){
+        try{store.subscribe(function(){setTimeout(updateAgentCurrentSessionBox,0);});}catch(e){}
+      }
+      setInterval(updateAgentCurrentSessionBox,1200);
     }catch(e){}
   }
   function profileRuntimeFields(p, fallback){
