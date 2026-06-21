@@ -111,7 +111,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       if(!Array.prototype.toSorted){Array.prototype.toSorted=function(cb){return this.slice().sort(cb);};}
     }catch(e){}
   }
-  function hideLoading(){ var el=document.getElementById('loading-screen'); if(el){el.classList.add('hidden');} }
+  function hideLoading(){ window.__gptImageAppMounted=true; var el=document.getElementById('loading-screen'); if(el){el.classList.add('hidden');} }
   function setLoadingStage(text){
     try{
       var el=document.getElementById('loading-stage');
@@ -144,6 +144,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
     return String(s||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]||c;});
   }
   function showLoadError(msg){
+    if(window.__gptImageAppMounted){console.warn('[Shell] suppressed post-mount load error',msg);return;}
     var el=document.getElementById('loading-screen'); if(!el)return;
     var wechat=isWeChatBrowser();
     var detail=String(msg||'\u8bf7\u5237\u65b0\u91cd\u8bd5\uff0c\u6216\u8fdb\u5165\u540e\u53f0\u68c0\u67e5\u914d\u7f6e\u3002');
@@ -197,6 +198,18 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       if(owner)localStorage.setItem(userStoreKey(owner), raw);
     } catch(e){}
   }
+  function forceGalleryBoot(st){
+    try{
+      st=st||readStore();
+      st.state=st.state||{};
+      st.state.appMode='gallery';
+      st.state.agentMobileHeaderVisible=false;
+      st.state.agentAssetPanelCollapsed=true;
+      st.state.agentSidebarCollapsed=true;
+      writeStore(st);
+    }catch(e){}
+    return st;
+  }
   function saveCurrentStoreForOwner(owner){
     try{
       owner=String(owner||'').trim(); if(!owner)return;
@@ -214,6 +227,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
           var currentSaved=localStorage.getItem(userStoreKey(uid));
           localStorage.setItem(storeKey,currentSaved||JSON.stringify(emptyStore()));
         }
+        forceGalleryBoot(readStore());
         return;
       }
       if(owner)saveCurrentStoreForOwner(owner);
@@ -224,6 +238,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       var saved=localStorage.getItem(userStoreKey(uid));
       localStorage.setItem(storeKey, saved||JSON.stringify(emptyStore()));
       localStorage.setItem(storeOwnerKey, uid);
+      forceGalleryBoot(readStore());
     }catch(e){}
   }
   function num(v, fallback){ var n=Number(v); return Number.isFinite(n)?n:fallback; }
@@ -468,7 +483,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
           agentTextProfileId:cfg.agentTextProfileId||null,
           agentImageProfileId:cfg.agentImageProfileId||null
         });
-        st.state=Object.assign({}, oldState, {settings:settings});
+        st.state=Object.assign({}, oldState, {settings:settings, appMode:'gallery', agentMobileHeaderVisible:false, agentAssetPanelCollapsed:true, agentSidebarCollapsed:true});
         st.version=2;
         writeStore(st);
         applyRuntimeToLiveStore(settings,pendingPrompt);
