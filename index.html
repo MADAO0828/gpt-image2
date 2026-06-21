@@ -588,7 +588,13 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       var editable=document.querySelector('#root [contenteditable="true"]');
       var bar=editable&&editable.closest&&editable.closest('div.fixed.bottom-4,div.fixed.sm\\:bottom-6');
       if(bar)bar.classList.toggle('agent-chat-inputbar',isAgent);
-      if(!isAgent)return;
+      if(!isAgent){
+        var old=document.getElementById('agentExtraControls');
+        if(old)old.remove();
+        var ph0=bar&&bar.querySelector&&bar.querySelector('.prompt-placeholder');
+        if(ph0)ph0.textContent='\u63cf\u8ff0\u4f60\u60f3\u751f\u6210\u7684\u56fe\u7247\uff0c\u53ef\u8f93\u5165 @ \u6765\u6307\u5b9a\u53c2\u8003\u56fe...';
+        return;
+      }
       var controls=ensureAgentExtraControls(bar);
       var ph=bar&&bar.querySelector&&bar.querySelector('.prompt-placeholder');
       if(ph)ph.textContent='\u8f93\u5165\u4f60\u60f3\u548c Agent \u8bf4\u7684\u8bdd...';
@@ -639,7 +645,12 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       var profiles=Array.isArray(cfg.profiles)&&cfg.profiles.length?cfg.profiles:(Array.isArray(settings.profiles)?settings.profiles:[]);
       if(!profiles.length){sel.innerHTML='<option value="">API</option>';sel.disabled=true;return;}
       var active=activeOverride||cfg.activeProfileId||settings.activeProfileId||profileIdOf(profiles[0]);
-      sel.innerHTML=profiles.map(function(p){var id=profileIdOf(p);return '<option value="'+escHtml(id)+'">'+escHtml(profileLabelOf(p))+'</option>';}).join('');
+      var sig=profiles.map(function(p){return profileIdOf(p)+'|'+profileLabelOf(p);}).join(';;');
+      if(sel.getAttribute('data-profile-sig')!==sig){
+        if(document.activeElement===sel)return;
+        sel.innerHTML=profiles.map(function(p){var id=profileIdOf(p);return '<option value="'+escHtml(id)+'">'+escHtml(profileLabelOf(p))+'</option>';}).join('');
+        sel.setAttribute('data-profile-sig',sig);
+      }
       sel.value=profiles.some(function(p){return profileIdOf(p)===active})?active:profileIdOf(profiles[0]);
       sel.disabled=false;
       sel.title='切换 API 配置：'+(sel.options[sel.selectedIndex]?sel.options[sel.selectedIndex].text:'');
@@ -889,8 +900,8 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       if(!targetPanel){raf=0;lastTs=0;return;}
       var dt=lastTs?Math.min(32,ts-lastTs):16;lastTs=ts;
       targetPanel.scrollTop+=velocity*(dt/16);
-      velocity*=Math.pow(0.82,dt/16);
-      if(Math.abs(velocity)<0.25){raf=0;velocity=0;targetPanel=null;lastTs=0;return;}
+      velocity*=Math.pow(0.68,dt/16);
+      if(Math.abs(velocity)<0.35){raf=0;velocity=0;targetPanel=null;lastTs=0;return;}
       raf=requestAnimationFrame(step);
     }
     document.addEventListener('wheel',function(ev){
@@ -901,8 +912,8 @@ if(!('noModule' in HTMLScriptElement.prototype)){
         var atBottom=panel.scrollTop+panel.clientHeight>=panel.scrollHeight-1&&ev.deltaY>0;
         if(atTop||atBottom)return;
         targetPanel=panel;
-        velocity+=normDelta(ev)*0.58;
-        velocity=Math.max(-260,Math.min(260,velocity));
+        velocity+=normDelta(ev)*1.12;
+        velocity=Math.max(-920,Math.min(920,velocity));
         if(!raf)raf=requestAnimationFrame(step);
         ev.preventDefault();
       }catch(e){}

@@ -160,7 +160,7 @@ function escHtml(s){if(!s)return"";return(""+s).replace(/&/g,"&amp;").replace(/<
 function escAttr(s){if(!s)return"";return(""+s).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
 function trunc(s,n){if(!s)return"";return s.length>n?s.substring(0,n)+"...":s}
 function norm(p){return{c:p.c||p.category||"",t:p.t||p.title||"",p:p.p||p.prompt||"",i:p.i||p.image_url||""}}
-function imgProxyUrl(u){if(!u)return"";return "/api/prompt-image?u="+encodeURIComponent(u)}
+function imgProxyUrl(u){return u||""}
 var imageObserver=null;
 function ensureImageObserver(){
   if(imageObserver||!('IntersectionObserver' in window))return imageObserver;
@@ -171,7 +171,7 @@ function ensureImageObserver(){
       if(src){img.src=src;img.removeAttribute('data-src')}
       imageObserver.unobserve(img);
     });
-  },{rootMargin:'900px 0px',threshold:0.01});
+  },{rootMargin:'2400px 0px',threshold:0.01});
   return imageObserver;
 }
 function observePromptImages(root){
@@ -222,7 +222,7 @@ function loadPage(page, reset){
 function fetchStaticFallback(){
   useServerMode=false;
   setLoading("加载本地数据...");
-  fetch("/prompts_data.json?v="+Date.now()).then(function(r){return r.json()}).then(function(d){
+  fetch("/prompts_data.json").then(function(r){return r.json()}).then(function(d){
     allData=(Array.isArray(d)?d:[]).map(norm);
     var cats=["all"],map={all:1};
     for(var i=0;i<allData.length;i++){if(allData[i].c&&!map[allData[i].c]){cats.push(allData[i].c);map[allData[i].c]=1}}
