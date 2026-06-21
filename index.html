@@ -112,6 +112,12 @@ if(!('noModule' in HTMLScriptElement.prototype)){
     }catch(e){}
   }
   function hideLoading(){ var el=document.getElementById('loading-screen'); if(el){el.classList.add('hidden');} }
+  function setLoadingStage(text){
+    try{
+      var el=document.getElementById('loading-stage');
+      if(el)el.textContent=text||'';
+    }catch(e){}
+  }
   window.__gptImageCopyCurrentLink=copyCurrentLink;
   function installFetchAuthFallback(){
     try{
@@ -159,7 +165,24 @@ if(!('noModule' in HTMLScriptElement.prototype)){
   consumeTokenFromHash();
   installCompatPolyfills();
   installFetchAuthFallback();
-  function waitForAppReady(){ var started=Date.now(); var timer=setInterval(function(){ var root=document.getElementById('root'); var mounted=root&&root.children&&root.children.length>0; var ready=mounted&&root.innerText.trim().length>0; if((ready||mounted&&Date.now()-started>3000)&&authReady){clearInterval(timer);hideLoading();} else if(!mounted&&Date.now()-started>20000){clearInterval(timer);showLoadError('主程序启动超时：页面根节点没有成功挂载。请刷新重试，或进入后台检查当前用户配置。');} },120); }
+  function waitForAppReady(){
+    if(window.__gptImageWaitForAppReadyStarted)return;
+    window.__gptImageWaitForAppReadyStarted=true;
+    var started=Date.now();
+    setLoadingStage('???????????????...');
+    var timer=setInterval(function(){
+      var root=document.getElementById('root');
+      var mounted=root&&root.children&&root.children.length>0;
+      var ready=mounted&&root.innerText.trim().length>0;
+      if((ready||mounted&&Date.now()-started>3000)&&authReady){
+        clearInterval(timer);
+        hideLoading();
+      } else if(!mounted&&Date.now()-started>20000){
+        clearInterval(timer);
+        showLoadError('????????????????????????????????????????????????');
+      }
+    },120);
+  }
   function watchSystemTheme(cb){ try{ var mq=window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)'); if(!mq)return; if(mq.addEventListener)mq.addEventListener('change',cb); else if(mq.addListener)mq.addListener(cb); }catch(e){} }
   function prefersDark(){ try{ return !!(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches); }catch(e){ return false; } }
   function emptyStore(){ return {state:{},version:2}; }
@@ -519,13 +542,28 @@ if(!('noModule' in HTMLScriptElement.prototype)){
   }
   function watchWorkbenchSettings(){ hideWorkbenchSettings(); try{new MutationObserver(hideWorkbenchSettings).observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['aria-label','title','class','style']});}catch(e){setInterval(hideWorkbenchSettings,1000);} }
   function loadApp(){
+    setLoadingStage('?????????...');
     var script=document.createElement('script');
     script.type='module';
     script.crossOrigin='anonymous';
     script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=agent-prompts-2';
-    script.onload=function(){waitForAppReady();};
-    script.onerror=function(){showLoadError('主程序脚本加载失败，请清空缓存后重试。');};
+    var settled=false;
+    script.onload=function(){settled=true;setLoadingStage('???????????????...');waitForAppReady();};
+    script.onerror=function(){settled=true;showLoadError('???????????????????');};
     document.head.appendChild(script);
+    setTimeout(function(){
+      if(!settled){
+        console.warn('[Shell] module script still pending, starting mount watchdog');
+        setLoadingStage('??????????????????...');
+        waitForAppReady();
+      }
+    },5000);
+    setTimeout(function(){
+      var root=document.getElementById('root');
+      if(!root||!root.children||root.children.length===0){
+        showLoadError('?????????????????????????????????????????????????????????');
+      }
+    },30000);
     watchWorkbenchSettings();
     watchSiteNavDock();
     installPromptRepoWheel();
@@ -586,6 +624,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
 <div id="loading-screen" class="loading-screen">
   <div class="spinner"></div>
   <p>&#21152;&#36733;&#20013;...</p>
+  <p id="loading-stage" style="margin-top:8px;font-size:12px;color:#94a3b8">&#27491;&#22312;&#26657;&#39564;&#30331;&#24405;&#29366;&#24577;...</p>
 </div>
 <nav class="site-nav" data-docked="0" aria-label="site navigation">
   <span class="label" id="workbenchAccountInfo">&#39564;&#35777;&#20013;...</span>
