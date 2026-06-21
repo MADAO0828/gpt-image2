@@ -57,21 +57,24 @@ function looksLikeCloudflareTimeout(text, status) { const lower = String(text ||
 function looksLikeHtml(text, contentType) { const lowerType = String(contentType || '').toLowerCase(); const trimmed = String(text || '').trim().toLowerCase(); return lowerType.includes('text/html') || trimmed.startsWith('<!doctype') || trimmed.startsWith('<html') || trimmed.includes('<body'); }
 function isMobileRequest(request) { return /Android|iPhone|iPad|iPod|Mobile|MicroMessenger|MQQBrowser|XWEB|TBS/i.test(request.headers.get('User-Agent') || ''); }
 function isImageApiPath(apiPath) { return /^images\//i.test(String(apiPath || '').replace(/^\/+/, '')); }
-async function proxyBody(request, headers, apiPath) {
+function isResponsesApiPath(apiPath) { return /^responses(?:$|\?|\/)/i.test(String(apiPath || '').replace(/^\/+/, '')); }
+async function proxyBody(request, headers, apiPath, profile) {
   if (request.method === 'GET' || request.method === 'HEAD') return undefined;
-  if (!isMobileRequest(request) || !isImageApiPath(apiPath)) return request.body;
   const contentType = String(headers.get('Content-Type') || '').toLowerCase();
   if (!contentType.includes('application/json')) return request.body;
   const raw = await request.text();
   try {
     const body = JSON.parse(raw || '{}');
     if (body && typeof body === 'object' && !Array.isArray(body)) {
-      if (body.stream !== undefined) body.stream = false;
-      delete body.partial_images;
-      delete body.stream_options;
+      if ((isResponsesApiPath(apiPath) || isImageApiPath(apiPath)) && profile && profile.model) body.model = profile.model;
+      if (isMobileRequest(request) && isImageApiPath(apiPath)) {
+        if (body.stream !== undefined) body.stream = false;
+        delete body.partial_images;
+        delete body.stream_options;
+        headers.set('X-GPT-Image-Mobile-Stream-Disabled', '1');
+      }
       headers.delete('Content-Length');
       headers.set('Content-Type', 'application/json');
-      headers.set('X-GPT-Image-Mobile-Stream-Disabled', '1');
       return JSON.stringify(body);
     }
   } catch (e) {}
@@ -109,7 +112,7 @@ export async function onRequest(ctx) {
     const controller = new AbortController();
     const timeoutMs = Math.max(1000, Math.min(Number(profile.timeout || settings.timeout || 600) * 1000, 6000 * 1000));
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-    const body = await proxyBody(ctx.request, headers, apiPath);
+    const body = await proxyBody(ctx.request, headers, apiPath, profile);
     const upstreamStart = Date.now();
     let upstream;
     try {
