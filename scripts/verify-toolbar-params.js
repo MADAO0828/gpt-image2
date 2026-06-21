@@ -27,6 +27,13 @@ assertContains('edit sends n only when >1', 's.n>1&&k.append("n",String(s.n))');
 assertContains('png disables output_compression', 'u.output_format==="png"&&(u.output_compression=oa.output_compression)');
 assertContains('codexCli resets quality to auto', 's.provider==="openai"&&s.codexCli&&(u.quality=oa.quality)');
 
+
+// Admin/runtime profile plumbing must preserve b64_json preference.
+assertContains('settings normalization preserves active profile b64_json', 'responseFormatB64Json:m.responseFormatB64Json');
+assertContains('runtime profile inherits root b64_json override', 'responseFormatB64Json:typeof r.responseFormatB64Json==="boolean"?r.responseFormatB64Json:s.responseFormatB64Json');
+assertContains('generation sends b64_json when enabled', 'r.responseFormatB64Json&&(k.response_format="b64_json")');
+assertContains('edit sends b64_json when enabled', 'r.responseFormatB64Json&&k.append("response_format","b64_json")');
+
 // 4K mapping currently used by the toolbar.
 assertContains('4K 16:9 maps to 3840x2160', '"16:9":"3840x2160"');
 
