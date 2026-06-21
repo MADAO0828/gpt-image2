@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS users (
+﻿CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   username TEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,
@@ -28,5 +28,8 @@ CREATE TABLE IF NOT EXISTS prompts (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
--- 默认管理员账户（密码: 778839）
-INSERT OR IGNORE INTO users (username, password_hash, role) VALUES ('徐皓', '7a3e4b0d9247ed08cd9b5631b51b5a5a5cae66ef574c8b59929fa424c59aa710', 'admin');
+-- 默认管理员账号：徐皓 / 778839
+-- 密码算法必须与 functions 内的 passwordHash(password) 保持一致：
+-- base64url(sha256(password + ':gpt-image2-auth-salt-2026'))
+INSERT OR IGNORE INTO users (username, password_hash, role)
+VALUES ('徐皓', 'BtGs_bI3gUtzS6kpjjJyPE4e6GVrFhqjpCT-zoH3qb0', 'admin');

@@ -30,3 +30,13 @@ Thumbs.db
 *.pyc
 __pycache__/
 *.pyo
+.deploy/
+.deploy_tmp_*
+.tmp-*
+prompts_data.latest.tmp.json
+leaderai-index-latest.js
+leaderai-lab-*.js
+leaderai-lab-*.css
+pw-*.txt
+pw-*.png
+pw-*.json

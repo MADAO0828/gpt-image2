@@ -14,34 +14,54 @@
 <link rel="apple-touch-icon" href="./pwa-icon.svg" />
 <link rel="icon" href="./pwa-icon.svg" type="image/svg+xml" />
 <title>AI 工作台</title>
-<link rel="preload" href="./assets/index-DteWE59N.js?v=068-custom-1" as="script" crossorigin="anonymous">
-<link rel="preload" href="./assets/index-5KHrmTOl.css?v=068-custom-1" as="style" crossorigin="anonymous">
+<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=agent-prompts-2" crossorigin="anonymous">
+<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=agent-prompts-2" as="style" crossorigin="anonymous">
+<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=agent-prompts-2">
 <style>
 *{box-sizing:border-box}
+
+html{scroll-behavior:smooth}
+body,*{-webkit-tap-highlight-color:transparent}
+*{scrollbar-width:thin}
+.custom-scrollbar,.overflow-y-auto,[data-radix-scroll-area-viewport]{scroll-behavior:smooth;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
 body{margin:0;min-height:100vh;background:var(--loading-bg);color:#cbd5e1;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
-[aria-label="settings"],[aria-label="Settings"]{display:none!important;visibility:hidden!important}
+[aria-label="settings"],[aria-label="Settings"],button[aria-label="\8bbe\7f6e"],button[title="\8bbe\7f6e"],button[aria-label*="\8bbe\7f6e"],button[title*="\8bbe\7f6e"]{display:none!important;visibility:hidden!important}
 .loading-screen{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--loading-bg);z-index:99999}
 .loading-screen.hidden{opacity:0;pointer-events:none;transition:opacity .35s}
 .spinner{width:40px;height:40px;border:3px solid var(--loading-spinner);border-top-color:var(--loading-spinner-top);border-radius:50%;animation:spin .7s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 .loading-screen p{margin-top:20px;font-size:14px;color:#64748b;letter-spacing:.3px}
-.site-nav{position:fixed;top:10px;right:12px;z-index:9999;display:flex;align-items:center;gap:2px;background:#fff;border:1px solid rgba(0,0,0,0.08);border-radius:10px;padding:3px;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);box-shadow:0 2px 8px rgba(0,0,0,0.06)}html.dark .site-nav{background:rgba(17,24,39,.78);border-color:rgba(255,255,255,.1)}
+.site-nav{position:relative;z-index:1;display:flex;align-items:center;justify-content:flex-end;gap:2px;width:auto;margin:0 0 0 auto;background:#fff;border:1px solid rgba(0,0,0,0.08);border-radius:10px;padding:3px;box-shadow:0 2px 8px rgba(0,0,0,0.04);flex:0 0 auto}.site-nav[data-docked="0"]{display:none}html.dark .site-nav{background:#05070c;border-color:rgba(255,255,255,.1)}
 .site-nav a{width:32px;height:32px;border-radius:7px;display:flex;align-items:center;justify-content:center;text-decoration:none;font-size:15px;color:#475569;transition:background .18s,color .18s,transform .18s}html.dark .site-nav a{color:#cbd5e1}
-.site-nav a:hover{background:rgba(99,102,241,0.12);color:#6366f1}html.dark .site-nav a:hover{background:rgba(59,130,246,.18);color:#fff}
-.site-nav a:active{transform:scale(.94)}
-.site-nav .label{font-size:11px;color:#64748b;padding:0 7px 0 5px;letter-spacing:.02em}html.dark .site-nav .label{color:#94a3b8}
+.site-nav a{will-change:transform,background,color;position:relative;overflow:hidden}
+.site-nav a:hover{background:rgba(99,102,241,0.12);color:#6366f1;transform:translateY(-1px)}html.dark .site-nav a:hover{background:rgba(59,130,246,.18);color:#fff}
+.site-nav a:focus-visible{outline:2px solid rgba(99,102,241,.55);outline-offset:2px}
+.site-nav a:active{transform:scale(.92);transition-duration:.08s}
+.site-nav .label{font-size:11px;color:#64748b;padding:0 7px 0 5px;letter-spacing:.02em;max-width:120px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}html.dark .site-nav .label{color:#94a3b8}
 .site-nav .divider{width:1px;height:18px;background:rgba(0,0,0,0.08);margin:0 2px}html.dark .site-nav .divider{background:rgba(255,255,255,.12)}
-@media(max-width:640px){.site-nav{top:8px;right:8px}.site-nav .label{display:none}.site-nav a{width:34px;height:34px}}
+.site-nav .profile-switch-wrap{display:flex;align-items:center;min-width:0}
+.site-nav .profile-switch{height:32px;max-width:190px;border:0;border-radius:8px;background:#f8fafc;color:#0f172a;padding:0 28px 0 10px;font-size:12px;font-weight:700;outline:none;cursor:pointer;box-shadow:inset 0 0 0 1px rgba(0,0,0,.08);transition:box-shadow .18s,background .18s,transform .14s}
+.site-nav .profile-switch:hover{background:#eef2ff;box-shadow:inset 0 0 0 1px rgba(99,102,241,.28);transform:translateY(-1px)}
+.site-nav .profile-switch:focus-visible{box-shadow:0 0 0 2px rgba(99,102,241,.32),inset 0 0 0 1px rgba(99,102,241,.45)}
+.site-nav .profile-switch.saving{opacity:.72}.site-nav .profile-switch.error{box-shadow:inset 0 0 0 1px rgba(220,38,38,.55)}
+html.dark .site-nav .profile-switch{background:#0f172a;color:#fff;box-shadow:inset 0 0 0 1px rgba(255,255,255,.12)}html.dark .site-nav .profile-switch:hover{background:#111827;box-shadow:inset 0 0 0 1px rgba(129,140,248,.38)}
+@media(max-width:640px){.site-nav{margin-left:auto;justify-content:flex-end;flex-wrap:nowrap}.site-nav .label,.site-nav .divider{display:none}.site-nav a{width:34px;height:34px}.site-nav .profile-switch{width:112px;max-width:34vw;height:34px;font-size:11px;padding-left:8px;padding-right:22px}}
 :root{--loading-bg:#e5e7eb;--loading-text:#475569;--loading-spinner:rgba(99,102,241,0.3);--loading-spinner-top:#6366f1}
-html.dark{--loading-bg:#111827;--loading-text:#64748b;--loading-spinner:rgba(255,255,255,0.04);--loading-spinner-top:#6366f1}
+html.dark{--loading-bg:#000;--loading-text:#fff;--loading-spinner:rgba(255,255,255,0.12);--loading-spinner-top:#818cf8}
+html:not(.dark) body,html:not(.dark) #root,html:not(.dark) [data-home-main]{background:#fff!important;color:#000!important}
+html.dark body,html.dark #root,html.dark [data-home-main]{background:#000!important;color:#fff!important}
 </style>
 <script>
 (function(){
-  if('serviceWorker' in navigator){
-    navigator.serviceWorker.getRegistrations().then(function(regs){
-      regs.forEach(function(reg){reg.unregister();});
-    });
-  }
+  var shellVersion='gpt2-shell-20260621-agent-prompts-2';
+  try{
+    var last=localStorage.getItem('gpt-image2-shell-version');
+    if(last!==shellVersion){
+      localStorage.setItem('gpt-image2-shell-version',shellVersion);
+      if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(regs){regs.forEach(function(reg){reg.unregister();});}).catch(function(){});}
+      if(window.caches&&caches.keys){caches.keys().then(function(keys){keys.forEach(function(key){caches.delete(key);});}).catch(function(){});}
+    }
+  }catch(e){}
 })();
 </script>
 <script>
@@ -52,185 +72,514 @@ if(!('noModule' in HTMLScriptElement.prototype)){
 <script>
 (function(){
   var storeKey = 'gpt-image-playground';
-  function hideLoading(){
-    var el=document.getElementById('loading-screen');if(el){el.classList.add('hidden');}
+  var storeOwnerKey = 'gpt-image-playground:owner';
+  var storeUserPrefix = 'gpt-image-playground:user:';
+  var themeKey = 'gpt-image2-theme';
+  var assetVersion = 'gpt2-shell-20260621-agent-prompts-2';
+  function isWeChatBrowser(){
+    try{
+      var ua=navigator.userAgent||'';
+      return /MicroMessenger|WeChat|MQQBrowser|TBS|XWEB/i.test(ua);
+    }catch(e){return false;}
   }
-  function readStore(){
-    try {
-      var raw = localStorage.getItem(storeKey);
-      return raw ? JSON.parse(raw) : { state: {}, version: 2 };
-    } catch(e) {
-      return { state: {}, version: 2 };
+  function copyCurrentLink(){
+    try{
+      var url=location.href;
+      if(navigator.clipboard&&navigator.clipboard.writeText){
+        navigator.clipboard.writeText(url).then(function(){alert('链接已复制，请粘贴到 Chrome、Edge、Safari 或系统浏览器打开。');}).catch(function(){prompt('复制这个链接到外部浏览器打开：',url);});
+      }else{
+        prompt('复制这个链接到外部浏览器打开：',url);
+      }
+    }catch(e){}
+  }
+  function consumeTokenFromHash(){
+    try{
+      var hash=location.hash||'';
+      var m=hash.match(/(?:^#|[&#])gi2token=([^&]+)/);
+      if(m&&m[1]){
+        sessionStorage.setItem('gpt-image2-session-token',decodeURIComponent(m[1]));
+        history.replaceState(null,document.title,location.pathname+location.search);
+      }
+    }catch(e){}
+  }
+  function installCompatPolyfills(){
+    try{
+      if(!Object.hasOwn){Object.hasOwn=function(obj,key){return Object.prototype.hasOwnProperty.call(Object(obj),key);};}
+      if(window.crypto&&!window.crypto.randomUUID){window.crypto.randomUUID=function(){return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,function(c){var r=Math.random()*16|0,v=c==='x'?r:(r&3|8);return v.toString(16);});};}
+      if(!Array.prototype.findLast){Array.prototype.findLast=function(cb,thisArg){for(var i=this.length-1;i>=0;i--){if(cb.call(thisArg,this[i],i,this))return this[i];}};}
+      if(!Array.prototype.toReversed){Array.prototype.toReversed=function(){return this.slice().reverse();};}
+      if(!Array.prototype.toSorted){Array.prototype.toSorted=function(cb){return this.slice().sort(cb);};}
+    }catch(e){}
+  }
+  function hideLoading(){ var el=document.getElementById('loading-screen'); if(el){el.classList.add('hidden');} }
+  window.__gptImageCopyCurrentLink=copyCurrentLink;
+  function installFetchAuthFallback(){
+    try{
+      if(window.__gptImageFetchAuthFallbackInstalled||!window.fetch)return;
+      window.__gptImageFetchAuthFallbackInstalled=true;
+      var nativeFetch=window.fetch.bind(window);
+      window.fetch=function(input,init){
+        init=init||{};
+        try{
+          var url=typeof input==='string'?input:(input&&input.url)||'';
+          var sameOrigin=!/^https?:\/\//i.test(url)||url.indexOf(location.origin)===0;
+          var token=sessionStorage.getItem('gpt-image2-session-token')||'';
+          if(token&&sameOrigin){
+            var headers=new Headers(init.headers||(input&&input.headers)||{});
+            if(!headers.has('X-GPT-Image-Session'))headers.set('X-GPT-Image-Session',token);
+            init=Object.assign({},init,{headers:headers,credentials:init.credentials||'same-origin'});
+          }
+        }catch(e){}
+        return nativeFetch(input,init);
+      };
+    }catch(e){}
+  }
+  function escHtml(s){
+    return String(s||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]||c;});
+  }
+  function showLoadError(msg){
+    var el=document.getElementById('loading-screen'); if(!el)return;
+    var wechat=isWeChatBrowser();
+    var detail=String(msg||'\u8bf7\u5237\u65b0\u91cd\u8bd5\uff0c\u6216\u8fdb\u5165\u540e\u53f0\u68c0\u67e5\u914d\u7f6e\u3002');
+    if(wechat){
+      detail+=' \u5fae\u4fe1\u5185\u7f6e\u6d4f\u89c8\u5668/X5 WebView \u5bf9\u5f53\u524d AI \u5de5\u4f5c\u53f0\u4f7f\u7528\u7684\u73b0\u4ee3\u811a\u672c\u3001Cookie \u548c\u7f13\u5b58\u652f\u6301\u4e0d\u7a33\u5b9a\u3002\u5982\u679c\u4e00\u76f4\u65e0\u6cd5\u8fdb\u5165\uff0c\u8bf7\u590d\u5236\u94fe\u63a5\u5230 Chrome\u3001Edge\u3001Safari \u6216\u7cfb\u7edf\u6d4f\u89c8\u5668\u6253\u5f00\u3002';
     }
+    el.classList.remove('hidden');
+    el.innerHTML='<div style="max-width:460px;padding:22px;text-align:center"><h2 style="font-size:18px;margin:0 0 10px;color:var(--loading-text)">'+(wechat?'\u5fae\u4fe1\u6d4f\u89c8\u5668\u517c\u5bb9\u6027\u53d7\u9650':'\u4e3b\u9875\u9762\u52a0\u8f7d\u5931\u8d25')+'</h2><p style="margin:0 0 14px;color:#64748b;line-height:1.6">'+escHtml(detail)+'</p><div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap"><button onclick="location.reload()" style="border:0;border-radius:12px;padding:10px 16px;background:#6366f1;color:#fff;font-weight:700;cursor:pointer">\u91cd\u65b0\u52a0\u8f7d</button><button onclick="window.__gptImageCopyCurrentLink&&window.__gptImageCopyCurrentLink()" style="border:1px solid rgba(99,102,241,.35);border-radius:12px;padding:10px 16px;background:transparent;color:var(--loading-text);font-weight:700;cursor:pointer">\u590d\u5236\u94fe\u63a5</button><button onclick="location.href=\'/admin\'" style="border:1px solid rgba(99,102,241,.35);border-radius:12px;padding:10px 16px;background:transparent;color:var(--loading-text);font-weight:700;cursor:pointer">\u8fdb\u5165\u540e\u53f0</button><button onclick="location.href=\'/login\'" style="border:1px solid rgba(99,102,241,.35);border-radius:12px;padding:10px 16px;background:transparent;color:var(--loading-text);font-weight:700;cursor:pointer">\u91cd\u65b0\u767b\u5f55</button></div></div>';
   }
+  function handleAuthFailure(){
+    clearTimeout(safetyTimer);
+    if(isWeChatBrowser()){
+      showLoadError('登录状态校验失败。微信内置浏览器可能没有正确保存 Cookie 或页面存储，已停止自动跳转以避免重定向循环。请点击重新登录，或复制链接到外部浏览器打开。');
+      return;
+    }
+    location.replace('/login');
+  }
+  var authReady=false;
+  consumeTokenFromHash();
+  installCompatPolyfills();
+  installFetchAuthFallback();
+  function waitForAppReady(){ var started=Date.now(); var timer=setInterval(function(){ var root=document.getElementById('root'); var mounted=root&&root.children&&root.children.length>0; var ready=mounted&&root.innerText.trim().length>0; if((ready||mounted&&Date.now()-started>3000)&&authReady){clearInterval(timer);hideLoading();} else if(!mounted&&Date.now()-started>20000){clearInterval(timer);showLoadError('主程序启动超时：页面根节点没有成功挂载。请刷新重试，或进入后台检查当前用户配置。');} },120); }
+  function watchSystemTheme(cb){ try{ var mq=window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)'); if(!mq)return; if(mq.addEventListener)mq.addEventListener('change',cb); else if(mq.addListener)mq.addListener(cb); }catch(e){} }
+  function prefersDark(){ try{ return !!(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches); }catch(e){ return false; } }
+  function emptyStore(){ return {state:{},version:2}; }
+  function readStore(){ try { var raw=localStorage.getItem(storeKey); return raw?JSON.parse(raw):emptyStore(); } catch(e){ return emptyStore(); } }
+  function userStoreKey(uid){ return storeUserPrefix+encodeURIComponent(String(uid||'')); }
   function writeStore(next){
-    try { localStorage.setItem(storeKey, JSON.stringify(next)); } catch(e) {}
+    try {
+      var raw=JSON.stringify(next||emptyStore());
+      localStorage.setItem(storeKey, raw);
+      var owner=localStorage.getItem(storeOwnerKey)||'';
+      if(owner)localStorage.setItem(userStoreKey(owner), raw);
+    } catch(e){}
   }
-  function getProfile(cfg){
+  function saveCurrentStoreForOwner(owner){
+    try{
+      owner=String(owner||'').trim(); if(!owner)return;
+      var raw=localStorage.getItem(storeKey);
+      if(raw)localStorage.setItem(userStoreKey(owner), raw);
+    }catch(e){}
+  }
+  function userIdOf(user){ return user&&String(user.id||user.userId||user.username||'').trim(); }
+  function prepareUserLocalStore(user){
+    try{
+      var uid=userIdOf(user); if(!uid)return;
+      var owner=localStorage.getItem(storeOwnerKey)||'';
+      if(owner===uid){
+        if(!localStorage.getItem(storeKey)){
+          var currentSaved=localStorage.getItem(userStoreKey(uid));
+          localStorage.setItem(storeKey,currentSaved||JSON.stringify(emptyStore()));
+        }
+        return;
+      }
+      if(owner)saveCurrentStoreForOwner(owner);
+      else{
+        var legacy=localStorage.getItem(storeKey);
+        if(legacy)localStorage.setItem(storeUserPrefix+'legacy:'+encodeURIComponent(uid), legacy);
+      }
+      var saved=localStorage.getItem(userStoreKey(uid));
+      localStorage.setItem(storeKey, saved||JSON.stringify(emptyStore()));
+      localStorage.setItem(storeOwnerKey, uid);
+    }catch(e){}
+  }
+  function num(v, fallback){ var n=Number(v); return Number.isFinite(n)?n:fallback; }
+  function bool(v, fallback){ return v===undefined||v===null?!!fallback:!!v; }
+  function isMobileBrowser(){ try{return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent||'')}catch(e){return false;} }
+  function updateNavUser(name,role){
+    try{
+      var el=document.getElementById('workbenchAccountInfo');
+      if(!el)return;
+      var prefix=role==='admin'?'\u7ba1\u7406\u5458':'\u7528\u6237';
+      el.textContent=name?(prefix+' '+name):'\u5bfc\u822a';
+      el.title=el.textContent;
+    }catch(e){}
+  }
+  function profileIdOf(p){ return p&&String(p.id||p.name||'').trim(); }
+  function profileLabelOf(p){
+    var name=(p&&String(p.name||p.id||'').trim())||'API';
+    var model=(p&&String(p.model||'').trim())||'';
+    return model&&name.indexOf(model)<0 ? name+' · '+model : name;
+  }
+  function activeProfileFromSettings(settings){
+    settings=settings||{};
+    var profiles=Array.isArray(settings.profiles)?settings.profiles:[];
+    var id=settings.activeProfileId||(profiles[0]&&profileIdOf(profiles[0]))||'';
+    return profiles.find(function(p){return profileIdOf(p)===id})||profiles[0]||null;
+  }
+  function profileRuntimeFields(p, fallback){
+    fallback=fallback||{}; p=p||{};
     return {
-      id: 'default-openai',
-      name: '云端配置',
-      provider: 'openai',
-      baseUrl: cfg.defaultApiUrl || '',
-      apiKey: cfg.apiKey || 'cloudflare-proxy',
-      model: cfg.defaultModel || 'gpt-image-2',
-      timeout: Number(cfg.timeout) || 6000,
-      apiMode: cfg.apiMode || 'images',
-      codexCli: !!cfg.codexCli,
-      apiProxy: true,
-      responseFormatB64Json: false,
-      streamImages: !!cfg.streamImages,
-      streamPartialImages: Number(cfg.streamPartialImages) || 1
+      baseUrl:p.baseUrl||fallback.baseUrl||'',
+      apiKey:p.apiKey||fallback.apiKey||'',
+      model:p.model||fallback.model||'gpt-image-2',
+      timeout:num(p.timeout!==undefined&&p.timeout!==null?p.timeout:fallback.timeout,600),
+      apiMode:p.apiMode||fallback.apiMode||'images',
+      codexCli:bool(p.codexCli,fallback.codexCli),
+      apiProxy:p.apiProxy!==false,
+      responseFormatB64Json:bool(p.responseFormatB64Json,fallback.responseFormatB64Json),
+      streamImages:isMobileBrowser()?false:bool(p.streamImages,fallback.streamImages),
+      streamPartialImages:num(p.streamPartialImages!==undefined&&p.streamPartialImages!==null?p.streamPartialImages:fallback.streamPartialImages,1)
     };
   }
-  function applyPromptFromRepository(st){
+  function renderProfileSwitcher(cfg, activeOverride){
+    try{
+      var sel=document.getElementById('profileSwitch');
+      if(!sel)return;
+      cfg=cfg||window.__gptImageRuntimeConfig||{};
+      var st=readStore();
+      var settings=(st&&st.state&&st.state.settings)||{};
+      var profiles=Array.isArray(cfg.profiles)&&cfg.profiles.length?cfg.profiles:(Array.isArray(settings.profiles)?settings.profiles:[]);
+      if(!profiles.length){sel.innerHTML='<option value="">API</option>';sel.disabled=true;return;}
+      var active=activeOverride||cfg.activeProfileId||settings.activeProfileId||profileIdOf(profiles[0]);
+      sel.innerHTML=profiles.map(function(p){var id=profileIdOf(p);return '<option value="'+escHtml(id)+'">'+escHtml(profileLabelOf(p))+'</option>';}).join('');
+      sel.value=profiles.some(function(p){return profileIdOf(p)===active})?active:profileIdOf(profiles[0]);
+      sel.disabled=false;
+      sel.title='切换 API 配置：'+(sel.options[sel.selectedIndex]?sel.options[sel.selectedIndex].text:'');
+      if(!sel.__boundProfileSwitch){
+        sel.__boundProfileSwitch=true;
+        sel.addEventListener('change',function(){switchActiveProfile(sel.value);});
+      }
+    }catch(e){}
+  }
+  function setProfileSwitchState(state){
+    try{
+      var sel=document.getElementById('profileSwitch'); if(!sel)return;
+      sel.classList.remove('saving','error');
+      if(state)sel.classList.add(state);
+    }catch(e){}
+  }
+  function switchActiveProfile(id){
+    try{
+      id=String(id||'').trim(); if(!id)return;
+      var st=readStore();
+      st.state=st.state||{}; st.state.settings=st.state.settings||{};
+      var settings=st.state.settings;
+      var cfg=window.__gptImageRuntimeConfig||{};
+      var profiles=Array.isArray(settings.profiles)&&settings.profiles.length?settings.profiles:(Array.isArray(cfg.profiles)?cfg.profiles:[]);
+      var profile=profiles.find(function(p){return profileIdOf(p)===id});
+      if(!profile){renderProfileSwitcher(cfg,settings.activeProfileId);return;}
+      var next=Object.assign({},settings,profileRuntimeFields(profile,settings),{profiles:profiles,activeProfileId:id});
+      st.state.settings=next; st.version=2; writeStore(st);
+      if(cfg)cfg.activeProfileId=id;
+      window.__gptImageRuntimeConfig=cfg;
+      applyRuntimeToLiveStore(next,'');
+      renderProfileSwitcher(cfg,id);
+      setProfileSwitchState('saving');
+      fetch('/api/settings/save',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',cache:'no-store',body:JSON.stringify({settings:{activeProfileId:id}})})
+        .then(function(r){return r.ok?r.json():r.json().then(function(d){throw new Error(d&&d.error||'save failed')});})
+        .then(function(){setProfileSwitchState('');})
+        .catch(function(e){console.warn('[ProfileSwitch] save failed',e);setProfileSwitchState('error');setTimeout(function(){setProfileSwitchState('');},2400);});
+    }catch(e){console.warn('[ProfileSwitch] switch failed',e);setProfileSwitchState('error');}
+  }
+  function getPendingPrompt(){
     try {
-      var prompt = sessionStorage.getItem('prompt_to_use');
-      if (!prompt) return st;
-      sessionStorage.removeItem('prompt_to_use');
-      st.state = st.state || {};
-      st.state.galleryInputDraft = st.state.galleryInputDraft || {};
-      st.state.galleryInputDraft.prompt = prompt;
-      st.state.prompt = prompt;
-    } catch(e) {}
+      var p=sessionStorage.getItem('prompt_to_use')||localStorage.getItem('gpt-image2-pending-prompt')||'';
+      if(p){ sessionStorage.removeItem('prompt_to_use'); localStorage.removeItem('gpt-image2-pending-prompt'); }
+      return p;
+    } catch(e){ return ''; }
+  }
+  function pickActiveProfile(cfg){
+    var profiles=Array.isArray(cfg.profiles)&&cfg.profiles.length?cfg.profiles:[];
+    var activeId=cfg.activeProfileId || (profiles[0]&&profiles[0].id) || 'default-openai';
+    var p=profiles.find(function(x){return x&&x.id===activeId}) || profiles[0];
+    if(!p){
+      p={id:'default-openai',name:'云端配置',provider:'openai',baseUrl:cfg.defaultApiUrl||'',apiKey:cfg.apiKey||'cloudflare-proxy',model:cfg.defaultModel||'gpt-image-2',timeout:num(cfg.timeout,600),apiMode:cfg.apiMode||'images',codexCli:!!cfg.codexCli,apiProxy:cfg.apiProxy!==false,responseFormatB64Json:!!cfg.responseFormatB64Json,streamImages:isMobileBrowser()?false:!!cfg.streamImages,streamPartialImages:num(cfg.streamPartialImages,1)};
+      profiles=[p];
+    }
+    p=Object.assign({}, p, {
+      id:p.id||activeId,
+      name:p.name||'云端配置',
+      provider:p.provider||'openai',
+      baseUrl:cfg.defaultApiUrl||p.baseUrl||'',
+      apiKey:cfg.apiKey||p.apiKey||'cloudflare-proxy',
+      model:cfg.defaultModel||p.model||'gpt-image-2',
+      timeout:num(cfg.timeout!==undefined&&cfg.timeout!==null?cfg.timeout:p.timeout,600),
+      apiMode:cfg.apiMode||p.apiMode||'images',
+      codexCli:bool(p.codexCli,cfg.codexCli),
+      apiProxy:p.apiProxy!==false && cfg.apiProxy!==false,
+      responseFormatB64Json:bool(p.responseFormatB64Json,cfg.responseFormatB64Json),
+      streamImages:isMobileBrowser()?false:bool(p.streamImages,cfg.streamImages),
+      streamPartialImages:num(p.streamPartialImages||cfg.streamPartialImages,1)
+    });
+    var cleanProfiles=profiles.map(function(x){
+      var q=Object.assign({}, x||{});
+      if(q.id===(p.id||activeId))q=Object.assign(q,p);
+      q.id=q.id||('profile-'+Math.random().toString(36).slice(2,8));
+      q.name=q.name||q.id;
+      q.provider=q.provider||'openai';
+      q.baseUrl=q.baseUrl||'';
+      q.apiKey=q.apiKey||'cloudflare-proxy';
+      q.model=q.model||cfg.defaultModel||'gpt-image-2';
+      q.timeout=num(q.timeout!==undefined&&q.timeout!==null?q.timeout:cfg.timeout,600);
+      q.apiMode=q.apiMode||cfg.apiMode||'images';
+      q.apiProxy=q.apiProxy!==false && cfg.apiProxy!==false;
+      q.responseFormatB64Json=!!q.responseFormatB64Json;
+      q.streamImages=isMobileBrowser()?false:!!q.streamImages;
+      q.streamPartialImages=num(q.streamPartialImages||cfg.streamPartialImages,1);
+      return q;
+    });
+    return {profile:p, profiles:cleanProfiles};
+  }
+  function applyPendingPrompt(st, pendingPrompt){
+    if(!pendingPrompt) return st;
+    st.state=st.state||{};
+    st.state.settings=st.state.settings||{};
+    st.state.settings.persistInputOnRestart=true;
+    st.state.prompt=pendingPrompt;
+    st.state.inputImages=[];
+    st.state.galleryInputDraft={prompt:pendingPrompt,inputImages:[],maskDraft:null,maskEditorImageId:null,updatedAt:Date.now()};
     return st;
   }
+  function hasUsableLocalConfig(){
+    try{
+      var st=readStore();
+      var settings=(st&&st.state&&st.state.settings)||{};
+      var profiles=Array.isArray(settings.profiles)?settings.profiles:[];
+      var active=profiles.find(function(p){return p&&p.id===settings.activeProfileId})||profiles[0]||{};
+      var base=(settings.baseUrl||active.baseUrl||'').trim();
+      var key=(settings.apiKey||active.apiKey||'').trim();
+      return !!(base && key);
+    }catch(e){return false;}
+  }
+  function forceMobileNonStreamingLocalStore(){
+    if(!isMobileBrowser())return;
+    try{
+      var st=readStore();
+      st.state=st.state||{};
+      st.state.settings=st.state.settings||{};
+      st.state.settings.streamImages=false;
+      if(Array.isArray(st.state.settings.profiles)){
+        st.state.settings.profiles=st.state.settings.profiles.map(function(p){p=Object.assign({},p||{});p.streamImages=false;return p;});
+      }
+      writeStore(st);
+    }catch(e){}
+  }
+  function applyRuntimeToLiveStore(settings,pendingPrompt){
+    try{
+      window.__gptImageRuntimeSettings=settings||null;
+      window.__gptImageRuntimePrompt=pendingPrompt||'';
+      window.__applyGptImageRuntimeToStore=function(){
+        try{
+          var store=window.__gptImageStore;
+          var runtime=window.__gptImageRuntimeSettings;
+          if(!store||!runtime||!store.getState)return false;
+          var state=store.getState();
+          if(state&&typeof state.setSettings==='function') state.setSettings(runtime);
+          if(store.setState) store.setState({settings:Object.assign({},state&&state.settings||{},runtime)});
+          var prompt=window.__gptImageRuntimePrompt||'';
+          if(prompt&&state&&typeof state.setPrompt==='function'){
+            state.setPrompt(prompt);
+            window.__gptImageRuntimePrompt='';
+          }
+          return true;
+        }catch(e){return false;}
+      };
+      window.__applyGptImageRuntimeToStore();
+    }catch(e){}
+  }
   function syncRuntimeConfig(){
-    return fetch('/.well-known/img-runtime-config.json?v=' + Date.now(), { cache: 'no-store' })
-      .then(function(r){ return r.ok ? r.json() : null; })
+    var pendingPrompt=getPendingPrompt();
+    return fetch('/.well-known/img-runtime-config.json?v='+Date.now(),{cache:'no-store',credentials:'same-origin'})
+      .then(function(r){return r.ok?r.json():null})
       .then(function(cfg){
-        if (!cfg) return;
-        var st = applyPromptFromRepository(readStore());
-        var oldState = st.state || {};
-        var oldSettings = oldState.settings || {};
-        var profile = getProfile(cfg);
-        var cfgProfiles = Array.isArray(cfg.profiles) && cfg.profiles.length > 0 ? cfg.profiles : null;
-        var cfgProviders = Array.isArray(cfg.customProviders) && cfg.customProviders.length > 0 ? cfg.customProviders : null;
-        var settings = Object.assign({}, oldSettings, {
-          baseUrl: profile.baseUrl,
-          apiKey: profile.apiKey,
-          model: profile.model,
-          timeout: profile.timeout,
-          apiMode: profile.apiMode,
-          codexCli: profile.codexCli,
-          apiProxy: true,
-          streamImages: profile.streamImages,
-          streamPartialImages: profile.streamPartialImages,
-          customProviders: cfgProviders || (Array.isArray(oldSettings.customProviders) ? oldSettings.customProviders : []),
-          clearInputAfterSubmit: !!cfg.clearInputAfterSubmit,
-          persistInputOnRestart: !!cfg.persistInput,
-          taskCompletionNotification: !!cfg.taskNotification,
-          reuseTaskApiProfileTemporarily: cfg.reuseProfile !== undefined ? !!cfg.reuseProfile : !!oldSettings.reuseTaskApiProfileTemporarily,
-          alwaysShowRetryButton: cfg.alwaysShowRetry !== undefined ? !!cfg.alwaysShowRetry : !!oldSettings.alwaysShowRetryButton,
-          enterSubmit: cfg.enterSubmit !== undefined ? !!cfg.enterSubmit : !!oldSettings.enterSubmit,
-          referenceImageEditAction: cfg.refEditAction || oldSettings.referenceImageEditAction || 'ask',
-          zipDownloadRoutes: Array.isArray(oldSettings.zipDownloadRoutes) ? oldSettings.zipDownloadRoutes : ['task-selection','favorite-collection-selection'],
-          agentScrollToBottomAfterSubmit: cfg.agentScrollAfterSubmit !== false,
-          agentMaxToolRounds: Number(cfg.agentMaxToolRounds || cfg.agentMaxRounds) || 32,
-          agentWebSearch: !!cfg.agentWebSearch,
-          agentMathFormattingPrompt: cfg.mathFormatting !== undefined ? !!cfg.mathFormatting : oldSettings.agentMathFormattingPrompt !== false,
-          profiles: cfgProfiles || [profile],
-          activeProfileId: cfg.activeProfileId || profile.id
+        if(!cfg) throw new Error('runtime_config_empty');
+        window.__gptImageRuntimeConfig = cfg;
+        if(cfg.themeMode){ try{localStorage.setItem(themeKey,cfg.themeMode)}catch(e){} }
+        try{ if(window.__applyTheme) window.__applyTheme(); }catch(e){}
+        var st=applyPendingPrompt(readStore(), pendingPrompt);
+        var oldState=st.state||{};
+        var oldSettings=oldState.settings||{};
+        var picked=pickActiveProfile(cfg);
+        var profile=picked.profile;
+        var settings=Object.assign({}, oldSettings, {
+          cloudUserId:cfg.userId||null,
+          cloudUsername:cfg.username||'',
+          baseUrl:profile.baseUrl||'',
+          apiKey:profile.apiKey||'cloudflare-proxy',
+          model:profile.model||'gpt-image-2',
+          timeout:num(profile.timeout,600),
+          apiMode:profile.apiMode||'images',
+          codexCli:!!profile.codexCli,
+          apiProxy:profile.apiProxy!==false,
+          responseFormatB64Json:!!profile.responseFormatB64Json,
+          streamImages:isMobileBrowser()?false:!!profile.streamImages,
+          streamPartialImages:num(profile.streamPartialImages,1),
+          customProviders:Array.isArray(cfg.customProviders)?cfg.customProviders:[],
+          profiles:picked.profiles,
+          activeProfileId:cfg.activeProfileId||profile.id,
+          clearInputAfterSubmit:!!cfg.clearInputAfterSubmit,
+          persistInputOnRestart: pendingPrompt ? true : !!(cfg.persistInputOnRestart!==undefined?cfg.persistInputOnRestart:cfg.persistInput),
+          reuseTaskApiProfileTemporarily:!!cfg.reuseProfile,
+          alwaysShowRetryButton:!!cfg.alwaysShowRetry,
+          allowPromptRewrite:!!cfg.allowPromptRewrite,
+          taskCompletionNotification:!!(cfg.taskCompletionNotification!==undefined?cfg.taskCompletionNotification:cfg.taskNotification),
+          enterSubmit:!!cfg.enterSubmit,
+          referenceImageEditAction:cfg.refEditAction||'ask',
+          zipDownloadRoutes:Array.isArray(cfg.zipDownloadRoutes)?cfg.zipDownloadRoutes:(Array.isArray(oldSettings.zipDownloadRoutes)?oldSettings.zipDownloadRoutes:['task-selection','favorite-collection-selection']),
+          agentScrollToBottomAfterSubmit:cfg.agentScrollAfterSubmit!==false,
+          agentMaxToolRounds:num(cfg.agentMaxToolRounds||cfg.agentMaxRounds,15),
+          agentWebSearch:!!cfg.agentWebSearch,
+          agentMathFormattingPrompt:cfg.mathFormatting!==undefined?!!cfg.mathFormatting:true,
+          agentApiConfigMode:cfg.agentApiConfigMode||'off',
+          agentTextProfileId:cfg.agentTextProfileId||null,
+          agentImageProfileId:cfg.agentImageProfileId||null
         });
-        var oldParams = oldState.params || {};
-        var params = Object.assign({}, oldParams, {
-          size: cfg.size || oldParams.size || 'auto',
-          quality: cfg.quality || oldParams.quality || 'auto',
-          output_format: cfg.output_format || oldParams.output_format || 'png',
-          output_compression: cfg.output_compression === null || cfg.output_compression === undefined ? (oldParams.output_compression === undefined ? null : oldParams.output_compression) : Number(cfg.output_compression),
-          moderation: cfg.moderation || oldParams.moderation || 'auto',
-          n: Number(cfg.n || oldParams.n) || 1,
-          transparent_output: !!(cfg.transparent_output === true || oldParams.transparent_output === true)
-        });
-        st.state = Object.assign({}, oldState, { settings: settings, params: params });
-        st.version = 2;
+        st.state=Object.assign({}, oldState, {settings:settings});
+        st.version=2;
         writeStore(st);
+        applyRuntimeToLiveStore(settings,pendingPrompt);
+        renderProfileSwitcher(cfg, settings.activeProfileId);
       });
   }
   function hideWorkbenchSettings(){
-    try {
-      var labels = ['settings','Settings','设置','API 配置'];
-      Array.prototype.forEach.call(document.querySelectorAll('button,[aria-label],[title]'), function(el){
-        var label = el.getAttribute('aria-label') || el.getAttribute('title') || '';
-        var text = (el.textContent || '').trim();
-        if (labels.indexOf(label) >= 0 || text === '设置') {
-          el.style.display = 'none';
-          el.style.visibility = 'hidden';
-          el.setAttribute('data-hidden-by-shell', 'settings');
-        }
+    try{
+      Array.prototype.forEach.call(document.querySelectorAll('button,[aria-label],[title]'),function(el){
+        var label=el.getAttribute('aria-label')||el.getAttribute('title')||'';
+        var text=(el.textContent||'').trim();
+        var codeLabel=Array.prototype.map.call(label,function(ch){return ch.charCodeAt(0)}).join(',');
+        var codeText=Array.prototype.map.call(text,function(ch){return ch.charCodeAt(0)}).join(',');
+        var isSettings=label.toLowerCase()==='settings'||text.toLowerCase()==='settings'||codeLabel==='35774,32622'||codeText==='35774,32622'||codeLabel==='65,80,73,32,37197,32622'||codeText==='65,80,73,32,37197,32622';
+        if(isSettings){el.style.setProperty('display','none','important');el.style.setProperty('visibility','hidden','important');el.setAttribute('data-hidden-by-shell','settings');}
       });
-    } catch(e) {}
+    }catch(e){}
   }
-  function watchWorkbenchSettings(){
-    hideWorkbenchSettings();
-    try {
-      new MutationObserver(hideWorkbenchSettings).observe(document.documentElement, { childList: true, subtree: true });
-    } catch(e) {
-      setInterval(hideWorkbenchSettings, 1000);
+  function dockSiteNavIntoWorkbenchHeader(){
+    try{
+      var nav=document.querySelector('.site-nav');
+      if(!nav)return false;
+      var header=document.querySelector('#root header.safe-area-top')||document.querySelector('#root header');
+      if(!header)return false;
+      var inner=header.querySelector('.safe-header-inner')||header.firstElementChild||header;
+      if(!inner)return false;
+      if(nav.parentElement!==inner)inner.appendChild(nav);
+      nav.setAttribute('data-docked','1');
+      nav.style.pointerEvents='auto';
+      renderProfileSwitcher(window.__gptImageRuntimeConfig);
+      return true;
+    }catch(e){return false;}
+  }
+  function watchSiteNavDock(){
+    var tries=0;
+    function run(){ tries++; if(dockSiteNavIntoWorkbenchHeader()||tries>80)return; setTimeout(run,150); }
+    run();
+    try{new MutationObserver(dockSiteNavIntoWorkbenchHeader).observe(document.getElementById('root')||document.documentElement,{childList:true,subtree:true});}catch(e){}
+  }
+  function installPromptRepoWheel(){
+    var raf=0,targetPanel=null,velocity=0,lastTs=0;
+    function normDelta(ev){var d=ev.deltaY||0;if(ev.deltaMode===1)d*=18;else if(ev.deltaMode===2)d*=Math.max(320,window.innerHeight*.82);return d;}
+    function findPanel(ev){
+      var dialogs=Array.prototype.slice.call(document.querySelectorAll('div.fixed.inset-0'));
+      var dialog=dialogs.find(function(d){return (d.textContent||'').indexOf('\u63d0\u793a\u8bcd\u4ed3\u5e93')>=0;});
+      if(!dialog||!dialog.contains(ev.target))return null;
+      var nodes=Array.prototype.slice.call(dialog.querySelectorAll('div'));
+      return nodes.find(function(el){var cs=getComputedStyle(el);return (cs.overflowY==='auto'||cs.overflowY==='scroll')&&el.scrollHeight>el.clientHeight+4;})||dialog.querySelector('.overflow-y-auto')||dialog;
     }
+    function step(ts){
+      if(!targetPanel){raf=0;lastTs=0;return;}
+      var dt=lastTs?Math.min(32,ts-lastTs):16;lastTs=ts;
+      targetPanel.scrollTop+=velocity*(dt/16);
+      velocity*=Math.pow(0.82,dt/16);
+      if(Math.abs(velocity)<0.25){raf=0;velocity=0;targetPanel=null;lastTs=0;return;}
+      raf=requestAnimationFrame(step);
+    }
+    document.addEventListener('wheel',function(ev){
+      try{
+        var panel=findPanel(ev);
+        if(!panel)return;
+        var atTop=panel.scrollTop<=0&&ev.deltaY<0;
+        var atBottom=panel.scrollTop+panel.clientHeight>=panel.scrollHeight-1&&ev.deltaY>0;
+        if(atTop||atBottom)return;
+        targetPanel=panel;
+        velocity+=normDelta(ev)*0.58;
+        velocity=Math.max(-260,Math.min(260,velocity));
+        if(!raf)raf=requestAnimationFrame(step);
+        ev.preventDefault();
+      }catch(e){}
+    },{passive:false,capture:true});
   }
+  function watchWorkbenchSettings(){ hideWorkbenchSettings(); try{new MutationObserver(hideWorkbenchSettings).observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['aria-label','title','class','style']});}catch(e){setInterval(hideWorkbenchSettings,1000);} }
   function loadApp(){
-    hideLoading();
-    var script = document.createElement('script');
-    script.type = 'module';
-    script.crossOrigin = 'anonymous';
-    script.src = './assets/index-DteWE59N.js?v=068-custom-1';
+    var script=document.createElement('script');
+    script.type='module';
+    script.crossOrigin='anonymous';
+    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=agent-prompts-2';
+    script.onload=function(){waitForAppReady();};
+    script.onerror=function(){showLoadError('主程序脚本加载失败，请清空缓存后重试。');};
     document.head.appendChild(script);
     watchWorkbenchSettings();
+    watchSiteNavDock();
+    installPromptRepoWheel();
   }
-  var configPromise = syncRuntimeConfig();
-  var authPromise = fetch('/api/auth/me', { cache: 'no-store' }).then(function(r){
-    if (!r.ok) throw new Error('not_authenticated');
-    return r;
-  });
-  window.__themeState={themeKey:'gpt-image2-theme'};
-  window.__applyTheme=function(){
-    var t=localStorage.getItem(window.__themeState.themeKey)||'system';
-    var isDark=t==='dark'||(t==='system'&&window.matchMedia('(prefers-color-scheme: dark)').matches);
-    document.documentElement.classList.toggle('dark',isDark);
-    var meta=document.getElementById('meta-theme-color');
-    if(meta)meta.content=isDark?'#111827':'#f8fafc';
-    var btn=document.getElementById('theme-toggle');
-    if(btn){btn.textContent=t==='light'?'☀️':t==='dark'?'🌙':'💻';btn.setAttribute('data-theme',t);}
-  };
-  window.toggleTheme=function(){
-    var t=localStorage.getItem(window.__themeState.themeKey)||'system';
-    var n=t==='light'?'dark':t==='dark'?'system':'light';
-    localStorage.setItem(window.__themeState.themeKey,n);
-    window.__applyTheme();
-  };
-  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change',function(){
-    if((localStorage.getItem(window.__themeState.themeKey)||'system')==='system')window.__applyTheme();
-  });
-  var safetyTimer = setTimeout(function(){ location.replace('/login'); }, 30000);
-  authPromise.then(function(){
+  window.__themeState={themeKey:themeKey};
+  window.__applyTheme=function(){ var t=localStorage.getItem(themeKey)||'light'; var isDark=t==='dark'||(t==='system'&&prefersDark()); document.documentElement.classList.toggle('dark',isDark); document.documentElement.classList.toggle('light',!isDark); var meta=document.getElementById('meta-theme-color'); if(meta)meta.content=isDark?'#000':'#fff'; var btn=document.getElementById('theme-toggle'); if(btn){btn.textContent=t==='light'?'☀️':t==='dark'?'🌙':'💻';btn.setAttribute('data-theme',t);btn.title=t==='light'?'白天主题':t==='dark'?'黑夜主题':'跟随系统';} };
+  function saveThemeMode(t){ try{ fetch('/api/settings/save',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({settings:{themeMode:t}}),cache:'no-store'}).catch(function(){}); }catch(e){} }
+  window.toggleTheme=function(){ var t=localStorage.getItem(themeKey)||'light'; var n=t==='light'?'dark':t==='dark'?'system':'light'; localStorage.setItem(themeKey,n); window.__applyTheme(); saveThemeMode(n); };
+  watchSystemTheme(function(){ if((localStorage.getItem(themeKey)||'light')==='system')window.__applyTheme(); });
+  var appStarted=false;
+  function startApp(){ if(appStarted)return; appStarted=true; loadApp(); }
+  function delay(ms){return new Promise(function(resolve){setTimeout(resolve,ms);});}
+  function checkAuth(authAttempt){
+    return fetch('/api/auth/me?t='+Date.now()+'&a='+(authAttempt||0),{cache:'no-store',credentials:'same-origin'})
+      .then(function(r){if(!r.ok)throw new Error('not_authenticated');return r.json();})
+      .catch(function(e){
+        if((authAttempt||0)<2){return delay(isWeChatBrowser()?900:350).then(function(){return checkAuth((authAttempt||0)+1);});}
+        throw e;
+      });
+  }
+  var authPromise=checkAuth(0);
+  var safetyTimer=setTimeout(function(){handleAuthFailure()},30000);
+  function startWhenDomReady(){ if(document.getElementById('root')) startApp(); else if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',startApp,{once:true}); else setTimeout(startApp,0); }
+  authPromise.then(function(user){
+    prepareUserLocalStore(user);
+    updateNavUser(user&&user.username,user&&user.role);
+    authReady=true;
     clearTimeout(safetyTimer);
-    safetyTimer = setTimeout(function(){ location.replace('/login'); }, 25000);
-  });
-  Promise.all([authPromise, configPromise]).then(function(){
-    clearTimeout(safetyTimer);
-    loadApp();
-  }).catch(function(){
-    clearTimeout(safetyTimer);
-    location.replace('/login');
+    forceMobileNonStreamingLocalStore();
+    var hasLocalConfig=hasUsableLocalConfig();
+    startWhenDomReady();
+    return syncRuntimeConfig().catch(function(e){ console.warn('[Shell] runtime config sync failed',e); if(!hasLocalConfig) showLoadError(e&&e.message?e.message:'配置加载失败，请进入后台检查当前用户的 API 配置。'); });
+  }).catch(function(e){
+    if(e&&e.message==='not_authenticated')handleAuthFailure();
+    else showLoadError(e&&e.message?e.message:'登录或配置加载失败，请刷新重试。');
   });
 })();
 </script>
-<link rel="stylesheet" crossorigin href="./assets/index-5KHrmTOl.css?v=068-custom-1">
 </head>
 <body>
 <div id="loading-screen" class="loading-screen">
   <div class="spinner"></div>
-  <p>加载中...</p>
+  <p>&#21152;&#36733;&#20013;...</p>
 </div>
-<div id="root"></div>
-<nav class="site-nav" aria-label="site navigation">
-  <span class="label">导航</span>
+<nav class="site-nav" data-docked="0" aria-label="site navigation">
+  <span class="label" id="workbenchAccountInfo">&#39564;&#35777;&#20013;...</span>
+  <span class="profile-switch-wrap"><select id="profileSwitch" class="profile-switch" aria-label="API profile"><option value="">&#37197;&#32622;</option></select></span>
   <span class="divider"></span>
-  <a href="/prompts" title="提示词仓库" aria-label="prompt repository">📚</a>
-  <a href="javascript:toggleTheme()" id="theme-toggle" title="切换主题" style="font-size:16px">☀️</a>
-  <a href="/admin" title="管理员后台" aria-label="admin">⚙</a>
+  <a href="/prompts" title="&#25552;&#31034;&#35789;&#20179;&#24211;" aria-label="prompt repository">&#128218;</a>
+  <a href="javascript:toggleTheme()" id="theme-toggle" title="&#20999;&#25442;&#20027;&#39064;" style="font-size:16px">&#9728;&#65039;</a>
+  <a href="/admin" title="&#21518;&#21488;" aria-label="admin">&#9881;</a>
 </nav>
+<div id="root"></div>
+
 <script>window.__applyTheme();</script>
 </body>
 </html>

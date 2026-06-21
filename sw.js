@@ -1,12 +1,14 @@
-// Service Worker 已完全禁用
-// 所有请求直接通过浏览器，不进行任何缓存拦截
-self.addEventListener('install', function() {
+// This app no longer uses offline caching. Keep this file only to remove old registrations.
+self.addEventListener('install', function () {
   self.skipWaiting();
 });
-self.addEventListener('activate', function() {
-  self.clients.claim();
+
+self.addEventListener('activate', function (event) {
+  event.waitUntil(
+    self.registration.unregister().catch(function () {})
+  );
 });
-// 所有 fetch 直接透传，不做任何缓存
-self.addEventListener('fetch', function() {
-  return;
+
+self.addEventListener('fetch', function () {
+  // Intentionally do nothing: all requests go through the browser/network.
 });

@@ -1,16 +1,62 @@
-# 所有页面和 API 禁止缓存
-*
+# HTML entry pages: always revalidate to pick up new shell and login state.
+/
   Cache-Control: no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0
   Pragma: no-cache
   Expires: 0
 
-# 静态资源缓存 7 天
+/*.html
+  Cache-Control: no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0
+  Pragma: no-cache
+  Expires: 0
+
+/login
+  Cache-Control: no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0
+  Pragma: no-cache
+  Expires: 0
+
+/admin
+  Cache-Control: no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0
+  Pragma: no-cache
+  Expires: 0
+
+/prompts
+  Cache-Control: no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0
+  Pragma: no-cache
+  Expires: 0
+
+/user
+  Cache-Control: no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0
+  Pragma: no-cache
+  Expires: 0
+
+# Dynamic APIs and runtime config must never be cached.
+/api/*
+  Cache-Control: no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0
+  Pragma: no-cache
+  Expires: 0
+
+/.well-known/*
+  Cache-Control: no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0
+  Pragma: no-cache
+  Expires: 0
+
+# Service worker must revalidate so old cache logic can be replaced/unregistered.
+/sw.js
+  Cache-Control: no-store, no-cache, must-revalidate, max-age=0
+  Service-Worker-Allowed: /
+
+# Versioned static assets are safe to cache aggressively for faster startup.
 /assets/*
   Cache-Control: public, max-age=604800, immutable
 
 /pwa-icon.svg
   Cache-Control: public, max-age=604800, immutable
 
-# 提示词数据缓存 1 天
+/manifest.webmanifest
+  Cache-Control: no-store, no-cache, must-revalidate, max-age=0
+  Pragma: no-cache
+  Expires: 0
+
+# Prompt repository data is large; short cache improves loading without keeping it stale too long.
 /prompts_data.json
-  Cache-Control: public, max-age=86400
+  Cache-Control: public, max-age=300

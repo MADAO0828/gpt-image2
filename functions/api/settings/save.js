@@ -1,119 +1,68 @@
-function bd(s) {
-  s = s.replace(/-/g, '+').replace(/_/g, '/');
-  while (s.length % 4) s += '=';
-  return Uint8Array.from(atob(s), function(c) { return c.charCodeAt(0); });
-}
-function gc(h, n) {
-  var m = h.match(new RegExp('(?:^|;\\s*)' + n + '=([^;]*)'));
-  return m ? decodeURIComponent(m[1]) : null;
-}
-async function gk(secret) {
-  return crypto.subtle.importKey('raw', new TextEncoder().encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
-}
-async function vt(t, secret) {
-  var parts = t.split('.');
-  if (parts.length !== 3) throw new Error('invalid');
-  var k = await gk(secret);
-  var valid = await crypto.subtle.verify('HMAC', k, bd(parts[2]),
-    new TextEncoder().encode(parts[0] + '.' + parts[1]));
-  if (!valid) throw new Error('bad');
-  return JSON.parse(new TextDecoder().decode(bd(parts[1])));
-}
-async function vs(r, env) {
-  var t = gc(r.headers.get('Cookie') || '', 'session');
-  if (!t) return null;
-  try {
-    var p = await vt(t, env.JWT_SECRET);
-    if (p.exp && p.exp < Math.floor(Date.now() / 1000)) return null;
-    return await env.gpt_image2_db
-      .prepare('SELECT id, username, role FROM users WHERE id = ?')
-      .bind(p.userId).first();
-  } catch (e) { return null; }
-}
+const JWT_FALLBACK = 'gpt-image2-jwt-secret-key-2026-secure';
+const PASSWORD_SALT = 'gpt-image2-auth-salt-2026';
 
-// Get the first admin user's id (for global settings)
-async function getAdminId(db) {
-  var admin = await db.prepare('SELECT id FROM users WHERE role = ? ORDER BY id ASC LIMIT 1').bind('admin').first();
-  return admin ? admin.id : null;
+function secret(env) { return env && env.JWT_SECRET ? env.JWT_SECRET : JWT_FALLBACK; }
+function b64url(bytes) { return btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+function b64urlDecode(str) { str = str.replace(/-/g, '+').replace(/_/g, '/'); while (str.length % 4) str += '='; return Uint8Array.from(atob(str), c => c.charCodeAt(0)); }
+function getCookie(header, name) { const m = (header || '').match(new RegExp('(?:^|;\\s*)' + name + '=([^;]*)')); return m ? decodeURIComponent(m[1]) : null; }
+async function importHmacKey(value, usages) { return crypto.subtle.importKey('raw', new TextEncoder().encode(value), { name: 'HMAC', hash: 'SHA-256' }, false, usages); }
+async function signToken(payload, env) { const enc = new TextEncoder(); const head = b64url(enc.encode(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))); const body = b64url(enc.encode(JSON.stringify(payload))); const key = await importHmacKey(secret(env), ['sign']); const sig = await crypto.subtle.sign('HMAC', key, enc.encode(head + '.' + body)); return head + '.' + body + '.' + b64url(sig); }
+async function verifyToken(token, env) { const parts = String(token || '').split('.'); if (parts.length !== 3) throw new Error('invalid token'); const key = await importHmacKey(secret(env), ['verify']); const ok = await crypto.subtle.verify('HMAC', key, b64urlDecode(parts[2]), new TextEncoder().encode(parts[0] + '.' + parts[1])); if (!ok) throw new Error('bad signature'); const payload = JSON.parse(new TextDecoder().decode(b64urlDecode(parts[1]))); if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) throw new Error('expired'); return payload; }
+function getRequestToken(request) {
+  const cookieToken = getCookie(request.headers.get('Cookie') || '', 'session');
+  if (cookieToken) return cookieToken;
+  const headerToken = String(request.headers.get('X-GPT-Image-Session') || '').trim();
+  return headerToken || null;
 }
+async function currentUser(request, env) { const token = getRequestToken(request); if (!token) return null; try { const payload = await verifyToken(token, env); return await env.gpt_image2_db.prepare('SELECT id, username, role, last_login, last_ip, created_at FROM users WHERE id = ?').bind(payload.userId).first(); } catch (e) { return null; } }
+async function passwordHash(password) { const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(password + ':' + PASSWORD_SALT)); return b64url(hash); }
+function json(data, status = 200, extraHeaders = {}) { return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0', 'Pragma': 'no-cache', 'Expires': '0', ...extraHeaders } }); }
+function clientIp(request) { return request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || ''; }
 
-function json(data, status) {
-  return new Response(JSON.stringify(data), { 
-    status: status || 200, 
-    headers: { 
-      'Content-Type': 'application/json',
-      'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
-      'Pragma': 'no-cache',
-      'Expires': '0'
-    }
-  });
-}
-
-// Load settings for a specific user
-async function loadUserSettings(db, userId) {
-  if (!userId) return {};
-  var results = await db
-    .prepare('SELECT key, value, updated_at FROM user_settings WHERE user_id = ? ORDER BY key')
-    .bind(userId)
-    .all();
-  var settings = {};
-  (results.results || []).forEach(function(row) {
+async function loadSettings(db, userId) {
+  const result = await db.prepare('SELECT key, value, updated_at FROM user_settings WHERE user_id = ? ORDER BY key').bind(userId).all();
+  const settings = {};
+  (result.results || []).forEach(row => {
     try { settings[row.key] = JSON.parse(row.value); } catch (e) { settings[row.key] = row.value; }
   });
   return settings;
 }
 
-// POST /api/settings/save - ONLY admin can save global settings
-// Regular users cannot save settings - admin is the single source of truth
-export async function onRequestPost(ctx) {
-  var user = await vs(ctx.request, ctx.env);
-  if (!user) return json({ error: 'no login' }, 401);
-  // Only admin can modify global settings
-  if (user.role !== 'admin') return json({ error: 'insufficient permissions' }, 403);
+function normalizeIncoming(body) {
+  const source = body && body.settings !== undefined ? body.settings : body;
+  if (!source || typeof source !== 'object') return [];
+  if (Array.isArray(source)) return source.filter(item => item && item.key).map(item => ({ key: String(item.key), value: item.value }));
+  return Object.keys(source).map(key => ({ key, value: source[key] }));
+}
 
+export async function onRequestGet(ctx) {
+  const user = await currentUser(ctx.request, ctx.env);
+  if (!user) return json({ error: 'Unauthorized' }, 401);
+  const settings = await loadSettings(ctx.env.gpt_image2_db, user.id);
+  return json({ settings, user: { id: user.id, username: user.username, role: user.role } });
+}
+
+export async function onRequestPost(ctx) {
+  const user = await currentUser(ctx.request, ctx.env);
+  if (!user) return json({ error: 'Unauthorized' }, 401);
   try {
-    var text = await ctx.request.text();
-    var body = JSON.parse(text);
-    var settings = body.settings || body;
-    
-    // Convert object to array of {key, value}
-    if (!Array.isArray(settings)) {
-      settings = Object.entries(settings).map(function(e) { 
-        return { key: e[0], value: typeof e[1] === 'string' ? e[1] : JSON.stringify(e[1]) }; 
-      });
+    const body = await ctx.request.json();
+    const items = normalizeIncoming(body);
+    if (!items.length) return json({ error: 'No settings provided' }, 400);
+    for (const item of items) {
+      if (!item.key || item.value === undefined) continue;
+      const value = typeof item.value === 'string' ? item.value : JSON.stringify(item.value);
+      await ctx.env.gpt_image2_db.prepare("INSERT INTO user_settings (user_id, key, value) VALUES (?, ?, ?) ON CONFLICT(user_id, key) DO UPDATE SET value = ?, updated_at = datetime('now')").bind(user.id, item.key, value, value).run();
     }
-    
-    // Save to the FIRST admin account (global settings)
-    var adminId = await getAdminId(ctx.env.gpt_image2_db);
-    if (!adminId) return json({ error: 'no admin user found' }, 500);
-    
-    for (var i = 0; i < settings.length; i++) {
-      var s = settings[i];
-      if (!s.key) continue;
-      var val = typeof s.value === 'string' ? s.value : JSON.stringify(s.value);
-      await ctx.env.gpt_image2_db
-        .prepare('INSERT INTO user_settings (user_id, key, value) VALUES (?, ?, ?) ON CONFLICT(user_id, key) DO UPDATE SET value = ?, updated_at = datetime(\'now\')')
-        .bind(adminId, s.key, val, val)
-        .run();
-    }
-    
-    return json({ success: true, message: 'settings saved to global config' });
+    return json({ success: true, message: 'settings saved', userId: user.id });
   } catch (e) {
-    return json({ error: 'format error: ' + e.message }, 400);
+    return json({ error: 'Save failed: ' + (e.message || 'unknown error') }, 400);
   }
 }
 
-// GET /api/settings/save - Return ONLY global settings (admin = single source of truth)
-// No user overrides - everyone gets same settings from admin
-export async function onRequestGet(ctx) {
-  var user = await vs(ctx.request, ctx.env);
-  if (!user) return json({ error: 'no login' }, 401);
-  if (user.role !== 'admin') return json({ error: 'insufficient permissions' }, 403);
-  
-  // Load ONLY global defaults (from the first admin account)
-  var adminId = await getAdminId(ctx.env.gpt_image2_db);
-  var globalSettings = adminId ? await loadUserSettings(ctx.env.gpt_image2_db, adminId) : {};
-  
-  return json({ settings: globalSettings });
+export async function onRequestDelete(ctx) {
+  const user = await currentUser(ctx.request, ctx.env);
+  if (!user) return json({ error: 'Unauthorized' }, 401);
+  await ctx.env.gpt_image2_db.prepare('DELETE FROM user_settings WHERE user_id = ?').bind(user.id).run();
+  return json({ success: true });
 }

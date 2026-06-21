@@ -3,30 +3,34 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
 <meta name="referrer" content="no-referrer" />
-<meta name="theme-color" id="meta-theme-color" content="#000" />
+<meta name="theme-color" id="meta-theme-color" content="#fff" />
 <title>提示词仓库 - AI 工作台</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body,*{-webkit-tap-highlight-color:transparent}
+*{scrollbar-width:thin}
+.modal,.modal-p,.grid,.c{scroll-behavior:smooth;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
 :root{--bg:#fff;--surface:rgba(0,0,0,0.02);--border:rgba(0,0,0,0.08);--text:#000;--text2:#475569;--text3:#94a3b8;--accent:#6366f1;--accent2:#8b5cf6;--card-bg:#fff;--card-shadow:0 1px 3px rgba(0,0,0,0.06);--card-shadow-hover:0 8px 25px rgba(0,0,0,0.1);--input-bg:rgba(0,0,0,0.03);--overlay:rgba(0,0,0,0.4);--modal-bg:#fff;--toast-bg:rgba(34,197,94,0.12);--header-bg:rgba(255,255,255,0.85)}
 html.dark{--bg:#000;--surface:rgba(255,255,255,0.02);--border:rgba(255,255,255,0.08);--text:#fff;--text2:#94a3b8;--text3:#64748b;--card-bg:rgba(255,255,255,0.02);--card-shadow:0 1px 3px rgba(0,0,0,0.3);--card-shadow-hover:0 8px 30px rgba(0,0,0,0.4);--input-bg:rgba(0,0,0,0.3);--overlay:rgba(0,0,0,0.7);--modal-bg:#131826;--toast-bg:rgba(34,197,94,0.12);--header-bg:rgba(11,15,25,0.85)}
 body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;min-height:100vh;-webkit-font-smoothing:antialiased}
-.h{position:sticky;top:0;z-index:50;background:var(--header-bg);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-bottom:1px solid var(--border);padding:0 20px;height:56px;display:flex;align-items:center;justify-content:space-between}
-.hl{font-size:18px;font-weight:700;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
-.b{padding:8px 16px;border-radius:8px;font-size:13px;cursor:pointer;border:none;text-decoration:none;color:var(--text2);background:var(--surface);border:1px solid var(--border);transition:all .2s;display:inline-flex;align-items:center;gap:4px;font-family:inherit}
-.b:hover{color:var(--text);border-color:var(--accent);background:rgba(99,102,241,0.06)}
+.h{position:relative;z-index:1;background:var(--header-bg);border-bottom:1px solid var(--border);padding:10px 20px;min-height:56px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.hl{font-size:18px;font-weight:700;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}.acct{font-size:12px;color:var(--text2);padding:7px 10px;border:1px solid var(--border);border-radius:10px;background:var(--surface);max-width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.b{padding:8px 16px;border-radius:8px;font-size:13px;cursor:pointer;border:none;text-decoration:none;color:var(--text2);background:var(--surface);border:1px solid var(--border);transition:transform .14s cubic-bezier(.2,.8,.2,1),box-shadow .18s,background .18s,border-color .18s,color .18s;display:inline-flex;align-items:center;gap:4px;font-family:inherit;will-change:transform}
+.b:hover{color:var(--text);border-color:var(--accent);background:rgba(99,102,241,0.06);transform:translateY(-1px)}.b:active{transform:scale(.96);transition-duration:.06s}.b:focus-visible{outline:2px solid rgba(99,102,241,.55);outline-offset:2px}
 .c{max-width:1200px;margin:0 auto;padding:16px}
 .srch input{width:100%;padding:10px 16px;margin-bottom:14px;background:var(--input-bg);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:14px;outline:none;transition:border-color .2s,box-shadow .2s;font-family:inherit}
 .srch input:focus{border-color:var(--accent);box-shadow:0 0 0 2px rgba(99,102,241,0.08)}
 .cats{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
-.cat{padding:5px 14px;border-radius:16px;font-size:12px;cursor:pointer;border:1px solid var(--border);color:var(--text2);background:transparent;white-space:nowrap;transition:all .2s}
-.cat:hover{background:var(--surface);color:var(--text);border-color:var(--text3)}
+.cat{padding:5px 14px;border-radius:16px;font-size:12px;cursor:pointer;border:1px solid var(--border);color:var(--text2);background:transparent;white-space:nowrap;transition:transform .14s,background .18s,border-color .18s,color .18s;will-change:transform}
+.cat:hover{background:var(--surface);color:var(--text);border-color:var(--text3);transform:translateY(-1px)}.cat:active{transform:scale(.96)}
 .cat.on{background:rgba(99,102,241,0.12);color:var(--accent);border-color:rgba(99,102,241,0.25);font-weight:500}
 .info{font-size:12px;color:var(--text3);margin-bottom:14px;display:flex;justify-content:space-between}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
 @media(max-width:640px){.grid{grid-template-columns:repeat(2,1fr);gap:10px}}
 @media(max-width:400px){.grid{grid-template-columns:1fr}}
 .card{background:var(--card-bg);border:1px solid var(--border);border-radius:12px;overflow:hidden;cursor:pointer;transition:all .2s;box-shadow:var(--card-shadow);animation:cardIn .3s ease both}
-.card:hover{transform:translateY(-2px);border-color:rgba(99,102,241,0.25);box-shadow:var(--card-shadow-hover)}
+.card:hover{transform:translateY(-2px);border-color:rgba(99,102,241,0.25);box-shadow:var(--card-shadow-hover)}.card:active{transform:scale(.985);transition-duration:.06s}
 @keyframes cardIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
 .card-img{width:100%;aspect-ratio:16/9;overflow:hidden;background:var(--surface)}
 .card-img img{width:100%;height:100%;object-fit:cover;transition:transform .4s}
@@ -47,15 +51,60 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 .modal-t{font-size:18px;font-weight:700;margin-bottom:10px}
 .modal-p{font-size:13px;color:var(--text2);line-height:1.7;margin-bottom:16px;white-space:pre-wrap;max-height:400px;overflow-y:auto}
 .modal-acts{display:flex;gap:8px;flex-wrap:wrap}
-.ts{position:fixed;top:16px;right:16px;z-index:9999;padding:8px 16px;border-radius:8px;font-size:12px;background:var(--toast-bg);color:#22c55e;border:1px solid rgba(34,197,94,0.25);animation:slideIn .3s ease}
-@keyframes slideIn{from{transform:translateX(100px);opacity:0}to{transform:translateX(0);opacity:1}}
+.ts{position:fixed;left:50%;bottom:calc(18px + env(safe-area-inset-bottom));transform:translateX(-50%);z-index:90;max-width:min(360px,calc(100vw - 28px));padding:8px 16px;border-radius:8px;font-size:12px;background:var(--toast-bg);color:#22c55e;border:1px solid rgba(34,197,94,0.25);animation:toastIn .22s ease;pointer-events:none;text-align:center;box-shadow:0 10px 30px rgba(15,23,42,.12)}
+@keyframes toastIn{from{transform:translate(-50%,10px);opacity:0}to{transform:translate(-50%,0);opacity:1}}
 </style>
 <script>
 (function(){
+  try{if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(regs){regs.forEach(function(reg){reg.unregister()})})}if(window.caches&&caches.keys){caches.keys().then(function(keys){keys.forEach(function(key){caches.delete(key)})}).catch(function(){})}}catch(e){}
   window.__themeState={themeKey:'gpt-image2-theme'};
+  function isWeChatBrowser(){try{return /MicroMessenger|WeChat|MQQBrowser|TBS|XWEB/i.test(navigator.userAgent||'')}catch(e){return false}}
+  function consumeTokenFromHash(){try{var m=(location.hash||'').match(/(?:^#|[&#])gi2token=([^&]+)/);if(m&&m[1]){sessionStorage.setItem('gpt-image2-session-token',decodeURIComponent(m[1]));history.replaceState(null,document.title,location.pathname+location.search)}}catch(e){}}
+  function authFailed(){
+    if(isWeChatBrowser()){
+      var list=document.getElementById('grid')||document.getElementById('cats');
+      if(list){
+        var wrap=document.createElement('div');
+        wrap.className='ld';
+        var msg=document.createElement('div');
+        msg.textContent='微信内置浏览器登录状态异常，已停止自动跳转以避免重定向循环。';
+        var login=document.createElement('button');
+        login.className='b';
+        login.textContent='重新登录';
+        login.onclick=function(){location.href='/login';};
+        var copy=document.createElement('button');
+        copy.className='b';
+        copy.textContent='复制链接';
+        var copyUrl=location.origin+'/prompts';
+        copy.onclick=function(){
+          if(navigator.clipboard&&navigator.clipboard.writeText){
+            navigator.clipboard.writeText(copyUrl).catch(function(){prompt('复制链接到外部浏览器打开：',copyUrl);});
+          }else{
+            prompt('复制链接到外部浏览器打开：',copyUrl);
+          }
+        };
+        wrap.appendChild(msg);
+        wrap.appendChild(document.createElement('br'));
+        wrap.appendChild(document.createElement('br'));
+        wrap.appendChild(login);
+        wrap.appendChild(document.createTextNode(' '));
+        wrap.appendChild(copy);
+        list.innerHTML='';
+        list.appendChild(wrap);
+      }
+      return;
+    }
+    location.replace('/login');
+  }
+  window.authFailed=authFailed;
+  function addAuthFallback(opt){opt=opt||{};try{var token=sessionStorage.getItem('gpt-image2-session-token')||'';if(token){var h=new Headers(opt.headers||{});h.set('X-GPT-Image-Session',token);opt.headers=h;opt.credentials=opt.credentials||'same-origin'}}catch(e){}return opt}
+  var nativeFetch=window.fetch&&window.fetch.bind(window);
+  if(nativeFetch&&!window.__gptImageFetchAuthFallbackInstalled){window.__gptImageFetchAuthFallbackInstalled=true;window.fetch=function(input,opt){return nativeFetch(input,addAuthFallback(opt||{}))}}
+  function watchSystemTheme(cb){try{var mq=window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)');if(!mq)return;if(mq.addEventListener)mq.addEventListener('change',cb);else if(mq.addListener)mq.addListener(cb)}catch(e){}}
+  function safePrefersDark(){try{return !!(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)}catch(e){return false}}
   window.__applyTheme=function(){
-    var t=localStorage.getItem(window.__themeState.themeKey)||'system';
-    var prefersDark=window.matchMedia('(prefers-color-scheme: dark)').matches;
+    var t=localStorage.getItem(window.__themeState.themeKey)||'light';
+    var prefersDark=safePrefersDark();
     var isDark=t==='dark'||(t==='system'&&prefersDark);
     document.documentElement.classList.toggle('dark',isDark);
     document.documentElement.classList.toggle('light',!isDark);
@@ -65,20 +114,22 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
     if(btn){btn.textContent=t==='light'?'☀️':t==='dark'?'🌙':'💻';btn.title='click to toggle theme';}
   };
   window.toggleTheme=function(){
-    var t=localStorage.getItem(window.__themeState.themeKey)||'system';
+    var t=localStorage.getItem(window.__themeState.themeKey)||'light';
     var n=t==='light'?'dark':t==='dark'?'system':'light';
     localStorage.setItem(window.__themeState.themeKey,n);
     window.__applyTheme();
+    try{fetch('/api/settings/save',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({settings:{themeMode:n}}),cache:'no-store'}).catch(function(){})}catch(e){}
   };
   window.__applyTheme();
-  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change',function(){
-    if((localStorage.getItem(window.__themeState.themeKey)||'system')==='system')window.__applyTheme();
+  consumeTokenFromHash();
+  watchSystemTheme(function(){
+    if((localStorage.getItem(window.__themeState.themeKey)||'light')==='system')window.__applyTheme();
   });
 })();
 </script>
 </head><body>
 <header class="h"><span class="hl">📚 提示词仓库</span>
-<div style="display:flex;gap:4px;align-items:center">
+<div style="display:flex;gap:4px;align-items:center"><span class="acct" id="promptAccountInfo">&#39564;&#35777;&#20013;...</span>
   <button onclick="toggleTheme()" id="theme-toggle" class="b" style="font-size:16px;padding:5px 10px">💻</button><script>window.__applyTheme();</script>
   <a href="/admin" class="b" title="管理员后台">⚙️</a>
   <a href="/" class="b">← 返回</a>
@@ -109,6 +160,7 @@ function escHtml(s){if(!s)return"";return(""+s).replace(/&/g,"&amp;").replace(/<
 function escAttr(s){if(!s)return"";return(""+s).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
 function trunc(s,n){if(!s)return"";return s.length>n?s.substring(0,n)+"...":s}
 function norm(p){return{c:p.c||p.category||"",t:p.t||p.title||"",p:p.p||p.prompt||"",i:p.i||p.image_url||""}}
+function imgProxyUrl(u){if(!u)return"";return "/api/prompt-image?u="+encodeURIComponent(u)}
 function setLoading(text){document.getElementById("cats").innerHTML='<div class="ld">'+escHtml(text)+'</div>'}
 function apiUrl(page){var q=document.getElementById("s").value.trim();var url="/api/prompts?page="+page+"&limit="+ITEMS_PER_PAGE;if(currentCat!=="all")url+="&cat="+encodeURIComponent(currentCat);if(q)url+="&q="+encodeURIComponent(q);return url}
 function loadCategories(){
@@ -177,13 +229,14 @@ function renderItems(rows, startIdx){
   var grid=document.getElementById("grid");
   for(var i=0;i<rows.length;i++){
     var p=rows[i],idx=startIdx+i,card=document.createElement("div");
-    card.className="card";card.style.animationDelay=Math.min(i*30,2000)+'ms';card.setAttribute("data-idx",idx);
+    card.className="card";card.style.animationDelay=Math.min(i*12,240)+'ms';card.setAttribute("data-idx",idx);
     card.onclick=function(){openModal(parseInt(this.getAttribute("data-idx")))};
     var html="";
-    if(p.i)html+='<div class="card-img"><img src="'+escAttr(p.i)+'" referrerpolicy="no-referrer" alt="" loading="lazy" onerror="this.style.display=\'none\'"></div>';
+    if(p.i)html+='<div class="card-img"><img src="'+escAttr(imgProxyUrl(p.i))+'" referrerpolicy="no-referrer" alt="" loading="lazy" onerror="this.style.display=\'none\'"></div>';
     html+='<div class="card-body"><div class="card-cat">'+escHtml(p.c)+'</div><div class="card-t">'+escHtml(p.t)+'</div><div class="card-p">'+escHtml(trunc(p.p,60))+'</div></div>';
     card.innerHTML=html;grid.appendChild(card);
   }
+  var sentinel=document.getElementById('loadSentinel');if(!sentinel){sentinel=document.createElement('div');sentinel.id='loadSentinel';sentinel.style.height='1px';grid.appendChild(sentinel)}else{grid.appendChild(sentinel)}
 }
 function updateInfo(){
   document.getElementById("info").textContent="📦 "+totalItems+" 个提示词";
@@ -191,23 +244,25 @@ function updateInfo(){
 }
 function reloadList(){filteredData=[];document.getElementById("grid").innerHTML="";loadPage(1,true)}
 document.getElementById("lb").addEventListener("click",function(){loadPage(currentPage+1,false)});
+var sentinelObserver=new IntersectionObserver(function(entries){if(entries[0].isIntersecting&&filteredData.length<totalItems){loadPage(currentPage+1,false)}},{rootMargin:'1800px 0px'});setTimeout(function(){var s=document.getElementById('loadSentinel');if(s)sentinelObserver.observe(s)},1000);
 document.getElementById("cats").addEventListener("click",function(e){var t=e.target;if(!t.classList.contains("cat"))return;currentCat=t.getAttribute("data-c");Array.from(document.querySelectorAll(".cat")).forEach(function(el){el.classList.remove("on")});t.classList.add("on");reloadList()});
 var timer=null;document.getElementById("s").addEventListener("input",function(){clearTimeout(timer);timer=setTimeout(reloadList,250)});
-function openModal(i){if(!filteredData[i])return;currentPrompt=i;var p=filteredData[i];document.getElementById("mc2").textContent=p.c||"";document.getElementById("mt").textContent=p.t||"";document.getElementById("mp").textContent=p.p||"";var img=document.getElementById("mi");if(p.i){img.src=p.i;img.style.display="block"}else{img.style.display="none"}document.getElementById("modal").classList.add("show")}
+function openModal(i){if(!filteredData[i])return;currentPrompt=i;var p=filteredData[i];document.getElementById("mc2").textContent=p.c||"";document.getElementById("mt").textContent=p.t||"";document.getElementById("mp").textContent=p.p||"";var img=document.getElementById("mi");if(p.i){img.src=imgProxyUrl(p.i);img.setAttribute("data-original-src",p.i);img.style.display="block"}else{img.style.display="none"}document.getElementById("modal").classList.add("show")}
 function closeModal(){document.getElementById("modal").classList.remove("show")}
 document.getElementById("modal").addEventListener("click",function(e){if(e.target===this)closeModal()});
 document.addEventListener("keydown",function(e){if(e.key==="Escape")closeModal()});
 document.getElementById("mcp").addEventListener("click",function(){if(currentPrompt>=0&&filteredData[currentPrompt]){navigator.clipboard.writeText(filteredData[currentPrompt].p||"");showToast()}});
-document.getElementById("mus").addEventListener("click",function(){if(currentPrompt>=0&&filteredData[currentPrompt]){sessionStorage.setItem("prompt_to_use",filteredData[currentPrompt].p||"");location.href="/"}});
+document.getElementById("mus").addEventListener("click",function(){if(currentPrompt>=0&&filteredData[currentPrompt]){var pp=filteredData[currentPrompt].p||"";sessionStorage.setItem("prompt_to_use",pp);try{localStorage.setItem("gpt-image2-pending-prompt",pp)}catch(e){}location.href="/"}});
 function showToast(){var d=document.createElement("div");d.className="ts";d.textContent="✅ 已复制";document.body.appendChild(d);setTimeout(function(){d.remove()},1500)}
 var vi=document.getElementById("vi");
 var mi=document.getElementById("mi");
 mi.addEventListener("click",function(){
   if(currentPrompt>=0&&filteredData[currentPrompt]&&filteredData[currentPrompt].i){
-    vi.src=filteredData[currentPrompt].i;
+    vi.src=imgProxyUrl(filteredData[currentPrompt].i);
     document.getElementById("imgViewer").classList.add("show")
   }
 });
 document.getElementById("imgViewer").addEventListener("click",function(){this.classList.remove("show")});
+fetch('/api/auth/me',{cache:'no-store',credentials:'same-origin'}).then(function(r){if(!r.ok){authFailed();return null}return r.json()}).then(function(u){var el=document.getElementById('promptAccountInfo');if(el&&u){el.textContent=(u.role==='admin'?'\u7ba1\u7406\u5458 ':'\u7528\u6237 ')+u.username;el.title=el.textContent}}).catch(function(){authFailed()});
 loadCategories();
 </script></body></html>

@@ -1,8 +1,17 @@
 {
-  "name": "AI 工作台",
-  "short_name": "AI 工作台",
-  "start_url": "/login",
+  "name": "AI \u5de5\u4f5c\u53f0",
+  "short_name": "AI \u5de5\u4f5c\u53f0",
+  "start_url": "/",
+  "scope": "/",
   "display": "browser",
-  "background_color": "#0b0f19",
-  "theme_color": "#0b0f19"
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "icons": [
+    {
+      "src": "/pwa-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
 }
