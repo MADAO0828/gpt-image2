@@ -14,9 +14,9 @@
 <link rel="apple-touch-icon" href="./pwa-icon.svg" />
 <link rel="icon" href="./pwa-icon.svg" type="image/svg+xml" />
 <title>AI 工作台</title>
-<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=b64fix-20260621" crossorigin="anonymous">
-<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=b64fix-20260621" as="style" crossorigin="anonymous">
-<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=b64fix-20260621">
+<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=profile-fix-20260621" crossorigin="anonymous">
+<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=profile-fix-20260621" as="style" crossorigin="anonymous">
+<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=profile-fix-20260621">
 <style>
 *{box-sizing:border-box}
 
@@ -92,7 +92,7 @@ html.gpt-agent-mode .agent-chat-inputbar button[aria-label="提示词仓库"]{di
 </style>
 <script>
 (function(){
-  var shellVersion='gpt2-shell-20260621-b64fix-20260621';
+  var shellVersion='gpt2-shell-20260621-profile-fix-20260621';
   try{
     var last=localStorage.getItem('gpt-image2-shell-version');
     if(last!==shellVersion){
@@ -114,7 +114,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
   var storeOwnerKey = 'gpt-image-playground:owner';
   var storeUserPrefix = 'gpt-image-playground:user:';
   var themeKey = 'gpt-image2-theme';
-  var assetVersion = 'gpt2-shell-20260621-b64fix-20260621';
+  var assetVersion = 'gpt2-shell-20260621-profile-fix-20260621';
   function isWeChatBrowser(){
     try{
       var ua=navigator.userAgent||'';
@@ -930,7 +930,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
     var script=document.createElement('script');
     script.type='module';
     script.crossOrigin='anonymous';
-    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=b64fix-20260621';
+    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=profile-fix-20260621';
     var settled=false;
     script.onload=function(){settled=true;setLoadingStage('\u4e3b\u7a0b\u5e8f\u811a\u672c\u5df2\u52a0\u8f7d\uff0c\u7b49\u5f85\u754c\u9762\u6302\u8f7d...');waitForAppReady();};
     script.onerror=function(){settled=true;showLoadError('\u4e3b\u7a0b\u5e8f\u811a\u672c\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u6e05\u7a7a\u7f13\u5b58\u540e\u91cd\u8bd5\u3002');};
