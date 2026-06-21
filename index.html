@@ -178,7 +178,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       if((ready||mounted&&Date.now()-started>3000)&&authReady){
         clearInterval(timer);
         hideLoading();
-        setTimeout(function(){watchWorkbenchSettings();watchSiteNavDock();installPromptRepoWheel();},300);
+        setTimeout(function(){watchWorkbenchSettings();watchSiteNavDock();installPromptRepoWheel();installAgentGuard();},300);
       } else if(!mounted&&Date.now()-started>20000){
         clearInterval(timer);
         showLoadError('\u4e3b\u7a0b\u5e8f\u542f\u52a8\u8d85\u65f6\uff1a\u4e3b\u811a\u672c\u5df2\u8bf7\u6c42\uff0c\u4f46\u9875\u9762\u6839\u8282\u70b9\u6ca1\u6709\u6210\u529f\u6302\u8f7d\u3002\u8bf7\u5237\u65b0\u91cd\u8bd5\uff0c\u6216\u8fdb\u5165\u540e\u53f0\u68c0\u67e5\u5f53\u524d\u7528\u6237\u914d\u7f6e\u3002');
@@ -264,6 +264,50 @@ if(!('noModule' in HTMLScriptElement.prototype)){
     var profiles=Array.isArray(settings.profiles)?settings.profiles:[];
     var id=settings.activeProfileId||(profiles[0]&&profileIdOf(profiles[0]))||'';
     return profiles.find(function(p){return profileIdOf(p)===id})||profiles[0]||null;
+  }
+  function isResponsesProfile(p){return !!(p&&String(p.provider||'openai').toLowerCase()==='openai'&&String(p.apiMode||'').toLowerCase()==='responses'&&String(p.baseUrl||'').trim()&&String(p.apiKey||'').trim());}
+  function isImageProfile(p){return !!(p&&String(p.baseUrl||'').trim()&&String(p.apiKey||'').trim());}
+  function normalizeAgentProfiles(settings){
+    settings=settings||{};
+    var profiles=Array.isArray(settings.profiles)?settings.profiles:[];
+    var mode=String(settings.agentApiConfigMode||'off');
+    if(mode==='same')mode='native'; if(mode==='custom')mode='hybrid';
+    if(mode!=='native'&&mode!=='hybrid')mode='off';
+    var text=profiles.find(function(p){return profileIdOf(p)===settings.agentTextProfileId&&isResponsesProfile(p)})||profiles.find(isResponsesProfile)||null;
+    var img=profiles.find(function(p){return profileIdOf(p)===settings.agentImageProfileId&&isImageProfile(p)})||profiles.find(function(p){return profileIdOf(p)===settings.activeProfileId&&isImageProfile(p)})||profiles.find(isImageProfile)||null;
+    if(mode==='hybrid'&&(!text||!img))mode='off';
+    if(mode==='native'){
+      var active=activeProfileFromSettings(settings);
+      if(!isResponsesProfile(active)) mode=text?'hybrid':'off';
+    }
+    settings.agentApiConfigMode=mode;
+    settings.agentTextProfileId=text?profileIdOf(text):null;
+    settings.agentImageProfileId=img?profileIdOf(img):null;
+    return settings;
+  }
+  function agentReadyMessage(settings){
+    settings=normalizeAgentProfiles(Object.assign({},settings||{}));
+    if(settings.agentApiConfigMode==='off')return 'Agent ??????? OpenAI Responses ????????? > Agent?? ???????????? API??? Responses ????????';
+    if(settings.agentApiConfigMode==='hybrid'&&!settings.agentTextProfileId)return 'Agent ????????????? Agent?? ??? Responses API ?????';
+    return '';
+  }
+  function installAgentGuard(){
+    try{
+      if(window.__gptImageAgentGuardInstalled)return; window.__gptImageAgentGuardInstalled=true;
+      document.addEventListener('click',function(ev){
+        var btn=ev.target&&ev.target.closest&&ev.target.closest('button');
+        if(!btn||String(btn.textContent||'').trim()!=='Agent')return;
+        var store=window.__gptImageStore;
+        var state=store&&store.getState&&store.getState();
+        var settings=(state&&state.settings)||((readStore().state||{}).settings)||{};
+        var msg=agentReadyMessage(settings);
+        if(msg){
+          ev.preventDefault(); ev.stopPropagation(); if(ev.stopImmediatePropagation)ev.stopImmediatePropagation();
+          alert(msg);
+          return false;
+        }
+      },true);
+    }catch(e){}
   }
   function profileRuntimeFields(p, fallback){
     fallback=fallback||{}; p=p||{};
@@ -483,6 +527,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
           agentTextProfileId:cfg.agentTextProfileId||null,
           agentImageProfileId:cfg.agentImageProfileId||null
         });
+        settings=normalizeAgentProfiles(settings);
         st.state=Object.assign({}, oldState, {settings:settings, appMode:'gallery', agentMobileHeaderVisible:false, agentAssetPanelCollapsed:true, agentSidebarCollapsed:true});
         st.version=2;
         writeStore(st);
