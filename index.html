@@ -111,7 +111,24 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       if(!Array.prototype.toSorted){Array.prototype.toSorted=function(cb){return this.slice().sort(cb);};}
     }catch(e){}
   }
-  function hideLoading(){ window.__gptImageAppMounted=true; var el=document.getElementById('loading-screen'); if(el){el.classList.add('hidden');} }
+  function lockLoadingAfterMount(){
+    try{
+      var el=document.getElementById('loading-screen'); if(!el)return;
+      el.classList.add('hidden');
+      if(window.__gptImageLoadingLockInstalled)return;
+      window.__gptImageLoadingLockInstalled=true;
+      new MutationObserver(function(){
+        if(window.__gptImageAppMounted&&el&&!el.classList.contains('hidden')){
+          console.warn('[Shell] loading overlay was shown after mount; hiding it');
+          el.classList.add('hidden');
+        }
+      }).observe(el,{attributes:true,attributeFilter:['class','style']});
+      setInterval(function(){
+        if(window.__gptImageAppMounted&&el&&!el.classList.contains('hidden'))el.classList.add('hidden');
+      },1000);
+    }catch(e){}
+  }
+  function hideLoading(){ window.__gptImageAppMounted=true; lockLoadingAfterMount(); }
   function setLoadingStage(text){
     try{
       var el=document.getElementById('loading-stage');
@@ -140,6 +157,18 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       };
     }catch(e){}
   }
+  window.addEventListener('error',function(ev){
+    if(window.__gptImageAppMounted){
+      console.error('[Shell] post-mount error',ev.error||ev.message);
+      lockLoadingAfterMount();
+    }
+  });
+  window.addEventListener('unhandledrejection',function(ev){
+    if(window.__gptImageAppMounted){
+      console.error('[Shell] post-mount rejection',ev.reason);
+      lockLoadingAfterMount();
+    }
+  });
   function escHtml(s){
     return String(s||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]||c;});
   }
