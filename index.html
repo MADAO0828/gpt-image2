@@ -564,8 +564,17 @@ if(!('noModule' in HTMLScriptElement.prototype)){
     clearTimeout(safetyTimer);
     forceMobileNonStreamingLocalStore();
     var hasLocalConfig=hasUsableLocalConfig();
-    startWhenDomReady();
-    return syncRuntimeConfig().catch(function(e){ console.warn('[Shell] runtime config sync failed',e); if(!hasLocalConfig) showLoadError(e&&e.message?e.message:'配置加载失败，请进入后台检查当前用户的 API 配置。'); });
+    var bootTimer=setTimeout(function(){
+      console.warn('[Shell] runtime config sync timeout, booting with local store');
+      startWhenDomReady();
+    },8000);
+    return syncRuntimeConfig().catch(function(e){
+      console.warn('[Shell] runtime config sync failed',e);
+      if(!hasLocalConfig) showLoadError(e&&e.message?e.message:'??????????????????? API ???');
+    }).then(function(){
+      clearTimeout(bootTimer);
+      startWhenDomReady();
+    });
   }).catch(function(e){
     if(e&&e.message==='not_authenticated')handleAuthFailure();
     else showLoadError(e&&e.message?e.message:'登录或配置加载失败，请刷新重试。');
