@@ -18,6 +18,7 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 .hl{font-size:18px;font-weight:700;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}.acct{font-size:12px;color:var(--text2);padding:7px 10px;border:1px solid var(--border);border-radius:10px;background:var(--surface);max-width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .b{padding:8px 16px;border-radius:8px;font-size:13px;cursor:pointer;border:none;text-decoration:none;color:var(--text2);background:var(--surface);border:1px solid var(--border);transition:transform .14s cubic-bezier(.2,.8,.2,1),box-shadow .18s,background .18s,border-color .18s,color .18s;display:inline-flex;align-items:center;gap:4px;font-family:inherit;will-change:transform}
 .b:hover{color:var(--text);border-color:var(--accent);background:rgba(99,102,241,0.06);transform:translateY(-1px)}.b:active{transform:scale(.96);transition-duration:.06s}.b:focus-visible{outline:2px solid rgba(99,102,241,.55);outline-offset:2px}
+.nav-actions{display:flex;align-items:center;justify-content:flex-end;gap:6px;background:var(--card);border:1px solid var(--border);border-radius:18px;padding:6px;box-shadow:0 8px 26px rgba(15,23,42,.08);backdrop-filter:blur(18px)}.nav-actions .acct{padding:0 10px;font-size:13px;font-weight:700;color:var(--muted);white-space:nowrap}.nav-actions .b{height:36px;min-width:36px;border-radius:12px;display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:0 11px;font-weight:800}.nav-actions .nav-ico{font-size:16px}.nav-actions .nav-text{font-size:12px}.nav-actions .primary{background:linear-gradient(135deg,var(--accent),#8b5cf6);color:white;border-color:rgba(255,255,255,.18)}@media(max-width:720px){.nav-actions .acct,.nav-actions .nav-text{display:none}.nav-actions .b{padding:0;width:36px}}
 .c{max-width:1200px;margin:0 auto;padding:16px}
 .srch input{width:100%;padding:10px 16px;margin-bottom:14px;background:var(--input-bg);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:14px;outline:none;transition:border-color .2s,box-shadow .2s;font-family:inherit}
 .srch input:focus{border-color:var(--accent);box-shadow:0 0 0 2px rgba(99,102,241,0.08)}
@@ -129,10 +130,10 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 </script>
 </head><body>
 <header class="h"><span class="hl">📚 提示词仓库</span>
-<div style="display:flex;gap:4px;align-items:center"><span class="acct" id="promptAccountInfo">&#39564;&#35777;&#20013;...</span>
-  <button onclick="toggleTheme()" id="theme-toggle" class="b" style="font-size:16px;padding:5px 10px">💻</button><script>window.__applyTheme();</script>
-  <a href="/admin" class="b" title="管理员后台">⚙️</a>
-  <a href="/" class="b">← 返回</a>
+<div class="nav-actions"><span class="acct" id="promptAccountInfo">&#39564;&#35777;&#20013;...</span>
+  <button onclick="toggleTheme()" id="theme-toggle" class="b" title="&#20999;&#25442;&#20027;&#39064;"><span class="nav-ico">&#128187;</span><span class="nav-text">&#20027;&#39064;</span></button><script>window.__applyTheme();</script>
+  <a href="/admin" class="b" title="&#21518;&#21488;"><span class="nav-ico">&#9881;</span><span class="nav-text">&#21518;&#21488;</span></a>
+  <a href="/" class="b primary" title="&#36820;&#22238;&#24037;&#20316;&#21488;"><span class="nav-ico">&#127956;</span><span class="nav-text">&#24037;&#20316;&#21488;</span></a>
 </div>
 </header>
 <div class="c">
