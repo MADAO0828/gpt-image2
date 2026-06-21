@@ -570,7 +570,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
     },8000);
     return syncRuntimeConfig().catch(function(e){
       console.warn('[Shell] runtime config sync failed',e);
-      if(!hasLocalConfig) showLoadError(e&&e.message?e.message:'??????????????????? API ???');
+      if(!hasLocalConfig) showLoadError(e&&e.message?e.message:'\u914d\u7f6e\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u8fdb\u5165\u540e\u53f0\u68c0\u67e5\u5f53\u524d\u7528\u6237\u7684 API \u914d\u7f6e\u3002');
     }).then(function(){
       clearTimeout(bootTimer);
       startWhenDomReady();
