@@ -177,6 +177,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       if((ready||mounted&&Date.now()-started>3000)&&authReady){
         clearInterval(timer);
         hideLoading();
+        setTimeout(function(){watchWorkbenchSettings();watchSiteNavDock();installPromptRepoWheel();},300);
       } else if(!mounted&&Date.now()-started>20000){
         clearInterval(timer);
         showLoadError('\u4e3b\u7a0b\u5e8f\u542f\u52a8\u8d85\u65f6\uff1a\u4e3b\u811a\u672c\u5df2\u8bf7\u6c42\uff0c\u4f46\u9875\u9762\u6839\u8282\u70b9\u6ca1\u6709\u6210\u529f\u6302\u8f7d\u3002\u8bf7\u5237\u65b0\u91cd\u8bd5\uff0c\u6216\u8fdb\u5165\u540e\u53f0\u68c0\u67e5\u5f53\u524d\u7528\u6237\u914d\u7f6e\u3002');
@@ -502,10 +503,11 @@ if(!('noModule' in HTMLScriptElement.prototype)){
     }catch(e){return false;}
   }
   function watchSiteNavDock(){
-    var tries=0;
-    function run(){ tries++; if(dockSiteNavIntoWorkbenchHeader()||tries>80)return; setTimeout(run,150); }
+    var tries=0,scheduled=false;
+    function run(){ scheduled=false; tries++; if(dockSiteNavIntoWorkbenchHeader()||tries>80)return; setTimeout(run,150); }
+    function schedule(){ if(scheduled)return; scheduled=true; setTimeout(run,120); }
     run();
-    try{new MutationObserver(dockSiteNavIntoWorkbenchHeader).observe(document.getElementById('root')||document.documentElement,{childList:true,subtree:true});}catch(e){}
+    try{var root=document.getElementById('root'); if(root)new MutationObserver(schedule).observe(root,{childList:true,subtree:true});}catch(e){}
   }
   function installPromptRepoWheel(){
     var raf=0,targetPanel=null,velocity=0,lastTs=0;
@@ -540,7 +542,13 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       }catch(e){}
     },{passive:false,capture:true});
   }
-  function watchWorkbenchSettings(){ hideWorkbenchSettings(); try{new MutationObserver(hideWorkbenchSettings).observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['aria-label','title','class','style']});}catch(e){setInterval(hideWorkbenchSettings,1000);} }
+  function watchWorkbenchSettings(){
+    var scheduled=false;
+    function run(){scheduled=false;hideWorkbenchSettings();}
+    function schedule(){if(scheduled)return;scheduled=true;setTimeout(run,250);}
+    hideWorkbenchSettings();
+    try{new MutationObserver(schedule).observe(document.getElementById('root')||document.documentElement,{childList:true,subtree:true});}catch(e){setInterval(hideWorkbenchSettings,2000);}
+  }
   function loadApp(){
     setLoadingStage('\u6b63\u5728\u52a0\u8f7d\u4e3b\u7a0b\u5e8f\u811a\u672c...');
     var script=document.createElement('script');
@@ -564,9 +572,6 @@ if(!('noModule' in HTMLScriptElement.prototype)){
         showLoadError('\u4e3b\u7a0b\u5e8f\u811a\u672c\u52a0\u8f7d\u6216\u6267\u884c\u8d85\u65f6\uff1a\u53ef\u80fd\u662f\u6d4f\u89c8\u5668\u7f13\u5b58\u4e86\u65e7\u8d44\u6e90\uff0c\u6216\u4e3b\u811a\u672c\u4f9d\u8d56\u52a0\u8f7d\u5931\u8d25\u3002\u8bf7\u5148\u5237\u65b0\uff1b\u4ecd\u5931\u8d25\u8bf7\u628a\u8fd9\u4e2a\u63d0\u793a\u622a\u56fe\u53d1\u7ed9\u6211\u3002');
       }
     },30000);
-    watchWorkbenchSettings();
-    watchSiteNavDock();
-    installPromptRepoWheel();
   }
   window.__themeState={themeKey:themeKey};
   window.__applyTheme=function(){ var t=localStorage.getItem(themeKey)||'light'; var isDark=t==='dark'||(t==='system'&&prefersDark()); document.documentElement.classList.toggle('dark',isDark); document.documentElement.classList.toggle('light',!isDark); var meta=document.getElementById('meta-theme-color'); if(meta)meta.content=isDark?'#000':'#fff'; var btn=document.getElementById('theme-toggle'); if(btn){btn.textContent=t==='light'?'☀️':t==='dark'?'🌙':'💻';btn.setAttribute('data-theme',t);btn.title=t==='light'?'白天主题':t==='dark'?'黑夜主题':'跟随系统';} };
