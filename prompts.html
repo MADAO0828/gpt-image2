@@ -153,7 +153,7 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 </div></div></div>
 <div class="overlay" id="imgViewer" style="cursor:zoom-out"><img id="vi" style="max-width:95%;max-height:95%;object-fit:contain;border-radius:8px" /></div>
 <script>
-var ITEMS_PER_PAGE = 50;
+var ITEMS_PER_PAGE = 30;
 var allData = [], filteredData = [], currentCat = "all", currentPage = 1, totalItems = 0, currentPrompt = -1;
 var useServerMode = true;
 function escHtml(s){if(!s)return"";return(""+s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}
@@ -161,6 +161,24 @@ function escAttr(s){if(!s)return"";return(""+s).replace(/&/g,"&amp;").replace(/"
 function trunc(s,n){if(!s)return"";return s.length>n?s.substring(0,n)+"...":s}
 function norm(p){return{c:p.c||p.category||"",t:p.t||p.title||"",p:p.p||p.prompt||"",i:p.i||p.image_url||""}}
 function imgProxyUrl(u){if(!u)return"";return "/api/prompt-image?u="+encodeURIComponent(u)}
+var imageObserver=null;
+function ensureImageObserver(){
+  if(imageObserver||!('IntersectionObserver' in window))return imageObserver;
+  imageObserver=new IntersectionObserver(function(entries){
+    entries.forEach(function(entry){
+      if(!entry.isIntersecting)return;
+      var img=entry.target,src=img.getAttribute('data-src');
+      if(src){img.src=src;img.removeAttribute('data-src')}
+      imageObserver.unobserve(img);
+    });
+  },{rootMargin:'900px 0px',threshold:0.01});
+  return imageObserver;
+}
+function observePromptImages(root){
+  var imgs=(root||document).querySelectorAll('img[data-src]');
+  var obs=ensureImageObserver();
+  Array.prototype.forEach.call(imgs,function(img){if(obs)obs.observe(img);else{img.src=img.getAttribute('data-src');img.removeAttribute('data-src')}});
+}
 function setLoading(text){document.getElementById("cats").innerHTML='<div class="ld">'+escHtml(text)+'</div>'}
 function apiUrl(page){var q=document.getElementById("s").value.trim();var url="/api/prompts?page="+page+"&limit="+ITEMS_PER_PAGE;if(currentCat!=="all")url+="&cat="+encodeURIComponent(currentCat);if(q)url+="&q="+encodeURIComponent(q);return url}
 function loadCategories(){
@@ -232,9 +250,9 @@ function renderItems(rows, startIdx){
     card.className="card";card.style.animationDelay=Math.min(i*12,240)+'ms';card.setAttribute("data-idx",idx);
     card.onclick=function(){openModal(parseInt(this.getAttribute("data-idx")))};
     var html="";
-    if(p.i)html+='<div class="card-img"><img src="'+escAttr(imgProxyUrl(p.i))+'" referrerpolicy="no-referrer" alt="" loading="lazy" onerror="this.style.display=\'none\'"></div>';
+    if(p.i)html+='<div class="card-img"><img data-src="'+escAttr(imgProxyUrl(p.i))+'" referrerpolicy="no-referrer" alt="" loading="lazy" decoding="async" fetchpriority="low" onerror="this.style.display=\'none\'"></div>';
     html+='<div class="card-body"><div class="card-cat">'+escHtml(p.c)+'</div><div class="card-t">'+escHtml(p.t)+'</div><div class="card-p">'+escHtml(trunc(p.p,60))+'</div></div>';
-    card.innerHTML=html;grid.appendChild(card);
+    card.innerHTML=html;grid.appendChild(card);observePromptImages(card);
   }
   var sentinel=document.getElementById('loadSentinel');if(!sentinel){sentinel=document.createElement('div');sentinel.id='loadSentinel';sentinel.style.height='1px';grid.appendChild(sentinel)}else{grid.appendChild(sentinel)}
 }

@@ -538,8 +538,16 @@ if(!('noModule' in HTMLScriptElement.prototype)){
   var appStarted=false;
   function startApp(){ if(appStarted)return; appStarted=true; loadApp(); }
   function delay(ms){return new Promise(function(resolve){setTimeout(resolve,ms);});}
+  function authHeaders(){
+    var headers={};
+    try{
+      var token=sessionStorage.getItem('gpt-image2-session-token')||'';
+      if(token)headers['X-GPT-Image-Session']=token;
+    }catch(e){}
+    return headers;
+  }
   function checkAuth(authAttempt){
-    return fetch('/api/auth/me?t='+Date.now()+'&a='+(authAttempt||0),{cache:'no-store',credentials:'same-origin'})
+    return fetch('/api/auth/me?t='+Date.now()+'&a='+(authAttempt||0),{cache:'no-store',credentials:'same-origin',headers:authHeaders()})
       .then(function(r){if(!r.ok)throw new Error('not_authenticated');return r.json();})
       .catch(function(e){
         if((authAttempt||0)<2){return delay(isWeChatBrowser()?900:350).then(function(){return checkAuth((authAttempt||0)+1);});}
