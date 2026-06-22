@@ -14,9 +14,9 @@
 <link rel="apple-touch-icon" href="./pwa-icon.svg" />
 <link rel="icon" href="./pwa-icon.svg" type="image/svg+xml" />
 <title>AI 工作台</title>
-<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=nav-run-guard2-20260622" crossorigin="anonymous">
-<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=nav-run-guard2-20260622" as="style" crossorigin="anonymous">
-<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=nav-run-guard2-20260622">
+<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=stability-a1-20260622" crossorigin="anonymous">
+<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=stability-a1-20260622" as="style" crossorigin="anonymous">
+<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=stability-a1-20260622">
 <style>
 *{box-sizing:border-box}
 
@@ -93,6 +93,23 @@ html.gpt-agent-mode .agent-chat-inputbar button[aria-label="提示词仓库"]{di
 .dark .agent-reason-menu button{color:#e5e7eb}
 .agent-reason-menu button:hover,.agent-reason-menu button.active{background:rgba(99,102,241,.12);color:#2563eb}
 @media(max-width:640px){.agent-extra-controls{gap:6px}.agent-tool-btn{height:34px;padding:0 9px;font-size:12px}.agent-tool-text{display:none}}
+
+/* Non-React Agent shell controls: keep custom controls outside #root to avoid React removeChild crashes */
+#agentShellHost{position:fixed;inset:auto 16px 16px auto;z-index:60;display:none;pointer-events:none}
+html.gpt-agent-mode #agentShellHost{display:block}
+#agentShellHost .agent-current-session-box,#agentShellHost .agent-extra-controls{pointer-events:auto}
+#agentShellHost .agent-current-session-box{margin:0 0 10px auto;box-shadow:0 12px 32px rgba(15,23,42,.14)}
+#agentShellHost .agent-extra-controls{justify-content:flex-end}
+#agentShellHost .agent-reason-menu{bottom:42px;left:auto;right:0}
+@media(max-width:640px){#agentShellHost{left:12px;right:12px;bottom:92px}#agentShellHost .agent-current-session-box{max-width:100%;margin-left:auto}#agentShellHost .agent-extra-controls{justify-content:flex-start}}
+
+/* Agent placeholder copy without mutating React-owned text nodes */
+html.gpt-agent-mode .agent-chat-inputbar .prompt-placeholder{font-size:0!important}
+html.gpt-agent-mode .agent-chat-inputbar .prompt-placeholder::before{content:"\8f93\5165\4f60\60f3\548c Agent \8bf4\7684\8bdd...";font-size:15px;line-height:1.65}
+/* Keep site navigation outside React root; visually place it like a non-floating shell toolbar */
+body>#workbenchSiteNav.site-nav{position:fixed;right:16px;top:calc(env(safe-area-inset-top,0px) + 12px);z-index:45}
+body>#workbenchSiteNav.site-nav[data-docked="1"]{display:flex}
+@media(max-width:760px){body>#workbenchSiteNav.site-nav{left:12px;right:12px;top:calc(env(safe-area-inset-top,0px) + 8px);justify-content:flex-start;overflow-x:auto}.site-nav .label{max-width:96px}}
 </style>
 <script>
 (function(){
@@ -129,9 +146,9 @@ if(!('noModule' in HTMLScriptElement.prototype)){
     try{
       var url=location.href;
       if(navigator.clipboard&&navigator.clipboard.writeText){
-        navigator.clipboard.writeText(url).then(function(){alert('?????????? Chrome?Edge?Safari ?????????');}).catch(function(){prompt('???????????????',url);});
+        navigator.clipboard.writeText(url).then(function(){alert('\u94fe\u63a5\u5df2\u590d\u5236\uff0c\u53ef\u7c98\u8d34\u5230 Chrome\u3001Edge\u6216 Safari \u6253\u5f00');}).catch(function(){prompt('\u590d\u5236\u5931\u8d25\uff0c\u8bf7\u624b\u52a8\u590d\u5236\u94fe\u63a5',url);});
       }else{
-        prompt('???????????????',url);
+        prompt('\u590d\u5236\u5931\u8d25\uff0c\u8bf7\u624b\u52a8\u590d\u5236\u94fe\u63a5',url);
       }
     }catch(e){}
   }
@@ -522,8 +539,8 @@ if(!('noModule' in HTMLScriptElement.prototype)){
   }
   function agentReadyMessage(settings){
     settings=normalizeAgentProfiles(Object.assign({},settings||{}));
-    if(settings.agentApiConfigMode==='off')return 'Agent ??????? OpenAI Responses ????????? > Agent?? ???????????? API??? Responses ????????';
-    if(settings.agentApiConfigMode==='hybrid'&&!settings.agentTextProfileId)return 'Agent ????????????? Agent?? ??? Responses API ?????';
+    if(settings.agentApiConfigMode==='off')return 'Agent \u9700\u8981 OpenAI Responses API \u914d\u7f6e\u3002\u8bf7\u5230\u540e\u53f0 > Agent\u914d\u7f6e \u4e2d\u9009\u62e9\u539f\u751f\u6216\u6df7\u5408\u6a21\u5f0f\uff0c\u5e76\u6307\u5b9a Responses API \u6587\u672c\u6a21\u578b\u3002';
+    if(settings.agentApiConfigMode==='hybrid'&&!settings.agentTextProfileId)return 'Agent \u6df7\u5408\u6a21\u5f0f\u7f3a\u5c11\u6587\u672c\u6a21\u578b\u914d\u7f6e\u3002\u8bf7\u5230\u540e\u53f0 Agent\u914d\u7f6e \u9009\u62e9 Responses API \u6587\u672c\u914d\u7f6e\u3002';
     return '';
   }
   function installAgentGuard(){
@@ -583,12 +600,20 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       },true);
     }catch(e){}
   }
+  function ensureAgentShellHost(){
+    var host=document.getElementById('agentShellHost');
+    if(!host){
+      host=document.createElement('div');
+      host.id='agentShellHost';
+      host.setAttribute('aria-live','polite');
+      document.body.appendChild(host);
+    }
+    return host;
+  }
   function ensureAgentCurrentSessionBox(){
     try{
-      var header=document.querySelector('#root header.safe-area-top')||document.querySelector('#root header');
-      if(!header)return null;
-      var left=header.querySelector('.safe-header-inner>.flex-1');
-      if(!left)return null;
+      var host=ensureAgentShellHost();
+      if(!host)return null;
       var box=document.getElementById('agentCurrentSessionBox');
       if(!box){
         box=document.createElement('button');
@@ -596,11 +621,9 @@ if(!('noModule' in HTMLScriptElement.prototype)){
         box.id='agentCurrentSessionBox';
         box.className='agent-current-session-box';
         box.title='\u70b9\u51fb\u4fee\u6539\u5f53\u524d\u4f1a\u8bdd\u540d\u79f0';
-        box.innerHTML='<span class="session-label">\u5f53\u524d\u4f1a\u8bdd</span><span class="session-title"></span><span class="session-edit">\u270e</span>';
-        left.appendChild(box);
-      }else if(box.parentElement!==left){
-        left.appendChild(box);
+        box.innerHTML='<span class="session-label">&#24403;&#21069;&#20250;&#35805;</span><span class="session-title"></span><span class="session-edit">&#9998;</span>';
       }
+      if(box.parentElement!==host)host.insertBefore(box,host.firstChild);
       return box;
     }catch(e){return null;}
   }
@@ -699,16 +722,14 @@ if(!('noModule' in HTMLScriptElement.prototype)){
   }
   function ensureAgentExtraControls(bar){
     try{
-      if(!bar)return null;
-      var row=bar.querySelector('.mt-3>div')||bar.querySelector('.mt-3 .hidden.sm\\:flex')||bar.querySelector('.mt-3');
-      if(!row)return null;
-      var controls=bar.querySelector('#agentExtraControls');
+      var host=ensureAgentShellHost();
+      if(!host)return null;
+      var controls=document.getElementById('agentExtraControls');
       if(!controls){
         controls=document.createElement('div');
         controls.id='agentExtraControls';
         controls.className='agent-extra-controls';
-        controls.innerHTML='<button type="button" id="agentWebToggle" class="agent-tool-btn"><span>\ud83c\udf10</span><span class="agent-tool-text">\u8054\u7f51</span></button><div class="agent-reason-wrap"><button type="button" id="agentReasonToggle" class="agent-tool-btn"><span>\ud83e\udde0</span><span class="agent-tool-text">\u601d\u8003\uff1a</span><span id="agentReasonLabel">\u4e2d</span></button><div id="agentReasonMenu" class="agent-reason-menu"><button type="button" data-reason="low">\u4f4e</button><button type="button" data-reason="medium">\u4e2d</button><button type="button" data-reason="high">\u9ad8</button><button type="button" data-reason="xhigh">\u6700\u9ad8</button></div></div>';
-        row.insertBefore(controls,row.firstChild);
+        controls.innerHTML='<button type="button" id="agentWebToggle" class="agent-tool-btn"><span>&#127760;</span><span class="agent-tool-text">&#32852;&#32593;</span></button><div class="agent-reason-wrap"><button type="button" id="agentReasonToggle" class="agent-tool-btn"><span>&#129504;</span><span class="agent-tool-text">&#24605;&#32771;&#65306;</span><span id="agentReasonLabel">&#20013;</span></button><div id="agentReasonMenu" class="agent-reason-menu"><button type="button" data-reason="low">&#20302;</button><button type="button" data-reason="medium">&#20013;</button><button type="button" data-reason="high">&#39640;</button><button type="button" data-reason="xhigh">&#26368;&#39640;</button></div></div>';
         controls.querySelector('#agentWebToggle').addEventListener('click',function(ev){
           ev.preventDefault(); ev.stopPropagation();
           var s=window.__gptImageStore&&window.__gptImageStore.getState&&window.__gptImageStore.getState();
@@ -729,18 +750,11 @@ if(!('noModule' in HTMLScriptElement.prototype)){
           var menu=controls.querySelector('#agentReasonMenu'); if(menu)menu.classList.remove('show');
           setTimeout(updateAgentInputModePolish,60);
         },true);
-        Array.prototype.slice.call(controls.querySelectorAll('[data-reason]')).forEach(function(btn){
-          btn.addEventListener('click',function(ev){
-            ev.preventDefault(); ev.stopPropagation();
-            saveAgentQuickSetting({agentReasoningEffort:btn.getAttribute('data-reason')||'medium'});
-            var menu=controls.querySelector('#agentReasonMenu'); if(menu)menu.classList.remove('show');
-            setTimeout(updateAgentInputModePolish,60);
-          });
-        });
         document.addEventListener('click',function(ev){
           try{ if(!controls.contains(ev.target)){var m=controls.querySelector('#agentReasonMenu'); if(m)m.classList.remove('show');} }catch(e){}
         },true);
       }
+      if(controls.parentElement!==host)host.appendChild(controls);
       return controls;
     }catch(e){return null;}
   }
@@ -752,16 +766,16 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       var editable=document.querySelector('#root [contenteditable="true"]');
       var bar=editable&&editable.closest&&editable.closest('div.fixed.bottom-4,div.fixed.sm\\:bottom-6');
       if(bar)bar.classList.toggle('agent-chat-inputbar',isAgent);
+      var host=document.getElementById('agentShellHost');
+      if(host)host.style.display=isAgent?'block':'none';
       if(!isAgent){
-        var old=document.getElementById('agentExtraControls');
-        if(old)old.remove();
         var ph0=bar&&bar.querySelector&&bar.querySelector('.prompt-placeholder');
-        if(ph0)ph0.textContent='\u63cf\u8ff0\u4f60\u60f3\u751f\u6210\u7684\u56fe\u7247\uff0c\u53ef\u8f93\u5165 @ \u6765\u6307\u5b9a\u53c2\u8003\u56fe...';
+        if(ph0)ph0.setAttribute('data-shell-placeholder','gallery');
         return;
       }
       var controls=ensureAgentExtraControls(bar);
       var ph=bar&&bar.querySelector&&bar.querySelector('.prompt-placeholder');
-      if(ph)ph.textContent='\u8f93\u5165\u4f60\u60f3\u548c Agent \u8bf4\u7684\u8bdd...';
+      if(ph)ph.setAttribute('data-shell-placeholder','agent');
       var settings=Object.assign({},(st&&st.settings)||{},window.__gptImageAgentQuickSettings||{});
       if(controls){
         var web=controls.querySelector('#agentWebToggle');
@@ -870,12 +884,12 @@ function getPendingPrompt(){
     var activeId=String(cfg.activeProfileId||'').trim() || (profiles[0]&&profileIdOf(profiles[0])) || '';
     var p=profiles.find(function(x){return x&&profileIdOf(x)===activeId}) || null;
     if(!p){
-      p={id:activeId||'active-openai',name:'????',provider:'openai',baseUrl:cfg.baseUrl||cfg.defaultApiUrl||'',apiKey:cfg.apiKey||'cloudflare-proxy',model:cfg.model||cfg.defaultModel||'gpt-image-2',timeout:num(cfg.timeout,600),apiMode:cfg.apiMode||'images',codexCli:!!cfg.codexCli,apiProxy:cfg.apiProxy!==false,responseFormatB64Json:!!cfg.responseFormatB64Json,streamImages:isMobileBrowser()?false:!!cfg.streamImages,streamPartialImages:num(cfg.streamPartialImages,1)};
+      p={id:activeId||'active-openai',name:'\u4e91\u7aef\u914d\u7f6e',provider:'openai',baseUrl:cfg.baseUrl||cfg.defaultApiUrl||'',apiKey:cfg.apiKey||'cloudflare-proxy',model:cfg.model||cfg.defaultModel||'gpt-image-2',timeout:num(cfg.timeout,600),apiMode:cfg.apiMode||'images',codexCli:!!cfg.codexCli,apiProxy:cfg.apiProxy!==false,responseFormatB64Json:!!cfg.responseFormatB64Json,streamImages:isMobileBrowser()?false:!!cfg.streamImages,streamPartialImages:num(cfg.streamPartialImages,1)};
       profiles=[p];
     }
     p=Object.assign({}, p, {
       id:p.id||activeId||'active-openai',
-      name:p.name||'????',
+      name:p.name||'\u4e91\u7aef\u914d\u7f6e',
       provider:p.provider||'openai',
       baseUrl:p.baseUrl||cfg.baseUrl||cfg.defaultApiUrl||'',
       apiKey:p.apiKey||cfg.apiKey||'cloudflare-proxy',
@@ -1053,13 +1067,7 @@ function applyPendingPrompt(st, pendingPrompt){
     try{
       var nav=ensureSiteNav();
       if(!nav)return false;
-      var header=document.querySelector('#root header.safe-area-top')||document.querySelector('#root header');
-      if(!header)return false;
-      header.classList.add('gpt-shell-header');
-      var inner=header.querySelector('.safe-header-inner')||header.firstElementChild||header;
-      if(!inner)return false;
-      inner.classList.add('gpt-shell-header-inner');
-      if(nav.parentElement!==inner)inner.appendChild(nav);
+      if(nav.parentElement!==document.body)document.body.appendChild(nav);
       nav.setAttribute('data-docked','1');
       nav.style.pointerEvents='auto';
       nav.setAttribute('data-has-running',hasRunningWorkbenchTask()?'1':'0');
@@ -1127,7 +1135,7 @@ function applyPendingPrompt(st, pendingPrompt){
     var script=document.createElement('script');
     script.type='module';
     script.crossOrigin='anonymous';
-    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=nav-run-guard2-20260622';
+    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=stability-a1-20260622';
     var settled=false;
     script.onload=function(){settled=true;setLoadingStage('\u4e3b\u7a0b\u5e8f\u811a\u672c\u5df2\u52a0\u8f7d\uff0c\u7b49\u5f85\u754c\u9762\u6302\u8f7d...');waitForAppReady();};
     script.onerror=function(){settled=true;showLoadError('\u4e3b\u7a0b\u5e8f\u811a\u672c\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u6e05\u7a7a\u7f13\u5b58\u540e\u91cd\u8bd5\u3002');};
