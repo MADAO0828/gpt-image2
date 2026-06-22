@@ -31,6 +31,7 @@ Thumbs.db
 __pycache__/
 *.pyo
 .deploy/
+.codegraph/
 .deploy_tmp_*
 .tmp-*
 prompts_data.latest.tmp.json

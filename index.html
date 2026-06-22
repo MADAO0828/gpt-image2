@@ -14,16 +14,19 @@
 <link rel="apple-touch-icon" href="./pwa-icon.svg" />
 <link rel="icon" href="./pwa-icon.svg" type="image/svg+xml" />
 <title>AI 工作台</title>
-<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=settings-save-fix-20260622" crossorigin="anonymous">
-<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=settings-save-fix-20260622" as="style" crossorigin="anonymous">
-<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=settings-save-fix-20260622">
+<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=perf-agent-fix-20260622" crossorigin="anonymous">
+<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=perf-agent-fix-20260622" as="style" crossorigin="anonymous">
+<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=perf-agent-fix-20260622">
 <style>
 *{box-sizing:border-box}
 
-html{scroll-behavior:smooth}
+html{scroll-behavior:auto}
 body,*{-webkit-tap-highlight-color:transparent}
 *{scrollbar-width:thin}
-.custom-scrollbar,.overflow-y-auto,[data-radix-scroll-area-viewport]{scroll-behavior:smooth;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+.custom-scrollbar,.overflow-y-auto,[data-radix-scroll-area-viewport]{scroll-behavior:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+[data-home-main] img{transform:translateZ(0);backface-visibility:hidden}
+[data-home-main] .grid>div{content-visibility:auto;contain-intrinsic-size:280px;contain:layout paint style}
+[data-home-main] button,[data-home-main] [role="button"]{touch-action:manipulation}
 body{margin:0;min-height:100vh;background:var(--loading-bg);color:#cbd5e1;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
 [aria-label="settings"],[aria-label="Settings"],button[aria-label="\8bbe\7f6e"],button[title="\8bbe\7f6e"],button[aria-label*="\8bbe\7f6e"],button[title*="\8bbe\7f6e"]{display:none!important;visibility:hidden!important}
 .loading-screen{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--loading-bg);z-index:99999}
@@ -125,9 +128,9 @@ if(!('noModule' in HTMLScriptElement.prototype)){
     try{
       var url=location.href;
       if(navigator.clipboard&&navigator.clipboard.writeText){
-        navigator.clipboard.writeText(url).then(function(){alert('链接已复制，请粘贴到 Chrome、Edge、Safari 或系统浏览器打开。');}).catch(function(){prompt('复制这个链接到外部浏览器打开：',url);});
+        navigator.clipboard.writeText(url).then(function(){alert('?????????? Chrome?Edge?Safari ?????????');}).catch(function(){prompt('???????????????',url);});
       }else{
-        prompt('复制这个链接到外部浏览器打开：',url);
+        prompt('???????????????',url);
       }
     }catch(e){}
   }
@@ -150,6 +153,22 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       if(!Array.prototype.toSorted){Array.prototype.toSorted=function(cb){return this.slice().sort(cb);};}
     }catch(e){}
   }
+  function installNetworkNoiseGuard(){
+    try{
+      if(window.__gptImageNetworkNoiseGuardInstalled||typeof fetch!=='function')return;
+      window.__gptImageNetworkNoiseGuardInstalled=true;
+      var realFetch=window.fetch.bind(window);
+      window.fetch=function(input,init){
+        try{
+          var url=typeof input==='string'?input:(input&&input.url)||'';
+          if(/^https:\/\/api\.github\.com\/repos\/CookSleep\/gpt_image_playground\/releases\/latest/i.test(url)){
+            return Promise.resolve(new Response(JSON.stringify({tag_name:'local',name:'local'}),{status:200,headers:{'Content-Type':'application/json'}}));
+          }
+        }catch(e){}
+        return realFetch(input,init);
+      };
+    }catch(e){}
+  }
   function lockLoadingAfterMount(){
     try{
       var el=document.getElementById('loading-screen'); if(!el)return;
@@ -162,8 +181,11 @@ if(!('noModule' in HTMLScriptElement.prototype)){
           el.classList.add('hidden');
         }
       }).observe(el,{attributes:true,attributeFilter:['class','style']});
-      setInterval(function(){
+      var lockTicks=0;
+      var lockTimer=setInterval(function(){
+        lockTicks++;
         if(window.__gptImageAppMounted&&el&&!el.classList.contains('hidden'))el.classList.add('hidden');
+        if(window.__gptImageAppMounted||lockTicks>30){try{clearInterval(lockTimer);}catch(e){}}
       },1000);
     }catch(e){}
   }
@@ -233,6 +255,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
   var authReady=false;
   consumeTokenFromHash();
   installCompatPolyfills();
+  installNetworkNoiseGuard();
   installFetchAuthFallback();
   function waitForAppReady(){
     if(window.__gptImageWaitForAppReadyStarted)return;
@@ -277,6 +300,46 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       writeStore(st);
     }catch(e){}
     return st;
+  }
+  function resetLegacyAgentStateOnce(){
+    var key='gpt-image2-agent-state-fix-20260622';
+    try{
+      if(localStorage.getItem(key)==='1')return;
+      var st=readStore(); st.state=st.state||{};
+      delete st.state.activeAgentConversationId;
+      st.state.agentConversations=[];
+      st.state.appMode='gallery';
+      st.state.agentMobileHeaderVisible=false;
+      st.state.agentAssetPanelCollapsed=true;
+      st.state.agentSidebarCollapsed=true;
+      writeStore(st);
+      localStorage.setItem(key,'1');
+      try{
+        var req=indexedDB.open('gpt-image-playground');
+        req.onsuccess=function(){try{var db=req.result;if(db.objectStoreNames&&db.objectStoreNames.contains('agentConversations')){var tx=db.transaction('agentConversations','readwrite');tx.objectStore('agentConversations').clear();}}catch(e){}};
+      }catch(e){}
+    }catch(e){}
+  }
+  function cleanupLegacyWorkersAndCachesOnce(){
+    var key='gpt-image2-cache-cleanup-20260622-perf-agent';
+    try{
+      if(localStorage.getItem(key)==='1')return;
+      localStorage.setItem(key,'1');
+      if(navigator.serviceWorker&&navigator.serviceWorker.getRegistrations){
+        navigator.serviceWorker.getRegistrations().then(function(regs){
+          regs.forEach(function(reg){try{reg.unregister();}catch(e){}});
+        }).catch(function(){});
+      }
+      if(window.caches&&caches.keys){
+        caches.keys().then(function(keys){
+          keys.forEach(function(k){
+            if(/gpt|image|workbox|vite|asset|prompt/i.test(String(k))){
+              try{caches.delete(k);}catch(e){}
+            }
+          });
+        }).catch(function(){});
+      }
+    }catch(e){}
   }
   function saveCurrentStoreForOwner(owner){
     try{
@@ -511,12 +574,10 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       },true);
       updateAgentCurrentSessionBox();
       var root=document.getElementById('root')||document.documentElement;
-      try{new MutationObserver(function(){setTimeout(updateAgentCurrentSessionBox,60);}).observe(root,{childList:true,subtree:true});}catch(e){}
+      var queued=false;function queueUpdate(){if(queued)return;queued=true;requestAnimationFrame(function(){queued=false;updateAgentCurrentSessionBox();});}
+      try{new MutationObserver(queueUpdate).observe(root,{childList:true,subtree:false});}catch(e){}
       var store=window.__gptImageStore;
-      if(store&&store.subscribe){
-        try{store.subscribe(function(){setTimeout(updateAgentCurrentSessionBox,0);});}catch(e){}
-      }
-      setInterval(updateAgentCurrentSessionBox,1200);
+      if(store&&store.subscribe){try{store.subscribe(queueUpdate);}catch(e){}}
     }catch(e){}
   }
   function agentReasonLabel(v){
@@ -613,10 +674,10 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       window.__gptImageAgentInputPolishInstalled=true;
       updateAgentInputModePolish();
       var root=document.getElementById('root')||document.documentElement;
-      try{new MutationObserver(function(){setTimeout(updateAgentInputModePolish,80);}).observe(root,{childList:true,subtree:true,attributes:true});}catch(e){}
+      var queued=false;function queuePolish(){if(queued)return;queued=true;requestAnimationFrame(function(){queued=false;updateAgentInputModePolish();});}
+      try{new MutationObserver(queuePolish).observe(root,{childList:true,subtree:false});}catch(e){}
       var store=window.__gptImageStore;
-      if(store&&store.subscribe){try{store.subscribe(function(){setTimeout(updateAgentInputModePolish,0);});}catch(e){}}
-      setInterval(updateAgentInputModePolish,1200);
+      if(store&&store.subscribe){try{store.subscribe(queuePolish);}catch(e){}}
     }catch(e){}
   }
   function profileRuntimeFields(p, fallback){
@@ -661,35 +722,8 @@ if(!('noModule' in HTMLScriptElement.prototype)){
   }
 
   
-function updateDebugProfileBar(){
-  try{
-    var el=document.getElementById('debugProfileBar');
-    if(!el)return;
-    var cfg=window.__gptImageRuntimeConfig||{};
-    var st=readStore();
-    var s=(st&&st.state&&st.state.settings)||{};
-    var id=String(cfg.activeProfileId||s.activeProfileId||'').trim()||'-';
-    var profiles=Array.isArray(s.profiles)&&s.profiles.length?s.profiles:(Array.isArray(cfg.profiles)?cfg.profiles:[]);
-    var p=profiles.find(function(x){return x&&profileIdOf(x)===id;})||{};
-    var src=(p&&profileIdOf(p))||'none';
-    el.textContent='activeProfileId: '+id+'\nprofileSource: '+src+'\nbaseUrl: '+String(p.baseUrl||cfg.baseUrl||s.baseUrl||'-')+'\nmodel: '+String(p.model||cfg.model||s.model||'-');
-  }catch(e){}
-}
-
-function updateDebugProfileBadge(){
-  try{
-    var el=document.getElementById('debugProfileBadge');
-    if(!el)return;
-    var cfg=window.__gptImageRuntimeConfig||{};
-    var st=readStore();
-    var s=(st&&st.state&&st.state.settings)||{};
-    var id=String(cfg.activeProfileId||s.activeProfileId||'').trim()||'-';
-    var profiles=Array.isArray(s.profiles)&&s.profiles.length?s.profiles:(Array.isArray(cfg.profiles)?cfg.profiles:[]);
-    var p=profiles.find(function(x){return x&&profileIdOf(x)===id;})||{};
-    var src=profileIdOf(p)||'none';
-    el.textContent='activeProfileId: '+id+'\nprofileSource: '+src+'\nbaseUrl: '+String(p.baseUrl||cfg.baseUrl||s.baseUrl||'-')+'\nmodel: '+String(p.model||cfg.model||s.model||'-');
-  }catch(e){}
-}
+function updateDebugProfileBar(){}
+function updateDebugProfileBadge(){}
 function setProfileSwitchState(state){
     try{
       var sel=document.getElementById('profileSwitch'); if(!sel)return;
@@ -713,8 +747,7 @@ function setProfileSwitchState(state){
       window.__gptImageRuntimeConfig=cfg;
       applyRuntimeToLiveStore(next,'');
       renderProfileSwitcher(cfg,id);
-      updateDebugProfileBadge();
-            setProfileSwitchState('saving');
+      setProfileSwitchState('saving');
       fetch('/api/settings/save',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',cache:'no-store',body:JSON.stringify({settings:{activeProfileId:id,baseUrl:profile.baseUrl||'',apiKey:profile.apiKey||'cloudflare-proxy',model:profile.model||'gpt-image-2',timeout:num(profile.timeout,600),apiMode:profile.apiMode||'images',codexCli:!!profile.codexCli,apiProxy:profile.apiProxy!==false,responseFormatB64Json:!!profile.responseFormatB64Json,streamImages:!!profile.streamImages,streamPartialImages:num(profile.streamPartialImages,1),profiles:profiles}})})
         .then(function(r){return r.ok?r.json():r.json().then(function(d){throw new Error(d&&d.error||'save failed')});})
         .then(function(){setProfileSwitchState('');})
@@ -836,7 +869,7 @@ function applyPendingPrompt(st, pendingPrompt){
         window.__gptImageRuntimeConfig = cfg;
         if(cfg.themeMode){ try{localStorage.setItem(themeKey,cfg.themeMode)}catch(e){} }
         try{ if(window.__applyTheme) window.__applyTheme();
-updateDebugProfileBadge(); }catch(e){}
+}catch(e){}
         var st=applyPendingPrompt(readStore(), pendingPrompt);
         var oldState=st.state||{};
         var oldSettings=oldState.settings||{};
@@ -882,8 +915,7 @@ updateDebugProfileBadge(); }catch(e){}
         writeStore(st);
         applyRuntimeToLiveStore(settings,pendingPrompt);
         renderProfileSwitcher(cfg, settings.activeProfileId);
-      updateDebugProfileBadge();
-            });
+      });
   }
   function hideWorkbenchSettings(){
     try{
@@ -909,16 +941,16 @@ updateDebugProfileBadge(); }catch(e){}
       nav.setAttribute('data-docked','1');
       nav.style.pointerEvents='auto';
       renderProfileSwitcher(window.__gptImageRuntimeConfig);
-      updateDebugProfileBadge();
-            return true;
+      return true;
     }catch(e){return false;}
   }
   function watchSiteNavDock(){
-    var tries=0,scheduled=false;
-    function run(){ scheduled=false; tries++; if(dockSiteNavIntoWorkbenchHeader()||tries>80)return; setTimeout(run,150); }
+    var tries=0,scheduled=false,observer=null;
+    function stop(){try{if(observer)observer.disconnect();}catch(e){} observer=null;}
+    function run(){ scheduled=false; tries++; if(dockSiteNavIntoWorkbenchHeader()||tries>80){stop();return;} setTimeout(run,150); }
     function schedule(){ if(scheduled)return; scheduled=true; setTimeout(run,120); }
     run();
-    try{var root=document.getElementById('root'); if(root)new MutationObserver(schedule).observe(root,{childList:true,subtree:true});}catch(e){}
+    try{var root=document.getElementById('root'); if(root){observer=new MutationObserver(schedule);observer.observe(root,{childList:true,subtree:false});}}catch(e){}
   }
   function installPromptRepoWheel(){
     var raf=0,targetPanel=null,velocity=0,lastTs=0;
@@ -954,18 +986,23 @@ updateDebugProfileBadge(); }catch(e){}
     },{passive:false,capture:true});
   }
   function watchWorkbenchSettings(){
-    var scheduled=false;
-    function run(){scheduled=false;hideWorkbenchSettings();}
+    var scheduled=false,tries=0,observer=null;
+    function run(){scheduled=false;tries++;hideWorkbenchSettings();if(tries>80&&observer){try{observer.disconnect();}catch(e){} observer=null;}}
     function schedule(){if(scheduled)return;scheduled=true;setTimeout(run,250);}
     hideWorkbenchSettings();
-    try{new MutationObserver(schedule).observe(document.getElementById('root')||document.documentElement,{childList:true,subtree:true});}catch(e){setInterval(hideWorkbenchSettings,2000);}
+    try{
+      var root=document.getElementById('root')||document.documentElement;
+      observer=new MutationObserver(schedule);
+      observer.observe(root,{childList:true,subtree:false});
+      setTimeout(function(){try{if(observer)observer.disconnect();}catch(e){} observer=null;},30000);
+    }catch(e){}
   }
   function loadApp(){
     setLoadingStage('\u6b63\u5728\u52a0\u8f7d\u4e3b\u7a0b\u5e8f\u811a\u672c...');
     var script=document.createElement('script');
     script.type='module';
     script.crossOrigin='anonymous';
-    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=settings-save-fix-20260622';
+    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=perf-agent-fix-20260622';
     var settled=false;
     script.onload=function(){settled=true;setLoadingStage('\u4e3b\u7a0b\u5e8f\u811a\u672c\u5df2\u52a0\u8f7d\uff0c\u7b49\u5f85\u754c\u9762\u6302\u8f7d...');waitForAppReady();};
     script.onerror=function(){settled=true;showLoadError('\u4e3b\u7a0b\u5e8f\u811a\u672c\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u6e05\u7a7a\u7f13\u5b58\u540e\u91cd\u8bd5\u3002');};
@@ -987,10 +1024,8 @@ updateDebugProfileBadge(); }catch(e){}
   window.__themeState={themeKey:themeKey};
   window.__applyTheme=function(){ var t=localStorage.getItem(themeKey)||'light'; var isDark=t==='dark'||(t==='system'&&prefersDark()); document.documentElement.classList.toggle('dark',isDark); document.documentElement.classList.toggle('light',!isDark); var meta=document.getElementById('meta-theme-color'); if(meta)meta.content=isDark?'#000':'#fff'; var btn=document.getElementById('theme-toggle'); if(btn){var ico=btn.querySelector('.nav-ico')||btn;ico.innerHTML=t==='light'?'&#9728;&#65039;':t==='dark'?'&#127769;':'&#128187;';btn.setAttribute('data-theme',t);btn.title=t==='light'?'\u767d\u5929\u4e3b\u9898':t==='dark'?'\u9ed1\u591c\u4e3b\u9898':'\u8ddf\u968f\u7cfb\u7edf';}};
   function saveThemeMode(t){ try{ fetch('/api/settings/save',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({settings:{themeMode:t}}),cache:'no-store'}).catch(function(){}); }catch(e){} }
-  window.toggleTheme=function(){ var t=localStorage.getItem(themeKey)||'light'; var n=t==='light'?'dark':t==='dark'?'system':'light'; localStorage.setItem(themeKey,n); window.__applyTheme();
-updateDebugProfileBadge(); saveThemeMode(n); };
-  watchSystemTheme(function(){ if((localStorage.getItem(themeKey)||'light')==='system')window.__applyTheme();
-updateDebugProfileBadge(); });
+  window.toggleTheme=function(){ var t=localStorage.getItem(themeKey)||'light'; var n=t==='light'?'dark':t==='dark'?'system':'light'; localStorage.setItem(themeKey,n); window.__applyTheme(); saveThemeMode(n); };
+  watchSystemTheme(function(){ if((localStorage.getItem(themeKey)||'light')==='system')window.__applyTheme(); });
   var appStarted=false;
   function startApp(){ if(appStarted)return; appStarted=true; loadApp(); }
   function delay(ms){return new Promise(function(resolve){setTimeout(resolve,ms);});}
@@ -1015,6 +1050,8 @@ updateDebugProfileBadge(); });
   function startWhenDomReady(){ if(document.getElementById('root')) startApp(); else if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',startApp,{once:true}); else setTimeout(startApp,0); }
   authPromise.then(function(user){
     prepareUserLocalStore(user);
+    cleanupLegacyWorkersAndCachesOnce();
+    resetLegacyAgentStateOnce();
     updateNavUser(user&&user.username,user&&user.role);
     authReady=true;
     clearTimeout(safetyTimer);
@@ -1052,10 +1089,8 @@ updateDebugProfileBadge(); });
   <a href="javascript:toggleTheme()" id="theme-toggle" class="nav-soft" title="&#20999;&#25442;&#20027;&#39064;"><span class="nav-ico">&#9728;&#65039;</span><span class="nav-text">&#20027;&#39064;</span></a>
   <a href="/admin" class="nav-soft" title="&#21518;&#21488;" aria-label="admin"><span class="nav-ico">&#9881;</span><span class="nav-text">&#21518;&#21488;</span></a>
 </nav>
-<div id="debugProfileBadge" style="position:fixed;right:12px;top:86px;z-index:9999;max-width:360px;padding:8px 10px;border-radius:10px;background:rgba(17,24,39,.88);color:#fff;font:12px/1.45 monospace;pointer-events:none;white-space:pre-wrap;box-shadow:0 8px 24px rgba(0,0,0,.25)">loading...</div>
 <div id="root"></div>
 
-<script>window.__applyTheme();
-updateDebugProfileBadge();</script>
+<script>window.__applyTheme();</script>
 </body>
 </html>
