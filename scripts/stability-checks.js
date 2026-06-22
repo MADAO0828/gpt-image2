@@ -36,6 +36,10 @@ ok(indexHtml.includes('findWorkbenchModeGroup') && indexHtml.includes('modeLeftO
   'Workbench mode group is not explicitly spaced away from the right navigation.');
 ok(indexHtml.includes('account-chip') && indexHtml.includes('workbenchAccountInfo') && !indexHtml.includes('[data-compact="1"] .label'),
   'Workbench username chip is missing or can still be hidden by compact nav mode.');
+ok(indexHtml.includes('account-role') && indexHtml.includes('account-name') && indexHtml.includes('data-role="admin"'),
+  'Workbench account chip does not expose full username with role-specific styling.');
+ok(indexHtml.includes('sessionLeft+sessionW+18') && indexHtml.includes('leftChromeRight+14'),
+  'Agent current-session box is not anchored next to the left conversation controls.');
 
 // Multi-image generation needs explicit retry/recovery markers so a single 5xx/524 slot does not permanently fail while siblings succeed.
 ok(bundle.includes('__gptImage2MultiImageRetry'),

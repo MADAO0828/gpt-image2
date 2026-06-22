@@ -14,9 +14,9 @@
 <link rel="apple-touch-icon" href="./pwa-icon.svg" />
 <link rel="icon" href="./pwa-icon.svg" type="image/svg+xml" />
 <title>AI 工作台</title>
-<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=stability-a4-20260622" crossorigin="anonymous">
-<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=stability-a4-20260622" as="style" crossorigin="anonymous">
-<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=stability-a4-20260622">
+<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=stability-a5-20260622" crossorigin="anonymous">
+<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=stability-a5-20260622" as="style" crossorigin="anonymous">
+<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=stability-a5-20260622">
 <style>
 *{box-sizing:border-box}
 
@@ -57,7 +57,7 @@ html.dark body,html.dark #root,html.dark [data-home-main]{background:#000!import
 #root header.safe-area-top .safe-header-inner>.flex-1 button.text-sm.font-semibold.truncate{display:none!important}
 /* Hide upstream centered conversation title block that can overlay mode buttons */
 #root header.safe-area-top .safe-header-inner>div[class*="left-1/2"][class*="max-w-[30%]"]{display:none!important;pointer-events:none!important}
-.agent-current-session-box{display:none;align-items:center;gap:5px;min-width:118px;max-width:190px;height:30px;padding:0 10px;border:1px solid rgba(148,163,184,.35);border-radius:12px;background:rgba(15,23,42,.04);color:#111827;font-size:13px;line-height:1;transition:background .16s ease,border-color .16s ease,transform .12s ease}
+.agent-current-session-box{display:none;align-items:center;gap:6px;min-width:150px;max-width:240px;height:34px;padding:0 12px;border:1px solid rgba(148,163,184,.35);border-radius:14px;background:rgba(15,23,42,.04);color:#111827;font-size:13px;line-height:1;transition:background .16s ease,border-color .16s ease,transform .12s ease}
 .dark .agent-current-session-box{background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.12);color:#fff}
 .agent-current-session-box[data-visible="1"]{display:flex}
 .agent-current-session-box:hover{background:rgba(99,102,241,.10);border-color:rgba(99,102,241,.42);transform:translateY(-1px)}
@@ -66,7 +66,7 @@ html.dark body,html.dark #root,html.dark [data-home-main]{background:#000!import
 .agent-current-session-box .session-title{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700}
 .agent-current-session-box .session-edit{opacity:.72;font-size:14px}
 .agent-current-session-box input{width:100%;min-width:80px;border:0;outline:0;background:transparent;color:inherit;font:inherit;font-weight:700}
-@media(max-width:900px){.agent-current-session-box{max-width:150px;min-width:108px;padding:0 8px}.agent-current-session-box .session-label{display:none}}
+@media(max-width:900px){.agent-current-session-box{max-width:160px;min-width:116px;padding:0 9px}.agent-current-session-box .session-label{display:none}}
 html.gpt-agent-mode #root>div.fixed.bottom-4,
 html.gpt-agent-mode #root>div.fixed.sm\:bottom-6{max-width:56rem!important}
 html.gpt-agent-mode .agent-chat-inputbar{max-width:56rem!important}
@@ -111,16 +111,21 @@ html.gpt-agent-mode .agent-chat-inputbar .prompt-placeholder::before{content:"\8
 /* Keep site navigation outside React root; align it to the same row as Gallery / Agent without owning React DOM */
 body>#workbenchSiteNav.site-nav{position:fixed;right:16px;top:calc(env(safe-area-inset-top,0px) + 12px);z-index:91}
 body>#workbenchSiteNav.site-nav[data-docked="1"]{display:flex}
-body>#workbenchSiteNav.site-nav .account-chip{display:inline-flex;align-items:center;gap:6px;max-width:150px;height:34px;padding:0 10px;border:1px solid rgba(148,163,184,.32);border-radius:14px;background:rgba(15,23,42,.04);font-size:13px;font-weight:800;color:#334155;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-body>#workbenchSiteNav.site-nav .account-chip:before{content:"\1F464";font-size:13px;opacity:.82}
-html.dark body>#workbenchSiteNav.site-nav .account-chip{background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.12);color:#e5e7eb}
+body>#workbenchSiteNav.site-nav .account-chip{display:inline-flex;align-items:center;gap:8px;max-width:260px;height:38px;padding:0 12px;border:1px solid rgba(99,102,241,.24);border-radius:16px;background:linear-gradient(135deg,rgba(99,102,241,.12),rgba(14,165,233,.08));font-size:13px;font-weight:800;color:#1f2937;white-space:nowrap;overflow:hidden;box-shadow:inset 0 1px 0 rgba(255,255,255,.55)}
+body>#workbenchSiteNav.site-nav .account-role{display:inline-flex;align-items:center;height:22px;padding:0 8px;border-radius:999px;background:rgba(99,102,241,.16);color:#4f46e5;font-size:12px;font-weight:900;letter-spacing:.02em;flex:0 0 auto}
+body>#workbenchSiteNav.site-nav .account-name{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:900;max-width:160px}
+body>#workbenchSiteNav.site-nav .account-chip[data-role="admin"]{border-color:rgba(168,85,247,.35);background:linear-gradient(135deg,rgba(124,58,237,.18),rgba(245,158,11,.10))}
+body>#workbenchSiteNav.site-nav .account-chip[data-role="admin"] .account-role{background:linear-gradient(135deg,#7c3aed,#f59e0b);color:#fff;box-shadow:0 6px 18px rgba(124,58,237,.25)}
+html.dark body>#workbenchSiteNav.site-nav .account-chip{background:linear-gradient(135deg,rgba(99,102,241,.22),rgba(14,165,233,.10));border-color:rgba(255,255,255,.14);color:#f8fafc;box-shadow:inset 0 1px 0 rgba(255,255,255,.08)}
+html.dark body>#workbenchSiteNav.site-nav .account-chip[data-role="admin"]{background:linear-gradient(135deg,rgba(124,58,237,.34),rgba(245,158,11,.14));border-color:rgba(245,158,11,.22)}
 body>#workbenchSiteNav.site-nav[data-compact="1"] .divider,body>#workbenchSiteNav.site-nav[data-compact="1"] a .nav-text,body>#workbenchSiteNav.site-nav[data-compact="1"] .profile-switch-wrap:before{display:none}
-body>#workbenchSiteNav.site-nav[data-compact="1"] .account-chip{max-width:108px;padding:0 9px}
+body>#workbenchSiteNav.site-nav[data-compact="1"] .account-chip{max-width:210px;padding:0 10px}
+body>#workbenchSiteNav.site-nav[data-compact="1"] .account-name{max-width:130px}
 @media(max-width:760px){body>#workbenchSiteNav.site-nav{left:auto;right:8px;max-width:calc(100vw - 16px);justify-content:flex-start;overflow-x:auto}.site-nav .label{max-width:96px}}
 </style>
 <script>
 (function(){
-  var shellVersion='gpt2-shell-20260622-leftnav-user-a4';
+  var shellVersion='gpt2-shell-20260622-session-user-a5';
   try{
     var last=localStorage.getItem('gpt-image2-shell-version');
     if(last!==shellVersion){
@@ -142,7 +147,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
   var storeOwnerKey = 'gpt-image-playground:owner';
   var storeUserPrefix = 'gpt-image-playground:user:';
   var themeKey = 'gpt-image2-theme';
-  var assetVersion = 'gpt2-shell-20260622-leftnav-user-a4';
+  var assetVersion = 'gpt2-shell-20260622-session-user-a5';
   function installDomOwnershipGuard(){
     try{
       if(window.__gptImageDomOwnershipGuardInstalled||!window.Node||!Node.prototype)return;
@@ -535,11 +540,21 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       var el=document.getElementById('workbenchAccountInfo');
       if(!el)return;
       if(!el.classList.contains('account-chip'))el.classList.add('account-chip');
-      var prefix=role==='admin'?'\u7ba1\u7406\u5458':'\u7528\u6237';
-      el.textContent=name?String(name):'\u672a\u767b\u5f55';
-      el.setAttribute('data-role',role||'user');
-      el.setAttribute('aria-label',prefix+' '+el.textContent);
-      el.title=el.textContent;
+      var isAdmin=role==='admin';
+      var prefix=isAdmin?'\u7ba1\u7406\u5458':'\u7528\u6237';
+      var display=name?String(name):'\u672a\u767b\u5f55';
+      el.setAttribute('data-role',isAdmin?'admin':'user');
+      el.setAttribute('aria-label',prefix+' '+display);
+      el.title=prefix+' '+display;
+      el.textContent='';
+      var r=document.createElement('span');
+      r.className='account-role';
+      r.textContent=prefix;
+      var n=document.createElement('span');
+      n.className='account-name';
+      n.textContent=display;
+      el.appendChild(r);
+      el.appendChild(n);
     }catch(e){}
   }
   function profileIdOf(p){ return p&&String(p.id||p.name||'').trim(); }
@@ -886,14 +901,22 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       var titleRect=findWorkbenchTitleRect(header);
       var leftChromeRight=findHeaderLeftChromeRight(mode,header,titleRect);
       var vw=Math.max(document.documentElement.clientWidth||0,window.innerWidth||0);
+      var store=window.__gptImageStore, st=store&&store.getState&&store.getState();
+      var isAgent=!!(st&&st.appMode==='agent');
+      var box=document.getElementById('agentCurrentSessionBox');
       var modeLeftOverride=null, modeRightOverride=null;
       var modeGroup=findWorkbenchModeGroup(mode);
       if(modeGroup&&mode&&header&&vw>900){
         var mr=mode.rect, modeW=Math.max(160,Math.round(mr.width||190));
-        var navReserve=430;
-        var minLeft=Math.max((titleRect?titleRect.right:260)+90,Math.round(vw*.39));
+        var sessionLeft=Math.round(leftChromeRight+14);
+        var sessionW=0;
+        if(isAgent&&box&&box.getAttribute('data-visible')==='1'){
+          sessionW=Math.max(160,Math.min(240,(box.getBoundingClientRect().width||220)));
+        }
+        var navReserve=560;
+        var minLeft=sessionW?sessionLeft+sessionW+18:Math.max((titleRect?titleRect.right:260)+90,Math.round(vw*.36));
         var maxLeft=Math.max(minLeft,Math.round(vw-navReserve-modeW));
-        var targetLeft=Math.min(maxLeft,Math.max(minLeft,Math.round(vw*.50)));
+        var targetLeft=Math.min(maxLeft,Math.max(minLeft,Math.round(vw*(sessionW?0.42:0.46))));
         var targetTop=Math.round(header.top+(header.height-(mr.height||48))/2);
         modeGroup.style.position='fixed';
         modeGroup.style.left=targetLeft+'px';
@@ -929,28 +952,19 @@ if(!('noModule' in HTMLScriptElement.prototype)){
         nav.style.maxWidth=Math.max(180,Math.min(available,vw-16))+'px';
         nav.style.overflow='hidden';
       }
-      var store=window.__gptImageStore, st=store&&store.getState&&store.getState();
-      var isAgent=!!(st&&st.appMode==='agent');
-      var box=document.getElementById('agentCurrentSessionBox');
       if(box){
         if(!isAgent||!mode){box.style.display='none';}
         else{
-          var rightLimit=Math.max(0,(modeLeftOverride||mode.rect.left)-14);
-          var titleSafeRight=titleRect?Math.max(titleRect.right,titleRect.left+360):0;
-          var leftBase=Math.round(Math.max(titleSafeRight,leftChromeRight)+18);
+          var rightLimit=Math.max(0,(modeLeftOverride||mode.rect.left)-16);
+          var leftBase=Math.round(leftChromeRight+14);
           var room=rightLimit-leftBase;
-          if(room<132){
+          if(room<128){
             box.style.display='none';
           }else{
             box.style.display=box.getAttribute('data-visible')==='1'?'flex':'none';
             var br=box.getBoundingClientRect();
             var btop=Math.round(mode.rect.top+(mode.rect.height-(br.height||32))/2);
-            var bw=Math.max(112,Math.min(210,room,br.width||170));
-            if(modeLeftOverride){
-              bw=Math.max(112,Math.min(190,bw));
-              leftBase=Math.round(modeLeftOverride-14-bw);
-              if(leftBase<leftChromeRight+18){box.style.display='none';}
-            }
+            var bw=Math.max(140,Math.min(240,room,br.width||220));
             box.style.top=Math.max(6,btop)+'px';
             box.style.left=leftBase+'px';
             box.style.right='auto';
@@ -1414,7 +1428,7 @@ function applyPendingPrompt(st, pendingPrompt){
     var script=document.createElement('script');
     script.type='module';
     script.crossOrigin='anonymous';
-    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=stability-a4-20260622';
+    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=stability-a5-20260622';
     var settled=false;
     script.onload=function(){settled=true;setLoadingStage('\u4e3b\u7a0b\u5e8f\u811a\u672c\u5df2\u52a0\u8f7d\uff0c\u7b49\u5f85\u754c\u9762\u6302\u8f7d...');waitForAppReady();};
     script.onerror=function(){settled=true;showLoadError('\u4e3b\u7a0b\u5e8f\u811a\u672c\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u6e05\u7a7a\u7f13\u5b58\u540e\u91cd\u8bd5\u3002');};
@@ -1494,7 +1508,7 @@ function applyPendingPrompt(st, pendingPrompt){
   <p id="loading-stage" style="margin-top:8px;font-size:12px;color:#94a3b8">&#27491;&#22312;&#26657;&#39564;&#30331;&#24405;&#29366;&#24577;...</p>
 </div>
 <nav class="site-nav" data-docked="0" aria-label="site navigation">
-  <span class="label" id="workbenchAccountInfo">&#39564;&#35777;&#20013;...</span>
+  <span class="account-chip" id="workbenchAccountInfo"><span class="account-role">&#29992;&#25143;</span><span class="account-name">&#39564;&#35777;&#20013;...</span></span>
   <span class="profile-switch-wrap"><select id="profileSwitch" class="profile-switch" aria-label="API profile"><option value="">&#37197;&#32622;</option></select></span>
   <span class="divider"></span>
   <a href="/prompts" class="nav-primary" title="&#25552;&#31034;&#35789;&#20179;&#24211;" aria-label="prompt repository"><span class="nav-ico">&#128218;</span><span class="nav-text">&#20179;&#24211;</span></a>
