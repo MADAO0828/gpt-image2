@@ -14,9 +14,9 @@
 <link rel="apple-touch-icon" href="./pwa-icon.svg" />
 <link rel="icon" href="./pwa-icon.svg" type="image/svg+xml" />
 <title>AI 工作台</title>
-<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=stability-a6-20260622" crossorigin="anonymous">
-<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=stability-a6-20260622" as="style" crossorigin="anonymous">
-<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=stability-a6-20260622">
+<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=stability-a7-20260622" crossorigin="anonymous">
+<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=stability-a7-20260622" as="style" crossorigin="anonymous">
+<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=stability-a7-20260622">
 <style>
 *{box-sizing:border-box}
 
@@ -34,9 +34,9 @@ body{margin:0;min-height:100vh;background:var(--loading-bg);color:#cbd5e1;font-f
 .spinner{width:40px;height:40px;border:3px solid var(--loading-spinner);border-top-color:var(--loading-spinner-top);border-radius:50%;animation:spin .7s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 .loading-screen p{margin-top:20px;font-size:14px;color:#64748b;letter-spacing:.3px}
-.site-nav{position:relative;z-index:1;display:flex;align-items:center;justify-content:flex-end;gap:6px;width:auto;margin:0 0 0 auto;background:rgba(255,255,255,.86);border:1px solid rgba(15,23,42,.10);border-radius:18px;padding:6px;box-shadow:0 8px 26px rgba(15,23,42,.08),inset 0 1px 0 rgba(255,255,255,.55);backdrop-filter:blur(18px);flex:0 0 auto}.site-nav[data-docked="0"]{display:none}html.dark .site-nav{background:rgba(3,7,18,.76);border-color:rgba(255,255,255,.10);box-shadow:0 10px 28px rgba(0,0,0,.32),inset 0 1px 0 rgba(255,255,255,.06)}
-.site-nav a{height:36px;min-width:36px;border-radius:12px;display:inline-flex;align-items:center;justify-content:center;gap:7px;text-decoration:none;font-size:14px;font-weight:800;color:#475569;padding:0 11px;transition:background .18s,color .18s,transform .16s,box-shadow .18s,border-color .18s;border:1px solid transparent;will-change:transform,background,color;position:relative;overflow:hidden}html.dark .site-nav a{color:#cbd5e1}
-.site-nav a .nav-text{font-size:12px;letter-spacing:.01em}.site-nav a .nav-ico{font-size:16px;line-height:1}
+.site-nav{position:relative;z-index:1;display:flex;align-items:center;justify-content:flex-end;gap:8px;width:auto;margin:0 0 0 auto;background:rgba(255,255,255,.86);border:1px solid rgba(15,23,42,.10);border-radius:22px;padding:8px;box-shadow:0 8px 26px rgba(15,23,42,.08),inset 0 1px 0 rgba(255,255,255,.55);backdrop-filter:blur(18px);flex:0 0 auto}.site-nav[data-docked="0"]{display:none}html.dark .site-nav{background:rgba(3,7,18,.76);border-color:rgba(255,255,255,.10);box-shadow:0 10px 28px rgba(0,0,0,.32),inset 0 1px 0 rgba(255,255,255,.06)}
+.site-nav a{height:44px;min-width:44px;border-radius:16px;display:inline-flex;align-items:center;justify-content:center;gap:9px;text-decoration:none;font-size:14px;font-weight:900;color:#475569;padding:0 16px;transition:background .18s,color .18s,transform .16s,box-shadow .18s,border-color .18s;border:1px solid transparent;will-change:transform,background,color;position:relative;overflow:hidden}html.dark .site-nav a{color:#cbd5e1}
+.site-nav a .nav-text{font-size:14px;letter-spacing:.01em;font-weight:900}.site-nav a .nav-ico{font-size:18px;line-height:1}
 .site-nav a:hover{background:rgba(99,102,241,.12);color:#4f46e5;transform:translateY(-1px);border-color:rgba(99,102,241,.18);box-shadow:0 6px 14px rgba(99,102,241,.10)}html.dark .site-nav a:hover{background:rgba(99,102,241,.18);color:#fff;border-color:rgba(129,140,248,.22)}
 .site-nav a:focus-visible{outline:2px solid rgba(99,102,241,.55);outline-offset:2px}.site-nav a:active{transform:scale(.95);transition-duration:.08s}
 .site-nav a.nav-primary{background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;border-color:rgba(255,255,255,.18);box-shadow:0 8px 20px rgba(99,102,241,.24)}.site-nav a.nav-primary:hover{color:#fff;background:linear-gradient(135deg,#4f46e5,#7c3aed)}
@@ -44,11 +44,11 @@ body{margin:0;min-height:100vh;background:var(--loading-bg);color:#cbd5e1;font-f
 .site-nav .label{font-size:12px;color:#64748b;padding:0 10px 0 8px;letter-spacing:.01em;max-width:170px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:700}html.dark .site-nav .label{color:#bfdbfe}
 .site-nav .divider{width:1px;height:22px;background:rgba(15,23,42,.10);margin:0 1px}html.dark .site-nav .divider{background:rgba(255,255,255,.12)}
 .site-nav .profile-switch-wrap{display:flex;align-items:center;min-width:0}.site-nav .profile-switch-wrap:before{content:'API';font-size:10px;font-weight:900;color:#64748b;margin-right:5px;letter-spacing:.08em}html.dark .site-nav .profile-switch-wrap:before{color:#94a3b8}
-.site-nav .profile-switch{height:36px;max-width:230px;border:0;border-radius:12px;background:#eef2ff;color:#111827;padding:0 30px 0 12px;font-size:12px;font-weight:900;outline:none;cursor:pointer;box-shadow:inset 0 0 0 1px rgba(99,102,241,.22),0 5px 14px rgba(99,102,241,.08);transition:box-shadow .18s,background .18s,transform .14s;color-scheme:light}
+.site-nav .profile-switch{height:44px;max-width:260px;border:0;border-radius:16px;background:#eef2ff;color:#111827;padding:0 30px 0 12px;font-size:12px;font-weight:900;outline:none;cursor:pointer;box-shadow:inset 0 0 0 1px rgba(99,102,241,.22),0 5px 14px rgba(99,102,241,.08);transition:box-shadow .18s,background .18s,transform .14s;color-scheme:light}
 .site-nav .profile-switch:hover{background:#e0e7ff;box-shadow:inset 0 0 0 1px rgba(99,102,241,.38),0 8px 18px rgba(99,102,241,.14);transform:translateY(-1px)}.site-nav .profile-switch:focus-visible{box-shadow:0 0 0 2px rgba(99,102,241,.32),inset 0 0 0 1px rgba(99,102,241,.45)}
 .site-nav .profile-switch.saving{opacity:.72}.site-nav .profile-switch.error{box-shadow:inset 0 0 0 1px rgba(220,38,38,.55)}html.dark .site-nav .profile-switch{background:rgba(30,41,59,.92);color:#fff;box-shadow:inset 0 0 0 1px rgba(129,140,248,.35),0 8px 18px rgba(0,0,0,.18);color-scheme:dark}html.dark .site-nav .profile-switch:hover{background:#1e293b;box-shadow:inset 0 0 0 1px rgba(129,140,248,.55)}
 .site-nav[data-has-running="1"] a[href="/admin"],.site-nav[data-has-running="1"] a[href="/prompts"]{box-shadow:inset 0 0 0 1px rgba(245,158,11,.32),0 8px 18px rgba(245,158,11,.10)}
-@media(max-width:760px){.site-nav{margin-left:auto;justify-content:flex-end;flex-wrap:nowrap;gap:4px;padding:5px;border-radius:16px}.site-nav .label,.site-nav .divider,.site-nav a .nav-text,.site-nav .profile-switch-wrap:before{display:none}.site-nav a{width:36px;height:36px;min-width:36px;padding:0}.site-nav .profile-switch{width:118px;max-width:34vw;height:36px;font-size:11px;padding-left:8px;padding-right:22px}}
+@media(max-width:760px){.site-nav{margin-left:auto;justify-content:flex-end;flex-wrap:nowrap;gap:5px;padding:6px;border-radius:18px;overflow-x:auto}.site-nav .label,.site-nav .divider,.site-nav a .nav-text,.site-nav .profile-switch-wrap:before{display:none}.site-nav a{width:40px;height:40px;min-width:40px;padding:0}.site-nav .profile-switch{width:118px;max-width:34vw;height:40px;font-size:11px;padding-left:8px;padding-right:22px}}
 :root{--loading-bg:#e5e7eb;--loading-text:#475569;--loading-spinner:rgba(99,102,241,0.3);--loading-spinner-top:#6366f1}
 html.dark{--loading-bg:#000;--loading-text:#fff;--loading-spinner:rgba(255,255,255,0.12);--loading-spinner-top:#818cf8}
 html:not(.dark) body,html:not(.dark) #root,html:not(.dark) [data-home-main]{background:#fff!important;color:#000!important}
@@ -125,7 +125,7 @@ body>#workbenchSiteNav.site-nav[data-compact="1"] .account-name{max-width:130px}
 </style>
 <script>
 (function(){
-  var shellVersion='gpt2-shell-20260622-title-safe-a6';
+  var shellVersion='gpt2-shell-20260622-unified-nav-a7';
   try{
     var last=localStorage.getItem('gpt-image2-shell-version');
     if(last!==shellVersion){
@@ -147,7 +147,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
   var storeOwnerKey = 'gpt-image-playground:owner';
   var storeUserPrefix = 'gpt-image-playground:user:';
   var themeKey = 'gpt-image2-theme';
-  var assetVersion = 'gpt2-shell-20260622-title-safe-a6';
+  var assetVersion = 'gpt2-shell-20260622-unified-nav-a7';
   function installDomOwnershipGuard(){
     try{
       if(window.__gptImageDomOwnershipGuardInstalled||!window.Node||!Node.prototype)return;
@@ -1349,6 +1349,7 @@ function applyPendingPrompt(st, pendingPrompt){
       });
     }catch(e){}
   }
+  function doWorkbenchLogout(){try{sessionStorage.removeItem('gpt-image2-session-token')}catch(e){}fetch('/api/auth/logout',{method:'POST',credentials:'same-origin',cache:'no-store'}).then(function(){location.replace('/login')}).catch(function(){location.replace('/login')})}
   function ensureSiteNav(){
     var nav=document.getElementById('workbenchSiteNav')||document.querySelector('body>.site-nav');
     if(nav)return nav;
@@ -1358,7 +1359,7 @@ function applyPendingPrompt(st, pendingPrompt){
       nav.className='site-nav';
       nav.setAttribute('data-docked','0');
       nav.setAttribute('aria-label','site navigation');
-      nav.innerHTML='<span class="account-chip" id="workbenchAccountInfo"></span><span class="profile-switch-wrap"><select id="profileSwitch" class="profile-switch" aria-label="API profile"><option value="">&#37197;&#32622;</option></select></span><span class="divider"></span><a href="/prompts" class="nav-primary" title="&#25552;&#31034;&#35789;&#20179;&#24211;" aria-label="prompt repository"><span class="nav-ico">&#128218;</span><span class="nav-text">&#20179;&#24211;</span></a><a href="javascript:toggleTheme()" id="theme-toggle" class="nav-soft" title="&#20999;&#25442;&#20027;&#39064;"><span class="nav-ico">&#9728;&#65039;</span><span class="nav-text">&#20027;&#39064;</span></a><a href="/admin" class="nav-soft" title="&#21518;&#21488;" aria-label="admin"><span class="nav-ico">&#9881;</span><span class="nav-text">&#21518;&#21488;</span></a>';
+      nav.innerHTML='<span class="account-chip" id="workbenchAccountInfo"></span><span class="profile-switch-wrap"><select id="profileSwitch" class="profile-switch" aria-label="API profile"><option value="">&#37197;&#32622;</option></select></span><a href="/" class="nav-primary" title="AI &#24037;&#20316;&#21488;"><span class="nav-ico">&#127956;</span><span class="nav-text">&#24037;&#20316;&#21488;</span></a><a href="/prompts" class="nav-soft" title="&#25552;&#31034;&#35789;&#20179;&#24211;" aria-label="prompt repository"><span class="nav-ico">&#128218;</span><span class="nav-text">&#20179;&#24211;</span></a><a href="javascript:toggleTheme()" id="theme-toggle" class="nav-soft" title="&#20999;&#25442;&#20027;&#39064;"><span class="nav-ico">&#128187;</span><span class="nav-text">&#20027;&#39064;</span></a><a href="/admin" class="nav-soft" title="&#21518;&#21488;" aria-label="admin"><span class="nav-ico">&#9881;</span><span class="nav-text">&#21518;&#21488;</span></a><a href="javascript:doWorkbenchLogout()" class="nav-soft" title="&#36864;&#20986;"><span class="nav-ico">&#128682;</span><span class="nav-text">&#36864;&#20986;</span></a>';
       document.body.appendChild(nav);
       try{updateNavUser(window.__gptImageRuntimeConfig&&window.__gptImageRuntimeConfig.username,window.__gptImageRuntimeConfig&&window.__gptImageRuntimeConfig.role);}catch(e){}
       try{window.__applyTheme&&window.__applyTheme();}catch(e){}
@@ -1439,7 +1440,7 @@ function applyPendingPrompt(st, pendingPrompt){
     var script=document.createElement('script');
     script.type='module';
     script.crossOrigin='anonymous';
-    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=stability-a6-20260622';
+    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=stability-a7-20260622';
     var settled=false;
     script.onload=function(){settled=true;setLoadingStage('\u4e3b\u7a0b\u5e8f\u811a\u672c\u5df2\u52a0\u8f7d\uff0c\u7b49\u5f85\u754c\u9762\u6302\u8f7d...');waitForAppReady();};
     script.onerror=function(){settled=true;showLoadError('\u4e3b\u7a0b\u5e8f\u811a\u672c\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u6e05\u7a7a\u7f13\u5b58\u540e\u91cd\u8bd5\u3002');};
@@ -1521,10 +1522,11 @@ function applyPendingPrompt(st, pendingPrompt){
 <nav class="site-nav" data-docked="0" aria-label="site navigation">
   <span class="account-chip" id="workbenchAccountInfo"><span class="account-role">&#29992;&#25143;</span><span class="account-name">&#39564;&#35777;&#20013;...</span></span>
   <span class="profile-switch-wrap"><select id="profileSwitch" class="profile-switch" aria-label="API profile"><option value="">&#37197;&#32622;</option></select></span>
-  <span class="divider"></span>
-  <a href="/prompts" class="nav-primary" title="&#25552;&#31034;&#35789;&#20179;&#24211;" aria-label="prompt repository"><span class="nav-ico">&#128218;</span><span class="nav-text">&#20179;&#24211;</span></a>
-  <a href="javascript:toggleTheme()" id="theme-toggle" class="nav-soft" title="&#20999;&#25442;&#20027;&#39064;"><span class="nav-ico">&#9728;&#65039;</span><span class="nav-text">&#20027;&#39064;</span></a>
+  <a href="/" class="nav-primary" title="AI &#24037;&#20316;&#21488;"><span class="nav-ico">&#127956;</span><span class="nav-text">&#24037;&#20316;&#21488;</span></a>
+  <a href="/prompts" class="nav-soft" title="&#25552;&#31034;&#35789;&#20179;&#24211;" aria-label="prompt repository"><span class="nav-ico">&#128218;</span><span class="nav-text">&#20179;&#24211;</span></a>
+  <a href="javascript:toggleTheme()" id="theme-toggle" class="nav-soft" title="&#20999;&#25442;&#20027;&#39064;"><span class="nav-ico">&#128187;</span><span class="nav-text">&#20027;&#39064;</span></a>
   <a href="/admin" class="nav-soft" title="&#21518;&#21488;" aria-label="admin"><span class="nav-ico">&#9881;</span><span class="nav-text">&#21518;&#21488;</span></a>
+  <a href="javascript:doWorkbenchLogout()" class="nav-soft" title="&#36864;&#20986;"><span class="nav-ico">&#128682;</span><span class="nav-text">&#36864;&#20986;</span></a>
 </nav>
 <div id="root"></div>
 

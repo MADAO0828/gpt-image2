@@ -2,6 +2,8 @@
 const path = require('path');
 const root = path.resolve(__dirname, '..');
 const indexHtml = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+const adminHtml = fs.readFileSync(path.join(root, 'admin.html'), 'utf8');
+const promptsHtml = fs.readFileSync(path.join(root, 'prompts.html'), 'utf8');
 const bundlePath = path.join(root, 'assets', 'index-CZHhOunP-gpt2-20260621-agent-prompts-2.js');
 const bundle = fs.readFileSync(bundlePath, 'utf8');
 const failures = [];
@@ -42,6 +44,14 @@ ok(indexHtml.includes('sessionLeft+sessionW+18') && indexHtml.includes('titleSaf
   'Agent current-session box is not anchored next to the left conversation controls.');
 ok(indexHtml.includes('workbenchTitleSafeRight') && indexHtml.includes('titleSafeRight+14') && indexHtml.includes('left+360'),
   'Workbench top chrome lacks a hard title-safe boundary; session controls may overlap the title.');
+for (const [name, html] of [['index.html', indexHtml], ['admin.html', adminHtml], ['prompts.html', promptsHtml]]) {
+  ok(html.includes('account-chip') && html.includes('account-role') && html.includes('account-name'), `${name} does not use the unified account role badge.`);
+  ok((html.includes('nav-primary') || html.includes(' primary')) && html.includes('nav-soft'), `${name} does not use the unified primary/soft nav button language.`);
+}
+ok(adminHtml.includes("renderAccountChip(document.getElementById('accountInfo'),currentUser)"),
+  'admin.html still writes the account label directly instead of rendering the unified account chip.');
+ok(promptsHtml.includes('renderAccountChip(el,u)') && promptsHtml.includes('function doLogout()'),
+  'prompts.html does not render the unified account chip or lacks logout support.');
 
 // Multi-image generation needs explicit retry/recovery markers so a single 5xx/524 slot does not permanently fail while siblings succeed.
 ok(bundle.includes('__gptImage2MultiImageRetry'),

@@ -54,6 +54,13 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 .modal-acts{display:flex;gap:8px;flex-wrap:wrap}
 .ts{position:fixed;left:50%;bottom:calc(18px + env(safe-area-inset-bottom));transform:translateX(-50%);z-index:90;max-width:min(360px,calc(100vw - 28px));padding:8px 16px;border-radius:8px;font-size:12px;background:var(--toast-bg);color:#22c55e;border:1px solid rgba(34,197,94,0.25);animation:toastIn .22s ease;pointer-events:none;text-align:center;box-shadow:0 10px 30px rgba(15,23,42,.12)}
 @keyframes toastIn{from{transform:translate(-50%,10px);opacity:0}to{transform:translate(-50%,0);opacity:1}}
+
+/* Unified global navigation v20260622 */
+.nav-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;background:var(--card);border:1px solid var(--border);border-radius:22px;padding:8px;box-shadow:0 10px 30px rgba(15,23,42,.10),inset 0 1px 0 rgba(255,255,255,.08);backdrop-filter:blur(20px)}
+.nav-actions .b{height:44px;min-width:44px;border-radius:16px;display:inline-flex;align-items:center;justify-content:center;gap:9px;padding:0 16px;font-weight:900;font-size:14px}.nav-actions .nav-ico{font-size:18px}.nav-actions .nav-text{font-size:14px;font-weight:900}.nav-actions .primary{background:linear-gradient(135deg,var(--accent),#8b5cf6);color:white;border-color:rgba(255,255,255,.18);box-shadow:0 10px 24px rgba(99,102,241,.28)}
+.nav-actions .account-chip{display:inline-flex;align-items:center;gap:10px;max-width:280px;height:44px;padding:0 14px;border:1px solid rgba(99,102,241,.28);border-radius:17px;background:linear-gradient(135deg,rgba(99,102,241,.14),rgba(139,92,246,.08));color:var(--text);white-space:nowrap;overflow:hidden;box-shadow:inset 0 1px 0 rgba(255,255,255,.08)}
+.nav-actions .account-role{display:inline-flex;align-items:center;height:24px;padding:0 9px;border-radius:999px;background:rgba(99,102,241,.16);color:var(--accent);font-size:12px;font-weight:950;flex:0 0 auto}.nav-actions .account-name{display:block;min-width:0;max-width:170px;overflow:hidden;text-overflow:ellipsis;font-size:14px;font-weight:950}.nav-actions .account-chip[data-role="admin"]{border-color:rgba(168,85,247,.35);background:linear-gradient(135deg,rgba(124,58,237,.20),rgba(245,158,11,.10))}.nav-actions .account-chip[data-role="admin"] .account-role{background:linear-gradient(135deg,#7c3aed,#f59e0b);color:#fff;box-shadow:0 6px 18px rgba(124,58,237,.25)}
+@media(max-width:720px){.nav-actions{gap:5px;padding:6px;border-radius:18px;overflow-x:auto}.nav-actions .nav-text{display:none}.nav-actions .b{padding:0;width:40px;height:40px}.nav-actions .account-chip{max-width:170px;height:40px}.nav-actions .account-name{max-width:90px}.nav-actions .account-role{display:none}}
 </style>
 <script>
 (function(){
@@ -61,7 +68,9 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
   window.__themeState={themeKey:'gpt-image2-theme'};
   function isWeChatBrowser(){try{return /MicroMessenger|WeChat|MQQBrowser|TBS|XWEB/i.test(navigator.userAgent||'')}catch(e){return false}}
   function consumeTokenFromHash(){try{var m=(location.hash||'').match(/(?:^#|[&#])gi2token=([^&]+)/);if(m&&m[1]){sessionStorage.setItem('gpt-image2-session-token',decodeURIComponent(m[1]));history.replaceState(null,document.title,location.pathname+location.search)}}catch(e){}}
-  function authFailed(){
+  function renderAccountChip(el,user){if(!el)return;var isAdmin=user&&user.role==='admin';var role=isAdmin?'\u7ba1\u7406\u5458':'\u7528\u6237';var name=user&&user.username?String(user.username):'\u9a8c\u8bc1\u4e2d...';el.className='account-chip';el.setAttribute('data-role',isAdmin?'admin':'user');el.title=role+' '+name;el.setAttribute('aria-label',role+' '+name);el.innerHTML='<span class="account-role">'+role+'</span><span class="account-name"></span>';el.querySelector('.account-name').textContent=name}
+function doLogout(){try{sessionStorage.removeItem('gpt-image2-session-token')}catch(e){}fetch('/api/auth/logout',{method:'POST',credentials:'same-origin',cache:'no-store'}).then(function(){location.replace('/login')}).catch(function(){location.replace('/login')})}
+function authFailed(){
     if(isWeChatBrowser()){
       var list=document.getElementById('grid')||document.getElementById('cats');
       if(list){
@@ -130,10 +139,12 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 </script>
 </head><body>
 <header class="h"><span class="hl">📚 提示词仓库</span>
-<div class="nav-actions"><span class="acct" id="promptAccountInfo">&#39564;&#35777;&#20013;...</span>
-  <button onclick="toggleTheme()" id="theme-toggle" class="b" title="&#20999;&#25442;&#20027;&#39064;"><span class="nav-ico">&#128187;</span><span class="nav-text">&#20027;&#39064;</span></button><script>window.__applyTheme();</script>
-  <a href="/admin" class="b" title="&#21518;&#21488;"><span class="nav-ico">&#9881;</span><span class="nav-text">&#21518;&#21488;</span></a>
-  <a href="/" class="b primary" title="&#36820;&#22238;&#24037;&#20316;&#21488;"><span class="nav-ico">&#127956;</span><span class="nav-text">&#24037;&#20316;&#21488;</span></a>
+<div class="nav-actions"><span class="account-chip" id="promptAccountInfo"><span class="account-role">&#29992;&#25143;</span><span class="account-name">&#39564;&#35777;&#20013;...</span></span>
+  <a href="/" class="b nav-soft" title="AI &#24037;&#20316;&#21488;"><span class="nav-ico">&#127956;</span><span class="nav-text">&#24037;&#20316;&#21488;</span></a>
+  <a href="/prompts" class="b primary" title="&#25552;&#31034;&#35789;&#20179;&#24211;"><span class="nav-ico">&#128218;</span><span class="nav-text">&#20179;&#24211;</span></a>
+  <button onclick="toggleTheme()" id="theme-toggle" class="b nav-soft" title="&#20999;&#25442;&#20027;&#39064;"><span class="nav-ico">&#128187;</span><span class="nav-text">&#20027;&#39064;</span></button><script>window.__applyTheme();</script>
+  <a href="/admin" class="b nav-soft" title="&#21518;&#21488;"><span class="nav-ico">&#9881;</span><span class="nav-text">&#21518;&#21488;</span></a>
+  <button onclick="doLogout()" class="b nav-soft" title="&#36864;&#20986;"><span class="nav-ico">&#128682;</span><span class="nav-text">&#36864;&#20986;</span></button>
 </div>
 </header>
 <div class="c">
@@ -282,6 +293,6 @@ mi.addEventListener("click",function(){
   }
 });
 document.getElementById("imgViewer").addEventListener("click",function(){this.classList.remove("show")});
-fetch('/api/auth/me',{cache:'no-store',credentials:'same-origin'}).then(function(r){if(!r.ok){authFailed();return null}return r.json()}).then(function(u){var el=document.getElementById('promptAccountInfo');if(el&&u){el.textContent=(u.role==='admin'?'\u7ba1\u7406\u5458 ':'\u7528\u6237 ')+u.username;el.title=el.textContent}}).catch(function(){authFailed()});
+fetch('/api/auth/me',{cache:'no-store',credentials:'same-origin'}).then(function(r){if(!r.ok){authFailed();return null}return r.json()}).then(function(u){var el=document.getElementById('promptAccountInfo');if(el&&u){renderAccountChip(el,u)}}).catch(function(){authFailed()});
 loadCategories();
 </script></body></html>
