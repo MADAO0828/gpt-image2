@@ -14,9 +14,9 @@
 <link rel="apple-touch-icon" href="./pwa-icon.svg" />
 <link rel="icon" href="./pwa-icon.svg" type="image/svg+xml" />
 <title>AI 工作台</title>
-<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=macos-b15-20260622" crossorigin="anonymous">
-<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=macos-b15-20260622" as="style" crossorigin="anonymous">
-<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=macos-b15-20260622">
+<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=macos-b17-20260622" crossorigin="anonymous">
+<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=macos-b17-20260622" as="style" crossorigin="anonymous">
+<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=macos-b17-20260622">
 <style>
 *{box-sizing:border-box}
 
@@ -144,7 +144,7 @@ html.dark #fast-workbench-skeleton{background:#000;color:#fff}html.dark #fast-wo
 </style>
 <script>
 (function(){
-  var shellVersion='gpt2-shell-20260622-macos-b15';
+  var shellVersion='gpt2-shell-20260622-macos-b17';
   try{
     var last=localStorage.getItem('gpt-image2-shell-version');
     if(last!==shellVersion){
@@ -166,7 +166,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
   var storeOwnerKey = 'gpt-image-playground:owner';
   var storeUserPrefix = 'gpt-image-playground:user:';
   var themeKey = 'gpt-image2-theme';
-  var assetVersion = 'gpt2-shell-20260622-macos-b15';
+  var assetVersion = 'gpt2-shell-20260622-macos-b17';
   function installDomOwnershipGuard(){
     try{
       if(window.__gptImageDomOwnershipGuardInstalled||!window.Node||!Node.prototype)return;
@@ -279,6 +279,21 @@ if(!('noModule' in HTMLScriptElement.prototype)){
   }
   function hideFastBootSkeleton(){
     try{document.documentElement.classList.remove('gpt-fast-boot');}catch(e){}
+  }
+  function installFastBootMountCleaner(){
+    try{
+      if(window.__gptFastBootMountCleanerInstalled)return;
+      window.__gptFastBootMountCleanerInstalled=true;
+      var until=Date.now()+70000;
+      var tick=function(){
+        try{
+          var root=document.getElementById('root');
+          if(root&&root.children&&root.children.length>0){hideFastBootSkeleton();return;}
+          if(Date.now()<until)setTimeout(tick,500);
+        }catch(e){}
+      };
+      setTimeout(tick,500);
+    }catch(e){}
   }
   window.__gptImageCopyCurrentLink=copyCurrentLink;
   function installFetchAuthFallback(){
@@ -456,7 +471,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
         hideLoading();
         hideFastBootSkeleton();
         setTimeout(function(){watchWorkbenchSettings();watchSiteNavDock();installPromptRepoWheel();installModalChromeGuard();installAgentGuard();installAgentNavConflictFix();installAgentCurrentSessionBox();installAgentInputModePolish();installRunningTaskNavigationGuard();removeUpstreamBrandingAndUpdates();},300);
-      } else if(!mounted&&Date.now()-started>20000){
+      } else if(!mounted&&Date.now()-started>60000){
         clearInterval(timer);
         showLoadError('\u4e3b\u7a0b\u5e8f\u542f\u52a8\u8d85\u65f6\uff1a\u4e3b\u811a\u672c\u5df2\u8bf7\u6c42\uff0c\u4f46\u9875\u9762\u6839\u8282\u70b9\u6ca1\u6709\u6210\u529f\u6302\u8f7d\u3002\u8bf7\u5237\u65b0\u91cd\u8bd5\uff0c\u6216\u8fdb\u5165\u540e\u53f0\u68c0\u67e5\u5f53\u524d\u7528\u6237\u914d\u7f6e\u3002');
       }
@@ -717,9 +732,10 @@ if(!('noModule' in HTMLScriptElement.prototype)){
     try{
       var box=ensureAgentCurrentSessionBox(); if(!box)return;
       var conv=activeAgentConversation();
-      box.setAttribute('data-visible',conv?'1':'0');
-      if(!conv||box.getAttribute('data-editing')==='1')return;
-      var title=String(conv.title||'\u65b0\u5bf9\u8bdd').trim()||'\u65b0\u5bf9\u8bdd';
+      box.setAttribute('data-visible','1');
+      box.setAttribute('data-has-conv',conv?'1':'0');
+      if(box.getAttribute('data-editing')==='1')return;
+      var title=conv?(String(conv.title||'\u65b0\u5bf9\u8bdd').trim()||'\u65b0\u5bf9\u8bdd'):'\u65b0\u5bf9\u8bdd';
       var el=box.querySelector('.session-title');
       if(el)el.textContent=title;
       box.title='\u70b9\u51fb\u4fee\u6539\u5f53\u524d\u4f1a\u8bdd\u540d\u79f0\uff1a'+title;
@@ -912,7 +928,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       Array.prototype.forEach.call(scope.querySelectorAll('button,a,h1,h2,span,svg'),function(el){
         if(el.closest&&el.closest('#workbenchSiteNav,#agentShellHost'))return;
         var txt=String(el.textContent||'').replace(/\s+/g,'').trim();
-        if(txt==='??'||txt==='Agent'||txt==='Gallery')return;
+        if(txt==='\u753b\u5eca'||txt==='Agent'||txt==='Gallery')return;
         var r=visibleRect(el); if(!r)return;
         if(r.left>=limit||r.right>limit||r.width>360||r.height>64)return;
         if(header){var hr=header.getBoundingClientRect(); if(r.bottom<hr.top||r.top>hr.bottom)return;}
@@ -930,6 +946,88 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       return Math.max(base+24,byWidth,byHeader);
     }catch(e){return 430;}
   }
+  function ensureAgentHeaderActions(){
+    try{
+      var host=ensureAgentShellHost(); if(!host)return null;
+      var wrap=document.getElementById('agentHeaderActions');
+      if(!wrap){
+        wrap=document.createElement('div');
+        wrap.id='agentHeaderActions';
+        wrap.className='agent-header-actions';
+        wrap.setAttribute('aria-label','Agent conversation actions');
+        host.appendChild(wrap);
+      }
+      return wrap;
+    }catch(e){return null;}
+  }
+  function arrangeAgentLeftHeaderControls(mode, header, titleSafeRight){
+    try{
+      var store=window.__gptImageStore, st=store&&store.getState&&store.getState();
+      var isAgent=!!(st&&st.appMode==='agent');
+      var wrap=ensureAgentHeaderActions();
+      if(!isAgent||!mode){
+        if(wrap)wrap.style.display='none';
+        Array.prototype.forEach.call(document.querySelectorAll('[data-agent-left-control="1"]'),function(el){
+          try{el.style.removeProperty('opacity');el.style.removeProperty('visibility');el.style.removeProperty('pointer-events');}catch(e){}
+        });
+        return {right:titleSafeRight||16,count:0};
+      }
+      var headerEl=(mode.gallery&&mode.gallery.button&&mode.gallery.button.closest&&mode.gallery.button.closest('header'))||null;
+      var hr=(headerEl&&headerEl.getBoundingClientRect&&headerEl.getBoundingClientRect())||(header||{top:8,bottom:66,height:58,left:0,right:(window.innerWidth||0)});
+      var box=document.getElementById('agentCurrentSessionBox');
+      var boxW=0;
+      if(box&&box.getAttribute('data-visible')==='1')boxW=Math.max(176,Math.min(260,box.getBoundingClientRect().width||240));
+      var left=18+(boxW?boxW+12:0);
+      var top=Math.max(6,Math.round(hr.top+(hr.height-38)/2));
+      var modeLeft=(mode.rect&&mode.rect.left)||((window.innerWidth||0)/2-80);
+      var modeRight=(mode.rect&&mode.rect.right)||((window.innerWidth||0)/2+80);
+      function isInsideModeGroup(el){try{var group=findWorkbenchModeGroup(mode);return !!(group&&(el===group||(group.contains&&group.contains(el))));}catch(e){return false;}}
+      var moved=[];
+      Array.prototype.forEach.call(document.querySelectorAll('#root header button,#root header a,#root button,#root a'),function(el){
+        if(el.closest&&el.closest('#workbenchSiteNav,#agentShellHost'))return;
+        if(isInsideModeGroup(el))return;
+        var txt=String(el.textContent||'').replace(/\s+/g,'').trim();
+        if(txt==='Agent'||txt==='Gallery'||txt==='\u753b\u5eca'||txt==='\u56fe\u5e93')return;
+        var r=visibleRect(el); if(!r)return;
+        if(r.width<22||r.width>58||r.height<22||r.height>58)return;
+        if(r.top>Math.max(120,hr.bottom+52)||r.bottom<hr.top-12)return;
+        if(r.left<modeLeft-180||r.left>modeRight+260)return;
+        var title=String(el.getAttribute('title')||el.getAttribute('aria-label')||'').trim();
+        if(title&&title.indexOf('\u5386\u53f2')<0&&title.indexOf('\u65b0')<0&&title.indexOf('\u5bf9\u8bdd')<0)return;
+        if(moved.indexOf(el)<0)moved.push(el);
+      });
+      moved=moved.slice(0,2);
+      if(wrap){
+        wrap.innerHTML='';
+        wrap.style.display=moved.length?'flex':'none';
+        wrap.style.position='fixed';
+        wrap.style.left=left+'px';
+        wrap.style.top=top+'px';
+        wrap.style.right='auto';
+        wrap.style.bottom='auto';
+        wrap.style.zIndex='70';
+        wrap.style.pointerEvents='auto';
+        moved.forEach(function(original,idx){
+          var title=String(original.getAttribute('title')||original.getAttribute('aria-label')||'').trim()||(idx===0?'\u5386\u53f2\u4f1a\u8bdd':'\u65b0\u5bf9\u8bdd');
+          var isNew=title.indexOf('\u65b0')>=0;
+          var btn=document.createElement('button');
+          btn.type='button';
+          btn.className='agent-header-action-btn';
+          btn.title=title;
+          btn.innerHTML='<span class="agent-header-action-ico">'+(isNew?'&#65291;':'&#9716;')+'</span><span class="agent-header-action-text">'+(isNew?'\u65b0\u5bf9\u8bdd':'\u5386\u53f2')+'</span>';
+          btn.addEventListener('click',function(ev){ev.preventDefault();ev.stopPropagation();try{original.click();}catch(e){}},true);
+          wrap.appendChild(btn);
+          original.setAttribute('data-agent-left-control','1');
+          original.style.setProperty('opacity','0','important');
+          original.style.setProperty('visibility','hidden','important');
+          original.style.setProperty('pointer-events','none','important');
+        });
+        left+=moved.length?Math.min(230,Math.max(96,moved.length*96)):0;
+      }
+      return {right:left,count:moved.length};
+    }catch(e){return {right:titleSafeRight||16,count:0};}
+  }
+
   function positionShellChrome(){
     try{
       var mode=findWorkbenchModeButtons(), header=findWorkbenchHeaderRect(mode), nav=document.getElementById('workbenchSiteNav');
@@ -942,6 +1040,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       var isAgent=!!(st&&st.appMode==='agent');
       var box=document.getElementById('agentCurrentSessionBox');
       var modeLeftOverride=null, modeRightOverride=null;
+      var leftAgentCluster=arrangeAgentLeftHeaderControls(mode,header,titleSafeRight);
       var modeGroup=findWorkbenchModeGroup(mode);
       if(modeGroup&&mode&&header&&vw>900){
         var mr=mode.rect, modeW=Math.max(160,Math.round(mr.width||190));
@@ -993,7 +1092,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
         }catch(e){}
       }
       if(nav){
-        nav.style.position='fixed'; nav.style.margin='0'; nav.style.pointerEvents='auto';
+        nav.style.position='fixed'; nav.style.margin='0'; nav.style.pointerEvents='auto'; nav.style.zIndex='70';
         nav.setAttribute('data-docked','1');
         var nr=nav.getBoundingClientRect();
         var top=header?Math.round(header.top+(header.height-(nr.height||48))/2):12;
@@ -1012,15 +1111,15 @@ if(!('noModule' in HTMLScriptElement.prototype)){
         if(!isAgent||!mode){box.style.display='none';}
         else{
           var rightLimit=Math.max(0,(modeLeftOverride||mode.rect.left)-16);
-          var leftBase=Math.round(titleSafeRight+14);
+          var leftBase=18;
           var room=rightLimit-leftBase;
-          if(room<128){
+          if(room<170){
             box.style.display='none';
           }else{
             box.style.display=box.getAttribute('data-visible')==='1'?'flex':'none';
             var br=box.getBoundingClientRect();
-            var btop=Math.round(mode.rect.top+(mode.rect.height-(br.height||32))/2);
-            var bw=Math.max(132,Math.min(200,room,br.width||180));
+            var btop=Math.round(mode.rect.top+(mode.rect.height-(br.height||42))/2);
+            var bw=Math.max(176,Math.min(260,room,br.width||230));
             box.style.top=Math.max(6,btop)+'px';
             box.style.left=leftBase+'px';
             box.style.right='auto';
@@ -1050,7 +1149,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
           controls.style.right='auto';
           controls.style.bottom=cBottom+'px';
           controls.style.top='auto';
-          controls.style.maxWidth=Math.max(140,Math.min(cr.width||260,rr.width-120))+'px';
+          controls.style.maxWidth=Math.max(140,Math.min(cr.width||260,rr.width-120))+'px'; controls.style.zIndex='70';
         }
       }
     }catch(e){}
@@ -1551,7 +1650,7 @@ function applyPendingPrompt(st, pendingPrompt){
     var script=document.createElement('script');
     script.type='module';
     script.crossOrigin='anonymous';
-    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=macos-b15-20260622';
+    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=macos-b17-20260622';
     var settled=false;
     script.onload=function(){settled=true;setLoadingStage('\u4e3b\u7a0b\u5e8f\u811a\u672c\u5df2\u52a0\u8f7d\uff0c\u7b49\u5f85\u754c\u9762\u6302\u8f7d...');waitForAppReady();};
     script.onerror=function(){settled=true;showLoadError('\u4e3b\u7a0b\u5e8f\u811a\u672c\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u6e05\u7a7a\u7f13\u5b58\u540e\u91cd\u8bd5\u3002');};
@@ -1619,6 +1718,7 @@ function applyPendingPrompt(st, pendingPrompt){
     authReady=true;
     setLoadingStage('\u6b63\u5728\u6062\u590d\u4f1a\u8bdd\uff0c\u5de5\u4f5c\u53f0\u5c06\u5148\u884c\u6253\u5f00...');
     showFastBootSkeleton();
+    installFastBootMountCleaner();
     startWhenDomReady();
   }
   authPromise.then(function(user){
@@ -1633,8 +1733,9 @@ function applyPendingPrompt(st, pendingPrompt){
     // fetch can be slow on Cloudflare cold starts; mount immediately with the
     // user-scoped local store, then hot-apply cloud settings when they arrive.
     showFastBootSkeleton();
+    installFastBootMountCleaner();
     startWhenDomReady();
-    setLoadingStage('???????...');
+    setLoadingStage('\u6b63\u5728\u6253\u5f00\u5de5\u4f5c\u53f0...');
     return syncRuntimeConfig().catch(function(e){
       console.warn('[Shell] runtime config sync failed after fast boot',e);
       // Keep the already-mounted workbench visible. Missing API configuration is
@@ -1646,7 +1747,7 @@ function applyPendingPrompt(st, pendingPrompt){
   });
 })();
 </script>
-<link rel="stylesheet" href="/assets/macos-design.css?v=macos-b15-20260622"></head>
+<link rel="stylesheet" href="/assets/macos-design.css?v=macos-b17-20260622"></head>
 <body>
 <div id="loading-screen" class="loading-screen">
   <div class="spinner"></div>

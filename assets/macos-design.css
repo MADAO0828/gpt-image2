@@ -454,3 +454,75 @@ html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6 .mt-3 label span{line-hei
 #root div.fixed.inset-0 section .grid.grid-cols-4 button{height:62px!important;min-height:62px!important;padding:8px!important;}
 #root div.fixed.inset-0 [class*="space-y"]{gap:12px!important;}
 @media(max-width:760px){.prompts-unified.h{grid-template-columns:1fr!important}.prompts-unified .hl{font-size:20px!important}.prompts-unified .nav-actions{justify-content:flex-start!important}html.gpt-agent-mode .agent-chat-inputbar .prompt-placeholder[data-shell-placeholder="agent"]{padding-left:0!important}html.gpt-agent-mode #agentShellHost .agent-extra-controls{left:22px!important;bottom:92px!important}}
+
+
+/* product-design B16 - non-floating shell chrome, full account, stable Agent left cluster */
+:root{--b16-top-z:70;--b16-modal-z:190;}
+body>#workbenchSiteNav.site-nav{z-index:var(--b16-top-z)!important;min-width:560px!important;max-width:min(760px,calc(50vw - 64px))!important;box-shadow:0 8px 22px rgba(15,23,42,.08),inset 0 1px 0 rgba(255,255,255,.52)!important;}
+body>#workbenchSiteNav.site-nav .account-chip{flex:0 0 auto!important;min-width:190px!important;max-width:260px!important;justify-content:flex-start!important;}
+body>#workbenchSiteNav.site-nav .account-name{max-width:150px!important;overflow:hidden!important;text-overflow:ellipsis!important;}
+body>#workbenchSiteNav.site-nav[data-compact="1"] .account-chip{min-width:178px!important;max-width:240px!important;}
+body>#workbenchSiteNav.site-nav[data-compact="1"] .account-name{max-width:142px!important;}
+body>#workbenchSiteNav.site-nav .profile-switch-wrap{min-width:172px!important;flex:0 0 172px!important;}
+body>#workbenchSiteNav.site-nav .profile-switch{max-width:172px!important;}
+#agentShellHost{z-index:var(--b16-top-z)!important;}
+#agentShellHost .agent-current-session-box,#agentShellHost .agent-extra-controls{z-index:var(--b16-top-z)!important;}
+html.gpt-agent-mode #agentShellHost .agent-current-session-box{display:flex!important;left:116px!important;width:230px!important;max-width:230px!important;height:42px!important;align-items:center!important;}
+html.gpt-agent-mode #agentShellHost .agent-current-session-box[data-has-conv="0"] .session-title{color:var(--mac-muted)!important;}
+html.gpt-agent-mode #agentShellHost .agent-current-session-box[data-has-conv="0"] .session-edit{opacity:.35!important;}
+/* Any workbench dialog must sit above shell chrome; if :has is available, hide shell immediately even before JS class toggles. */
+html.gpt-modal-open body>#workbenchSiteNav.site-nav,
+html.gpt-modal-open #agentShellHost,
+html:has(#root div.fixed.inset-0) body>#workbenchSiteNav.site-nav,
+html:has(#root div.fixed.inset-0) #agentShellHost{opacity:0!important;visibility:hidden!important;pointer-events:none!important;z-index:1!important;}
+#root div.fixed.inset-0{z-index:var(--b16-modal-z)!important;}
+html.gpt-agent-mode #agentShellHost .agent-extra-controls{z-index:68!important;}
+html.gpt-agent-mode .agent-chat-inputbar{z-index:65!important;}
+/* Prompts top bar: make account chip the same height as the buttons. */
+.prompts-unified .nav-actions{align-items:center!important;}
+.prompts-unified .acct{height:42px!important;min-height:42px!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;padding:0 16px!important;line-height:1!important;margin:0!important;}
+.prompts-unified .nav-actions .b,.prompts-unified .nav-actions a{height:42px!important;min-height:42px!important;display:inline-flex!important;align-items:center!important;}
+@media(max-width:1280px){body>#workbenchSiteNav.site-nav{min-width:460px!important;max-width:calc(50vw - 42px)!important}body>#workbenchSiteNav.site-nav .account-chip{min-width:160px!important}.site-nav .nav-text{display:none!important}}
+@media(max-width:920px){body>#workbenchSiteNav.site-nav{min-width:0!important;max-width:calc(100vw - 16px)!important}.site-nav .profile-switch-wrap{min-width:130px!important;flex-basis:130px!important}html.gpt-agent-mode #agentShellHost .agent-current-session-box{left:14px!important;width:170px!important;max-width:170px!important}}
+
+
+/* product-design B16.1 - portal modal coverage and Agent left controls */
+html:has(body > div.fixed.inset-0) body>#workbenchSiteNav.site-nav,
+html:has(body > div.fixed.inset-0) #agentShellHost,
+html:has(body > div.fixed.inset-0) #root header.safe-area-top,
+html:has(body > div.fixed.inset-0) #root>div.fixed.bottom-4,
+html:has(body > div.fixed.inset-0) #root>div.fixed.sm\:bottom-6{opacity:0!important;visibility:hidden!important;pointer-events:none!important;z-index:1!important;}
+body > div.fixed.inset-0{z-index:var(--b16-modal-z)!important;}
+html.gpt-agent-mode #root header.safe-area-top button[style*="position: fixed"]{z-index:72!important;}
+html.gpt-agent-mode #agentShellHost .agent-current-session-box{left:112px!important;}
+
+
+/* product-design B17 - left Agent cluster, non-overlapping account, modal-first layers */
+body>#workbenchSiteNav.site-nav{z-index:68!important;min-width:610px!important;max-width:min(820px,calc(50vw - 44px))!important;}
+body>#workbenchSiteNav.site-nav .account-chip{min-width:226px!important;max-width:320px!important;height:42px!important;}
+body>#workbenchSiteNav.site-nav .account-name{max-width:218px!important;}
+body>#workbenchSiteNav.site-nav[data-compact="1"] .account-chip{min-width:210px!important;max-width:290px!important;}
+body>#workbenchSiteNav.site-nav[data-compact="1"] .account-name{max-width:196px!important;}
+html.gpt-agent-mode #agentShellHost .agent-current-session-box{left:18px!important;width:240px!important;max-width:260px!important;z-index:70!important;}
+html.gpt-agent-mode #root header.safe-area-top button[data-agent-left-control="1"]{z-index:70!important;}
+html.gpt-agent-mode #agentShellHost .agent-extra-controls{z-index:64!important;}
+html.gpt-agent-mode .agent-chat-inputbar{z-index:63!important;}
+html:has(body > div.fixed.inset-0) body>#workbenchSiteNav.site-nav,
+html:has(body > div.fixed.inset-0) #agentShellHost,
+html:has(body > div.fixed.inset-0) #root header.safe-area-top,
+html:has(body > div.fixed.inset-0) #root>div.fixed.bottom-4,
+html:has(body > div.fixed.inset-0) #root>div.fixed.sm\:bottom-6{opacity:0!important;visibility:hidden!important;pointer-events:none!important;z-index:1!important;}
+.prompts-unified .nav-actions{align-items:center!important;}
+.prompts-unified .acct{height:42px!important;min-height:42px!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;align-self:center!important;}
+@media(max-width:1280px){body>#workbenchSiteNav.site-nav{min-width:500px!important;max-width:calc(50vw - 32px)!important}body>#workbenchSiteNav.site-nav .account-chip{min-width:210px!important}.site-nav .nav-text{display:none!important}}
+@media(max-width:920px){body>#workbenchSiteNav.site-nav{min-width:0!important;max-width:calc(100vw - 16px)!important}body>#workbenchSiteNav.site-nav .account-chip{min-width:170px!important}.site-nav .profile-switch-wrap{min-width:120px!important;flex-basis:120px!important}html.gpt-agent-mode #agentShellHost .agent-current-session-box{left:12px!important;width:168px!important;max-width:168px!important}}
+
+/* B17.1 Agent header action proxy: React-owned icon buttons are hidden; visible controls live in shell host. */
+#agentShellHost .agent-header-actions{display:flex;align-items:center;gap:8px;height:38px;}
+#agentShellHost .agent-header-action-btn{height:38px!important;display:inline-flex!important;align-items:center!important;gap:7px!important;padding:0 13px!important;border-radius:16px!important;border:1px solid var(--mac-border)!important;background:var(--mac-bg-elevated)!important;color:var(--mac-text)!important;box-shadow:var(--mac-shadow-sm)!important;font-weight:850!important;backdrop-filter:var(--mac-vibrancy);-webkit-backdrop-filter:var(--mac-vibrancy);}
+#agentShellHost .agent-header-action-btn:hover{transform:translateY(-1px)!important;background:color-mix(in srgb,var(--mac-blue) 12%,var(--mac-surface))!important;color:var(--mac-blue)!important;}
+#agentShellHost .agent-header-action-ico{font-size:15px;line-height:1;}
+#agentShellHost .agent-header-action-text{font-size:13px;white-space:nowrap;}
+html:not(.gpt-agent-mode) #agentShellHost .agent-header-actions{display:none!important;}
+html:has(body > div.fixed.inset-0) #agentShellHost .agent-header-actions{opacity:0!important;visibility:hidden!important;pointer-events:none!important;}
+@media(max-width:920px){#agentShellHost .agent-header-action-text{display:none!important}#agentShellHost .agent-header-action-btn{width:38px!important;padding:0!important;justify-content:center!important}}
