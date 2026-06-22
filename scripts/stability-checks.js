@@ -20,6 +20,10 @@ ok(!/inner\.appendChild\(nav\)/.test(indexHtml),
   'Site nav is still appended into the React-owned workbench header.');
 ok(indexHtml.includes('ensureAgentShellHost') && indexHtml.includes('agentShellHost'),
   'Agent shell host is missing; custom Agent controls need a non-React body-level host.');
+ok(indexHtml.includes('installDomOwnershipGuard') && indexHtml.includes('ignored stale removeChild'),
+  'DOM ownership guard is missing; stale React/removeChild crashes can still black-screen Agent.');
+ok(/body>#workbenchSiteNav\.site-nav\{position:fixed/.test(indexHtml),
+  'Workbench site nav is not protected by a fixed body-level selector.');
 
 // Multi-image generation needs explicit retry/recovery markers so a single 5xx/524 slot does not permanently fail while siblings succeed.
 ok(bundle.includes('__gptImage2MultiImageRetry'),

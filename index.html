@@ -14,9 +14,9 @@
 <link rel="apple-touch-icon" href="./pwa-icon.svg" />
 <link rel="icon" href="./pwa-icon.svg" type="image/svg+xml" />
 <title>AI 工作台</title>
-<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=stability-a1-20260622" crossorigin="anonymous">
-<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=stability-a1-20260622" as="style" crossorigin="anonymous">
-<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=stability-a1-20260622">
+<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=stability-a2-20260622" crossorigin="anonymous">
+<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=stability-a2-20260622" as="style" crossorigin="anonymous">
+<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=stability-a2-20260622">
 <style>
 *{box-sizing:border-box}
 
@@ -53,9 +53,9 @@ body{margin:0;min-height:100vh;background:var(--loading-bg);color:#cbd5e1;font-f
 html.dark{--loading-bg:#000;--loading-text:#fff;--loading-spinner:rgba(255,255,255,0.12);--loading-spinner-top:#818cf8}
 html:not(.dark) body,html:not(.dark) #root,html:not(.dark) [data-home-main]{background:#fff!important;color:#000!important}
 html.dark body,html.dark #root,html.dark [data-home-main]{background:#000!important;color:#fff!important}
-/* Agent 桌面顶栏修复：隐藏左侧当前会话标题按钮，避免与中间「画廊 / Agent」切换器重叠 */
+/* Agent header safety: avoid old session title blocks covering the Gallery / Agent switcher */
 #root header.safe-area-top .safe-header-inner>.flex-1 button.text-sm.font-semibold.truncate{display:none!important}
-/* Agent 桌面顶栏修复：隐藏原仓库居中的当前会话标题块，它会覆盖「画廊 / Agent」切换按钮 */
+/* Hide upstream centered conversation title block that can overlay mode buttons */
 #root header.safe-area-top .safe-header-inner>div[class*="left-1/2"][class*="max-w-[30%]"]{display:none!important;pointer-events:none!important}
 .agent-current-session-box{display:none;align-items:center;gap:6px;min-width:160px;max-width:260px;height:32px;padding:0 10px;border:1px solid rgba(148,163,184,.35);border-radius:12px;background:rgba(15,23,42,.04);color:#111827;font-size:13px;line-height:1;transition:background .16s ease,border-color .16s ease,transform .12s ease}
 .dark .agent-current-session-box{background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.12);color:#fff}
@@ -78,7 +78,8 @@ html.gpt-agent-mode .agent-chat-inputbar .prompt-placeholder{padding:14px 16px!i
 html.gpt-agent-mode .agent-chat-inputbar .mt-3{margin-top:10px!important}
 html.gpt-agent-mode .agent-chat-inputbar .mt-3>div{align-items:center!important}
 html.gpt-agent-mode .agent-chat-inputbar .mt-3 .grid.grid-cols-6{display:none!important}
-html.gpt-agent-mode .agent-chat-inputbar button[aria-label="提示词仓库"]{display:none!important}
+html.gpt-agent-mode .agent-chat-inputbar button[aria-label="提示词仓库"],
+html.gpt-agent-mode .agent-chat-inputbar button[aria-label*="\63d0\793a\8bcd\4ed3\5e93"]{display:none!important}
 .agent-extra-controls{display:flex;align-items:center;gap:8px;min-width:0;flex:1}
 .agent-tool-btn{height:36px;border:1px solid rgba(148,163,184,.34);border-radius:14px;background:rgba(15,23,42,.04);color:#334155;padding:0 12px;font-size:13px;font-weight:700;display:inline-flex;align-items:center;gap:6px;transition:all .15s ease;white-space:nowrap}
 .dark .agent-tool-btn{background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.12);color:#e5e7eb}
@@ -95,21 +96,21 @@ html.gpt-agent-mode .agent-chat-inputbar button[aria-label="提示词仓库"]{di
 @media(max-width:640px){.agent-extra-controls{gap:6px}.agent-tool-btn{height:34px;padding:0 9px;font-size:12px}.agent-tool-text{display:none}}
 
 /* Non-React Agent shell controls: keep custom controls outside #root to avoid React removeChild crashes */
-#agentShellHost{position:fixed;inset:auto 16px 16px auto;z-index:60;display:none;pointer-events:none}
+#agentShellHost{position:fixed;left:50%;right:auto;bottom:126px;width:min(840px,calc(100vw - 32px));transform:translateX(-50%);z-index:70;display:none;pointer-events:none}
 html.gpt-agent-mode #agentShellHost{display:block}
 #agentShellHost .agent-current-session-box,#agentShellHost .agent-extra-controls{pointer-events:auto}
-#agentShellHost .agent-current-session-box{margin:0 0 10px auto;box-shadow:0 12px 32px rgba(15,23,42,.14)}
-#agentShellHost .agent-extra-controls{justify-content:flex-end}
+#agentShellHost .agent-current-session-box{margin:0 0 10px 0;box-shadow:0 12px 32px rgba(15,23,42,.14)}
+#agentShellHost .agent-extra-controls{justify-content:flex-end;gap:8px}
 #agentShellHost .agent-reason-menu{bottom:42px;left:auto;right:0}
-@media(max-width:640px){#agentShellHost{left:12px;right:12px;bottom:92px}#agentShellHost .agent-current-session-box{max-width:100%;margin-left:auto}#agentShellHost .agent-extra-controls{justify-content:flex-start}}
+@media(max-width:640px){#agentShellHost{left:12px;right:12px;bottom:178px;width:auto;transform:none}#agentShellHost .agent-current-session-box{max-width:100%;margin-left:0}#agentShellHost .agent-extra-controls{justify-content:flex-start}}
 
 /* Agent placeholder copy without mutating React-owned text nodes */
 html.gpt-agent-mode .agent-chat-inputbar .prompt-placeholder{font-size:0!important}
 html.gpt-agent-mode .agent-chat-inputbar .prompt-placeholder::before{content:"\8f93\5165\4f60\60f3\548c Agent \8bf4\7684\8bdd...";font-size:15px;line-height:1.65}
 /* Keep site navigation outside React root; visually place it like a non-floating shell toolbar */
-body>#workbenchSiteNav.site-nav{position:fixed;right:16px;top:calc(env(safe-area-inset-top,0px) + 12px);z-index:45}
+body>#workbenchSiteNav.site-nav{position:fixed;right:16px;top:calc(env(safe-area-inset-top,0px) + 64px);z-index:90}
 body>#workbenchSiteNav.site-nav[data-docked="1"]{display:flex}
-@media(max-width:760px){body>#workbenchSiteNav.site-nav{left:12px;right:12px;top:calc(env(safe-area-inset-top,0px) + 8px);justify-content:flex-start;overflow-x:auto}.site-nav .label{max-width:96px}}
+@media(max-width:760px){body>#workbenchSiteNav.site-nav{left:12px;right:12px;top:calc(env(safe-area-inset-top,0px) + 58px);justify-content:flex-start;overflow-x:auto}.site-nav .label{max-width:96px}}
 </style>
 <script>
 (function(){
@@ -126,7 +127,7 @@ body>#workbenchSiteNav.site-nav[data-docked="1"]{display:flex}
 </script>
 <script>
 if(!('noModule' in HTMLScriptElement.prototype)){
-  document.write('<body style="background:#111827;color:#cbd5e1;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;text-align:center;font-family:sans-serif"><div><h2 style="color:#60a5fa;margin-bottom:8px">浏览器不兼容</h2><p>请使用最新版 Chrome、Edge 或 Safari</p></div></body>');
+  document.write('<body style="background:#111827;color:#cbd5e1;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;text-align:center;font-family:sans-serif"><div><h2 style="color:#60a5fa;margin-bottom:8px">&#27983;&#35272;&#22120;&#19981;&#20860;&#23481;</h2><p>&#35831;&#20351;&#29992;&#26368;&#26032;&#29256; Chrome&#12289;Edge &#25110; Safari</p></div></body>');
 }
 </script>
 <script>
@@ -136,6 +137,33 @@ if(!('noModule' in HTMLScriptElement.prototype)){
   var storeUserPrefix = 'gpt-image-playground:user:';
   var themeKey = 'gpt-image2-theme';
   var assetVersion = 'gpt2-shell-20260621-profile-fix-20260621';
+  function installDomOwnershipGuard(){
+    try{
+      if(window.__gptImageDomOwnershipGuardInstalled||!window.Node||!Node.prototype)return;
+      window.__gptImageDomOwnershipGuardInstalled=true;
+      var nativeRemoveChild=Node.prototype.removeChild;
+      var nativeInsertBefore=Node.prototype.insertBefore;
+      Node.prototype.removeChild=function(child){
+        try{
+          if(child&&child.parentNode!==this){
+            console.warn('[Shell] ignored stale removeChild from non-owner node');
+            return child;
+          }
+        }catch(e){}
+        return nativeRemoveChild.call(this,child);
+      };
+      Node.prototype.insertBefore=function(newNode,referenceNode){
+        try{
+          if(referenceNode&&referenceNode.parentNode!==this){
+            console.warn('[Shell] converted stale insertBefore reference to appendChild');
+            return this.appendChild(newNode);
+          }
+        }catch(e){}
+        return nativeInsertBefore.call(this,newNode,referenceNode);
+      };
+    }catch(e){}
+  }
+  installDomOwnershipGuard();
   function isWeChatBrowser(){
     try{
       var ua=navigator.userAgent||'';
@@ -368,7 +396,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
   function handleAuthFailure(){
     clearTimeout(safetyTimer);
     if(isWeChatBrowser()){
-      showLoadError('登录状态校验失败。微信内置浏览器可能没有正确保存 Cookie 或页面存储，已停止自动跳转以避免重定向循环。请点击重新登录，或复制链接到外部浏览器打开。');
+      showLoadError('\u767b\u5f55\u72b6\u6001\u6821\u9a8c\u5931\u8d25\u3002\u5fae\u4fe1\u5185\u7f6e\u6d4f\u89c8\u5668\u53ef\u80fd\u6ca1\u6709\u6b63\u786e\u4fdd\u5b58 Cookie \u6216\u9875\u9762\u5b58\u50a8\uff0c\u5df2\u505c\u6b62\u81ea\u52a8\u8df3\u8f6c\u4ee5\u907f\u514d\u91cd\u5b9a\u5411\u5faa\u73af\u3002\u8bf7\u70b9\u51fb\u91cd\u65b0\u767b\u5f55\uff0c\u6216\u590d\u5236\u94fe\u63a5\u5230\u5916\u90e8\u6d4f\u89c8\u5668\u6253\u5f00\u3002');
       return;
     }
     location.replace('/login');
@@ -509,7 +537,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
   function profileLabelOf(p){
     var name=(p&&String(p.name||p.id||'').trim())||'API';
     var model=(p&&String(p.model||'').trim())||'';
-    return model&&name.indexOf(model)<0 ? name+' · '+model : name;
+    return model&&name.indexOf(model)<0 ? name+' 路 '+model : name;
   }
   function activeProfileFromSettings(settings){
     settings=settings||{};
@@ -831,7 +859,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       }
       sel.value=profiles.some(function(p){return profileIdOf(p)===active})?active:profileIdOf(profiles[0]);
       sel.disabled=false;
-      sel.title='切换 API 配置：'+(sel.options[sel.selectedIndex]?sel.options[sel.selectedIndex].text:'');
+      sel.title='\u5207\u6362 API \u914d\u7f6e\uff1a'+(sel.options[sel.selectedIndex]?sel.options[sel.selectedIndex].text:'');
       if(!sel.__boundProfileSwitch){
         sel.__boundProfileSwitch=true;
         sel.addEventListener('change',function(){switchActiveProfile(sel.value);});
@@ -1048,7 +1076,7 @@ function applyPendingPrompt(st, pendingPrompt){
     }catch(e){}
   }
   function ensureSiteNav(){
-    var nav=document.querySelector('.site-nav');
+    var nav=document.getElementById('workbenchSiteNav')||document.querySelector('body>.site-nav');
     if(nav)return nav;
     try{
       nav=document.createElement('nav');
@@ -1068,6 +1096,7 @@ function applyPendingPrompt(st, pendingPrompt){
       var nav=ensureSiteNav();
       if(!nav)return false;
       if(nav.parentElement!==document.body)document.body.appendChild(nav);
+      if(nav.id!=='workbenchSiteNav')nav.id='workbenchSiteNav';
       nav.setAttribute('data-docked','1');
       nav.style.pointerEvents='auto';
       nav.setAttribute('data-has-running',hasRunningWorkbenchTask()?'1':'0');
@@ -1135,7 +1164,7 @@ function applyPendingPrompt(st, pendingPrompt){
     var script=document.createElement('script');
     script.type='module';
     script.crossOrigin='anonymous';
-    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=stability-a1-20260622';
+    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=stability-a2-20260622';
     var settled=false;
     script.onload=function(){settled=true;setLoadingStage('\u4e3b\u7a0b\u5e8f\u811a\u672c\u5df2\u52a0\u8f7d\uff0c\u7b49\u5f85\u754c\u9762\u6302\u8f7d...');waitForAppReady();};
     script.onerror=function(){settled=true;showLoadError('\u4e3b\u7a0b\u5e8f\u811a\u672c\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u6e05\u7a7a\u7f13\u5b58\u540e\u91cd\u8bd5\u3002');};
@@ -1203,7 +1232,7 @@ function applyPendingPrompt(st, pendingPrompt){
     });
   }).catch(function(e){
     if(e&&e.message==='not_authenticated')handleAuthFailure();
-    else showLoadError(e&&e.message?e.message:'登录或配置加载失败，请刷新重试。');
+    else showLoadError(e&&e.message?e.message:'\u767b\u5f55\u6216\u914d\u7f6e\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u5237\u65b0\u91cd\u8bd5\u3002');
   });
 })();
 </script>
@@ -1227,3 +1256,4 @@ function applyPendingPrompt(st, pendingPrompt){
 <script>window.__applyTheme();</script>
 </body>
 </html>
+
