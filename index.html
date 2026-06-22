@@ -14,9 +14,9 @@
 <link rel="apple-touch-icon" href="./pwa-icon.svg" />
 <link rel="icon" href="./pwa-icon.svg" type="image/svg+xml" />
 <title>AI 工作台</title>
-<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=macos-b7-20260622" crossorigin="anonymous">
-<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=macos-b7-20260622" as="style" crossorigin="anonymous">
-<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=macos-b7-20260622">
+<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=macos-b11-20260622" crossorigin="anonymous">
+<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=macos-b11-20260622" as="style" crossorigin="anonymous">
+<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=macos-b11-20260622">
 <style>
 *{box-sizing:border-box}
 
@@ -122,10 +122,29 @@ body>#workbenchSiteNav.site-nav[data-compact="1"] .divider,body>#workbenchSiteNa
 body>#workbenchSiteNav.site-nav[data-compact="1"] .account-chip{max-width:210px;padding:0 10px}
 body>#workbenchSiteNav.site-nav[data-compact="1"] .account-name{max-width:130px}
 @media(max-width:760px){body>#workbenchSiteNav.site-nav{left:auto;right:8px;max-width:calc(100vw - 16px);justify-content:flex-start;overflow-x:auto}.site-nav .label{max-width:96px}}
+
+
+/* Fast boot skeleton: show stable workbench chrome while the large React bundle loads. */
+#fast-workbench-skeleton{display:none;position:fixed;inset:0;z-index:12;background:var(--bg,#fff);color:var(--t,#0b0f19);padding-top:72px;pointer-events:none;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",sans-serif}
+html.gpt-fast-boot #fast-workbench-skeleton{display:block}
+html.gpt-fast-boot #loading-screen{opacity:0!important;visibility:hidden!important;pointer-events:none!important}
+#fast-workbench-skeleton .fb-wrap{width:min(1320px,calc(100vw - 48px));margin:0 auto}
+#fast-workbench-skeleton .fb-search{height:46px;border:1px solid rgba(15,23,42,.10);border-radius:18px;background:rgba(248,250,252,.78);box-shadow:0 10px 28px rgba(15,23,42,.06);margin:18px 0 56px}
+#fast-workbench-skeleton .fb-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:42vh;color:#94a3b8;gap:12px}
+#fast-workbench-skeleton .fb-icon{width:48px;height:48px;border-radius:16px;border:2px solid rgba(148,163,184,.25);position:relative}
+#fast-workbench-skeleton .fb-icon:after{content:"";position:absolute;left:10px;right:10px;bottom:10px;height:16px;border-radius:8px;background:linear-gradient(135deg,rgba(148,163,184,.22),rgba(148,163,184,.08))}
+#fast-workbench-skeleton .fb-composer{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);width:min(1120px,calc(100vw - 40px));border-radius:26px;border:1px solid rgba(15,23,42,.10);background:rgba(255,255,255,.82);box-shadow:0 24px 74px rgba(15,23,42,.13);padding:14px;backdrop-filter:saturate(180%) blur(26px);-webkit-backdrop-filter:saturate(180%) blur(26px)}
+#fast-workbench-skeleton .fb-input{height:58px;border-radius:18px;border:1px solid rgba(15,23,42,.10);background:rgba(248,250,252,.76);display:flex;align-items:center;padding:0 16px;color:#cbd5e1}
+#fast-workbench-skeleton .fb-controls{display:grid;grid-template-columns:repeat(6,1fr) 154px;gap:10px;margin-top:12px;padding-top:12px;border-top:1px solid rgba(15,23,42,.08)}
+#fast-workbench-skeleton .fb-pill{height:40px;border-radius:14px;background:rgba(248,250,252,.78);border:1px solid rgba(15,23,42,.08)}
+#fast-workbench-skeleton .fb-actions{display:flex;gap:8px}.fb-actions span{width:44px;height:44px;border-radius:15px;background:#2f7cf6}.fb-actions span:last-child{opacity:.55}
+html.dark #fast-workbench-skeleton{background:#000;color:#fff}html.dark #fast-workbench-skeleton .fb-search,html.dark #fast-workbench-skeleton .fb-composer,html.dark #fast-workbench-skeleton .fb-input,html.dark #fast-workbench-skeleton .fb-pill{background:rgba(28,28,30,.82);border-color:rgba(255,255,255,.12)}
+@media(max-width:720px){#fast-workbench-skeleton{padding-top:64px}#fast-workbench-skeleton .fb-wrap{width:calc(100vw - 24px)}#fast-workbench-skeleton .fb-controls{grid-template-columns:repeat(3,1fr)}#fast-workbench-skeleton .fb-actions{grid-column:1/-1;justify-content:flex-end}}
+
 </style>
 <script>
 (function(){
-  var shellVersion='gpt2-shell-20260622-macos-b7';
+  var shellVersion='gpt2-shell-20260622-macos-b11';
   try{
     var last=localStorage.getItem('gpt-image2-shell-version');
     if(last!==shellVersion){
@@ -147,7 +166,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
   var storeOwnerKey = 'gpt-image-playground:owner';
   var storeUserPrefix = 'gpt-image-playground:user:';
   var themeKey = 'gpt-image2-theme';
-  var assetVersion = 'gpt2-shell-20260622-macos-b7';
+  var assetVersion = 'gpt2-shell-20260622-macos-b11';
   function installDomOwnershipGuard(){
     try{
       if(window.__gptImageDomOwnershipGuardInstalled||!window.Node||!Node.prototype)return;
@@ -254,6 +273,12 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       var el=document.getElementById('loading-stage');
       if(el)el.textContent=text||'';
     }catch(e){}
+  }
+  function showFastBootSkeleton(){
+    try{document.documentElement.classList.add('gpt-fast-boot');}catch(e){}
+  }
+  function hideFastBootSkeleton(){
+    try{document.documentElement.classList.remove('gpt-fast-boot');}catch(e){}
   }
   window.__gptImageCopyCurrentLink=copyCurrentLink;
   function installFetchAuthFallback(){
@@ -429,6 +454,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       if((ready||mounted&&Date.now()-started>3000)&&authReady){
         clearInterval(timer);
         hideLoading();
+        hideFastBootSkeleton();
         setTimeout(function(){watchWorkbenchSettings();watchSiteNavDock();installPromptRepoWheel();installModalChromeGuard();installAgentGuard();installAgentNavConflictFix();installAgentCurrentSessionBox();installAgentInputModePolish();installRunningTaskNavigationGuard();},300);
       } else if(!mounted&&Date.now()-started>20000){
         clearInterval(timer);
@@ -1476,7 +1502,7 @@ function applyPendingPrompt(st, pendingPrompt){
     var script=document.createElement('script');
     script.type='module';
     script.crossOrigin='anonymous';
-    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=macos-b7-20260622';
+    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=macos-b11-20260622';
     var settled=false;
     script.onload=function(){settled=true;setLoadingStage('\u4e3b\u7a0b\u5e8f\u811a\u672c\u5df2\u52a0\u8f7d\uff0c\u7b49\u5f85\u754c\u9762\u6302\u8f7d...');waitForAppReady();};
     script.onerror=function(){settled=true;showLoadError('\u4e3b\u7a0b\u5e8f\u811a\u672c\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u6e05\u7a7a\u7f13\u5b58\u540e\u91cd\u8bd5\u3002');};
@@ -1519,9 +1545,33 @@ function applyPendingPrompt(st, pendingPrompt){
         throw e;
       });
   }
+  function sessionUserFromToken(){
+    try{
+      var token=sessionStorage.getItem('gpt-image2-session-token')||'';
+      var part=token.split('.')[1]||''; if(!part)return null;
+      part=part.replace(/-/g,'+').replace(/_/g,'/');
+      while(part.length%4)part+='=';
+      var json=decodeURIComponent(Array.prototype.map.call(atob(part),function(c){return '%'+('00'+c.charCodeAt(0).toString(16)).slice(-2);}).join(''));
+      var p=JSON.parse(json);
+      return p&&p.userId?{id:p.userId,username:p.username||'',role:p.role||'user'}:null;
+    }catch(e){return null;}
+  }
+  function hasSessionToken(){
+    try{return !!(sessionStorage.getItem('gpt-image2-session-token')||'');}catch(e){return false;}
+  }
   var authPromise=checkAuth(0);
   var safetyTimer=setTimeout(function(){handleAuthFailure()},30000);
   function startWhenDomReady(){ if(document.getElementById('root')) startApp(); else if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',startApp,{once:true}); else setTimeout(startApp,0); }
+  if(hasSessionToken()){
+    // Speculative fast path for returning users: the protected APIs still verify
+    // the token server-side, but the static workbench can mount while auth warms.
+    var guessedUser=sessionUserFromToken();
+    if(guessedUser){prepareUserLocalStore(guessedUser);updateNavUser(guessedUser.username,guessedUser.role);}
+    authReady=true;
+    setLoadingStage('\u6b63\u5728\u6062\u590d\u4f1a\u8bdd\uff0c\u5de5\u4f5c\u53f0\u5c06\u5148\u884c\u6253\u5f00...');
+    showFastBootSkeleton();
+    startWhenDomReady();
+  }
   authPromise.then(function(user){
     prepareUserLocalStore(user);
     cleanupLegacyWorkersAndCachesOnce();
@@ -1530,17 +1580,16 @@ function applyPendingPrompt(st, pendingPrompt){
     authReady=true;
     clearTimeout(safetyTimer);
     forceMobileNonStreamingLocalStore();
-    var hasLocalConfig=hasUsableLocalConfig();
-    var bootTimer=setTimeout(function(){
-      console.warn('[Shell] runtime config sync timeout, booting with local store');
-      startWhenDomReady();
-    },8000);
+    // Fast boot: do not block React mount on cloud settings. The runtime config
+    // fetch can be slow on Cloudflare cold starts; mount immediately with the
+    // user-scoped local store, then hot-apply cloud settings when they arrive.
+    showFastBootSkeleton();
+    startWhenDomReady();
+    setLoadingStage('?????????&#27491;&#22312;&#25171;&#24320;&#24037;&#20316;&#21488;...');
     return syncRuntimeConfig().catch(function(e){
-      console.warn('[Shell] runtime config sync failed',e);
-      if(!hasLocalConfig) showLoadError(e&&e.message?e.message:'\u914d\u7f6e\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u8fdb\u5165\u540e\u53f0\u68c0\u67e5\u5f53\u524d\u7528\u6237\u7684 API \u914d\u7f6e\u3002');
-    }).then(function(){
-      clearTimeout(bootTimer);
-      startWhenDomReady();
+      console.warn('[Shell] runtime config sync failed after fast boot',e);
+      // Keep the already-mounted workbench visible. Missing API configuration is
+      // surfaced by the workbench/admin UI instead of blocking first paint.
     });
   }).catch(function(e){
     if(e&&e.message==='not_authenticated')handleAuthFailure();
@@ -1548,7 +1597,7 @@ function applyPendingPrompt(st, pendingPrompt){
   });
 })();
 </script>
-<link rel="stylesheet" href="/assets/macos-design.css?v=macos-b7-20260622"></head>
+<link rel="stylesheet" href="/assets/macos-design.css?v=macos-b11-20260622"></head>
 <body>
 <div id="loading-screen" class="loading-screen">
   <div class="spinner"></div>
@@ -1563,6 +1612,21 @@ function applyPendingPrompt(st, pendingPrompt){
   <a href="javascript:toggleTheme()" id="theme-toggle" class="nav-soft" title="&#20999;&#25442;&#20027;&#39064;"><span class="nav-ico">&#9728;&#65039;</span><span class="nav-text">&#20027;&#39064;</span></a>
   <a href="/admin" class="nav-soft" title="&#21518;&#21488;" aria-label="admin"><span class="nav-ico">&#9881;</span><span class="nav-text">&#21518;&#21488;</span></a>
 </nav>
+
+<div id="fast-workbench-skeleton" aria-hidden="true">
+  <div class="fb-wrap">
+    <div class="fb-search"></div>
+    <div class="fb-empty"><div class="fb-icon"></div><div>&#27491;&#22312;&#25171;&#24320;&#24037;&#20316;&#21488;...</div></div>
+  </div>
+  <div class="fb-composer">
+    <div class="fb-input">&#25551;&#36848;&#20320;&#24819;&#29983;&#25104;&#30340;&#22270;&#29255;&#65292;&#21487;&#36755;&#20837; @ &#26469;&#25351;&#23450;&#21442;&#32771;&#22270;...</div>
+    <div class="fb-controls">
+      <div class="fb-pill"></div><div class="fb-pill"></div><div class="fb-pill"></div><div class="fb-pill"></div><div class="fb-pill"></div><div class="fb-pill"></div>
+      <div class="fb-actions"><span></span><span></span><span></span></div>
+    </div>
+  </div>
+</div>
+
 <div id="root"></div>
 
 <script>window.__applyTheme();</script>
