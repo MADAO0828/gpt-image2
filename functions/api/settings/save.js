@@ -35,6 +35,46 @@ function normalizeIncoming(body) {
   return Object.keys(source).map(key => ({ key, value: source[key] }));
 }
 
+function isProxyPlaceholder(value) {
+  return String(value || '').trim() === 'cloudflare-proxy';
+}
+
+function profileKey(profile) {
+  if (!profile || typeof profile !== 'object') return '';
+  return String(profile.id || profile.name || '').trim();
+}
+
+function preserveProfileSecrets(incomingProfiles, existingProfiles) {
+  if (!Array.isArray(incomingProfiles)) return incomingProfiles;
+  const oldMap = new Map();
+  (Array.isArray(existingProfiles) ? existingProfiles : []).forEach(profile => {
+    const key = profileKey(profile);
+    if (key) oldMap.set(key, profile);
+  });
+  return incomingProfiles.map(profile => {
+    if (!profile || typeof profile !== 'object' || Array.isArray(profile)) return profile;
+    const next = { ...profile };
+    if (isProxyPlaceholder(next.apiKey)) {
+      const old = oldMap.get(profileKey(next));
+      next.apiKey = old && !isProxyPlaceholder(old.apiKey) ? (old.apiKey || '') : '';
+    }
+    return next;
+  });
+}
+
+function sanitizeIncomingItem(item, existingSettings) {
+  if (!item || !item.key) return item;
+  const key = String(item.key);
+  let value = item.value;
+  if (key === 'apiKey' && isProxyPlaceholder(value)) {
+    value = !isProxyPlaceholder(existingSettings.apiKey) ? (existingSettings.apiKey || '') : '';
+  }
+  if (key === 'profiles') {
+    value = preserveProfileSecrets(value, existingSettings.profiles);
+  }
+  return { key, value };
+}
+
 export async function onRequestGet(ctx) {
   const user = await currentUser(ctx.request, ctx.env);
   if (!user) return json({ error: 'Unauthorized' }, 401);
@@ -47,7 +87,8 @@ export async function onRequestPost(ctx) {
   if (!user) return json({ error: 'Unauthorized' }, 401);
   try {
     const body = await ctx.request.json();
-    const items = normalizeIncoming(body);
+    const existingSettings = await loadSettings(ctx.env.gpt_image2_db, user.id);
+    const items = normalizeIncoming(body).map(item => sanitizeIncomingItem(item, existingSettings));
     if (!items.length) return json({ error: 'No settings provided' }, 400);
     for (const item of items) {
       if (!item.key || item.value === undefined) continue;

@@ -14,9 +14,9 @@
 <link rel="apple-touch-icon" href="./pwa-icon.svg" />
 <link rel="icon" href="./pwa-icon.svg" type="image/svg+xml" />
 <title>AI 工作台</title>
-<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=profile-fix-20260621" crossorigin="anonymous">
-<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=profile-fix-20260621" as="style" crossorigin="anonymous">
-<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=profile-fix-20260621">
+<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=settings-save-fix-20260622" crossorigin="anonymous">
+<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=settings-save-fix-20260622" as="style" crossorigin="anonymous">
+<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=settings-save-fix-20260622">
 <style>
 *{box-sizing:border-box}
 
@@ -659,7 +659,38 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       }
     }catch(e){}
   }
-  function setProfileSwitchState(state){
+
+  
+function updateDebugProfileBar(){
+  try{
+    var el=document.getElementById('debugProfileBar');
+    if(!el)return;
+    var cfg=window.__gptImageRuntimeConfig||{};
+    var st=readStore();
+    var s=(st&&st.state&&st.state.settings)||{};
+    var id=String(cfg.activeProfileId||s.activeProfileId||'').trim()||'-';
+    var profiles=Array.isArray(s.profiles)&&s.profiles.length?s.profiles:(Array.isArray(cfg.profiles)?cfg.profiles:[]);
+    var p=profiles.find(function(x){return x&&profileIdOf(x)===id;})||{};
+    var src=(p&&profileIdOf(p))||'none';
+    el.textContent='activeProfileId: '+id+'\nprofileSource: '+src+'\nbaseUrl: '+String(p.baseUrl||cfg.baseUrl||s.baseUrl||'-')+'\nmodel: '+String(p.model||cfg.model||s.model||'-');
+  }catch(e){}
+}
+
+function updateDebugProfileBadge(){
+  try{
+    var el=document.getElementById('debugProfileBadge');
+    if(!el)return;
+    var cfg=window.__gptImageRuntimeConfig||{};
+    var st=readStore();
+    var s=(st&&st.state&&st.state.settings)||{};
+    var id=String(cfg.activeProfileId||s.activeProfileId||'').trim()||'-';
+    var profiles=Array.isArray(s.profiles)&&s.profiles.length?s.profiles:(Array.isArray(cfg.profiles)?cfg.profiles:[]);
+    var p=profiles.find(function(x){return x&&profileIdOf(x)===id;})||{};
+    var src=profileIdOf(p)||'none';
+    el.textContent='activeProfileId: '+id+'\nprofileSource: '+src+'\nbaseUrl: '+String(p.baseUrl||cfg.baseUrl||s.baseUrl||'-')+'\nmodel: '+String(p.model||cfg.model||s.model||'-');
+  }catch(e){}
+}
+function setProfileSwitchState(state){
     try{
       var sel=document.getElementById('profileSwitch'); if(!sel)return;
       sel.classList.remove('saving','error');
@@ -674,7 +705,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       var settings=st.state.settings;
       var cfg=window.__gptImageRuntimeConfig||{};
       var profiles=Array.isArray(settings.profiles)&&settings.profiles.length?settings.profiles:(Array.isArray(cfg.profiles)?cfg.profiles:[]);
-      var profile=profiles.find(function(p){return profileIdOf(p)===id});
+      var profile=profiles.find(function(p){return profileIdOf(p)===id})||null;
       if(!profile){renderProfileSwitcher(cfg,settings.activeProfileId);return;}
       var next=Object.assign({},settings,profileRuntimeFields(profile,settings),{profiles:profiles,activeProfileId:id});
       st.state.settings=next; st.version=2; writeStore(st);
@@ -682,14 +713,15 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       window.__gptImageRuntimeConfig=cfg;
       applyRuntimeToLiveStore(next,'');
       renderProfileSwitcher(cfg,id);
-      setProfileSwitchState('saving');
-      fetch('/api/settings/save',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',cache:'no-store',body:JSON.stringify({settings:{activeProfileId:id}})})
+      updateDebugProfileBadge();
+            setProfileSwitchState('saving');
+      fetch('/api/settings/save',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',cache:'no-store',body:JSON.stringify({settings:{activeProfileId:id,baseUrl:profile.baseUrl||'',apiKey:profile.apiKey||'cloudflare-proxy',model:profile.model||'gpt-image-2',timeout:num(profile.timeout,600),apiMode:profile.apiMode||'images',codexCli:!!profile.codexCli,apiProxy:profile.apiProxy!==false,responseFormatB64Json:!!profile.responseFormatB64Json,streamImages:!!profile.streamImages,streamPartialImages:num(profile.streamPartialImages,1),profiles:profiles}})})
         .then(function(r){return r.ok?r.json():r.json().then(function(d){throw new Error(d&&d.error||'save failed')});})
         .then(function(){setProfileSwitchState('');})
         .catch(function(e){console.warn('[ProfileSwitch] save failed',e);setProfileSwitchState('error');setTimeout(function(){setProfileSwitchState('');},2400);});
     }catch(e){console.warn('[ProfileSwitch] switch failed',e);setProfileSwitchState('error');}
   }
-  function getPendingPrompt(){
+function getPendingPrompt(){
     try {
       var p=sessionStorage.getItem('prompt_to_use')||localStorage.getItem('gpt-image2-pending-prompt')||'';
       if(p){ sessionStorage.removeItem('prompt_to_use'); localStorage.removeItem('gpt-image2-pending-prompt'); }
@@ -698,21 +730,21 @@ if(!('noModule' in HTMLScriptElement.prototype)){
   }
   function pickActiveProfile(cfg){
     var profiles=Array.isArray(cfg.profiles)&&cfg.profiles.length?cfg.profiles:[];
-    var activeId=cfg.activeProfileId || (profiles[0]&&profiles[0].id) || 'default-openai';
-    var p=profiles.find(function(x){return x&&x.id===activeId}) || profiles[0];
+    var activeId=String(cfg.activeProfileId||'').trim() || (profiles[0]&&profileIdOf(profiles[0])) || '';
+    var p=profiles.find(function(x){return x&&profileIdOf(x)===activeId}) || null;
     if(!p){
-      p={id:'default-openai',name:'云端配置',provider:'openai',baseUrl:cfg.defaultApiUrl||'',apiKey:cfg.apiKey||'cloudflare-proxy',model:cfg.defaultModel||'gpt-image-2',timeout:num(cfg.timeout,600),apiMode:cfg.apiMode||'images',codexCli:!!cfg.codexCli,apiProxy:cfg.apiProxy!==false,responseFormatB64Json:!!cfg.responseFormatB64Json,streamImages:isMobileBrowser()?false:!!cfg.streamImages,streamPartialImages:num(cfg.streamPartialImages,1)};
+      p={id:activeId||'active-openai',name:'????',provider:'openai',baseUrl:cfg.baseUrl||cfg.defaultApiUrl||'',apiKey:cfg.apiKey||'cloudflare-proxy',model:cfg.model||cfg.defaultModel||'gpt-image-2',timeout:num(cfg.timeout,600),apiMode:cfg.apiMode||'images',codexCli:!!cfg.codexCli,apiProxy:cfg.apiProxy!==false,responseFormatB64Json:!!cfg.responseFormatB64Json,streamImages:isMobileBrowser()?false:!!cfg.streamImages,streamPartialImages:num(cfg.streamPartialImages,1)};
       profiles=[p];
     }
     p=Object.assign({}, p, {
-      id:p.id||activeId,
-      name:p.name||'云端配置',
+      id:p.id||activeId||'active-openai',
+      name:p.name||'????',
       provider:p.provider||'openai',
-      baseUrl:cfg.defaultApiUrl||p.baseUrl||'',
-      apiKey:cfg.apiKey||p.apiKey||'cloudflare-proxy',
-      model:cfg.defaultModel||p.model||'gpt-image-2',
-      timeout:num(cfg.timeout!==undefined&&cfg.timeout!==null?cfg.timeout:p.timeout,600),
-      apiMode:cfg.apiMode||p.apiMode||'images',
+      baseUrl:p.baseUrl||cfg.baseUrl||cfg.defaultApiUrl||'',
+      apiKey:p.apiKey||cfg.apiKey||'cloudflare-proxy',
+      model:p.model||cfg.model||cfg.defaultModel||'gpt-image-2',
+      timeout:num(p.timeout!==undefined&&p.timeout!==null?p.timeout:cfg.timeout,600),
+      apiMode:p.apiMode||cfg.apiMode||'images',
       codexCli:bool(p.codexCli,cfg.codexCli),
       apiProxy:p.apiProxy!==false && cfg.apiProxy!==false,
       responseFormatB64Json:bool(p.responseFormatB64Json,cfg.responseFormatB64Json),
@@ -721,13 +753,13 @@ if(!('noModule' in HTMLScriptElement.prototype)){
     });
     var cleanProfiles=profiles.map(function(x){
       var q=Object.assign({}, x||{});
-      if(q.id===(p.id||activeId))q=Object.assign(q,p);
-      q.id=q.id||('profile-'+Math.random().toString(36).slice(2,8));
+      if(profileIdOf(q)===p.id)q=Object.assign(q,p);
+      q.id=profileIdOf(q)||('profile-'+Math.random().toString(36).slice(2,8));
       q.name=q.name||q.id;
       q.provider=q.provider||'openai';
       q.baseUrl=q.baseUrl||'';
       q.apiKey=q.apiKey||'cloudflare-proxy';
-      q.model=q.model||cfg.defaultModel||'gpt-image-2';
+      q.model=q.model||cfg.model||cfg.defaultModel||'gpt-image-2';
       q.timeout=num(q.timeout!==undefined&&q.timeout!==null?q.timeout:cfg.timeout,600);
       q.apiMode=q.apiMode||cfg.apiMode||'images';
       q.apiProxy=q.apiProxy!==false && cfg.apiProxy!==false;
@@ -738,7 +770,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
     });
     return {profile:p, profiles:cleanProfiles};
   }
-  function applyPendingPrompt(st, pendingPrompt){
+function applyPendingPrompt(st, pendingPrompt){
     if(!pendingPrompt) return st;
     st.state=st.state||{};
     st.state.settings=st.state.settings||{};
@@ -783,7 +815,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
           if(!store||!runtime||!store.getState)return false;
           var state=store.getState();
           if(state&&typeof state.setSettings==='function') state.setSettings(runtime);
-          if(store.setState) store.setState({settings:Object.assign({},state&&state.settings||{},runtime)});
+          if(store.setState) store.setState({settings:Object.assign({},state&&state.settings||{},runtime, { activeProfileId: runtime.activeProfileId || (state&&state.settings&&state.settings.activeProfileId) || '' })});
           var prompt=window.__gptImageRuntimePrompt||'';
           if(prompt&&state&&typeof state.setPrompt==='function'){
             state.setPrompt(prompt);
@@ -803,7 +835,8 @@ if(!('noModule' in HTMLScriptElement.prototype)){
         if(!cfg) throw new Error('runtime_config_empty');
         window.__gptImageRuntimeConfig = cfg;
         if(cfg.themeMode){ try{localStorage.setItem(themeKey,cfg.themeMode)}catch(e){} }
-        try{ if(window.__applyTheme) window.__applyTheme(); }catch(e){}
+        try{ if(window.__applyTheme) window.__applyTheme();
+updateDebugProfileBadge(); }catch(e){}
         var st=applyPendingPrompt(readStore(), pendingPrompt);
         var oldState=st.state||{};
         var oldSettings=oldState.settings||{};
@@ -849,7 +882,8 @@ if(!('noModule' in HTMLScriptElement.prototype)){
         writeStore(st);
         applyRuntimeToLiveStore(settings,pendingPrompt);
         renderProfileSwitcher(cfg, settings.activeProfileId);
-      });
+      updateDebugProfileBadge();
+            });
   }
   function hideWorkbenchSettings(){
     try{
@@ -875,7 +909,8 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       nav.setAttribute('data-docked','1');
       nav.style.pointerEvents='auto';
       renderProfileSwitcher(window.__gptImageRuntimeConfig);
-      return true;
+      updateDebugProfileBadge();
+            return true;
     }catch(e){return false;}
   }
   function watchSiteNavDock(){
@@ -930,7 +965,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
     var script=document.createElement('script');
     script.type='module';
     script.crossOrigin='anonymous';
-    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=profile-fix-20260621';
+    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=settings-save-fix-20260622';
     var settled=false;
     script.onload=function(){settled=true;setLoadingStage('\u4e3b\u7a0b\u5e8f\u811a\u672c\u5df2\u52a0\u8f7d\uff0c\u7b49\u5f85\u754c\u9762\u6302\u8f7d...');waitForAppReady();};
     script.onerror=function(){settled=true;showLoadError('\u4e3b\u7a0b\u5e8f\u811a\u672c\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u6e05\u7a7a\u7f13\u5b58\u540e\u91cd\u8bd5\u3002');};
@@ -952,8 +987,10 @@ if(!('noModule' in HTMLScriptElement.prototype)){
   window.__themeState={themeKey:themeKey};
   window.__applyTheme=function(){ var t=localStorage.getItem(themeKey)||'light'; var isDark=t==='dark'||(t==='system'&&prefersDark()); document.documentElement.classList.toggle('dark',isDark); document.documentElement.classList.toggle('light',!isDark); var meta=document.getElementById('meta-theme-color'); if(meta)meta.content=isDark?'#000':'#fff'; var btn=document.getElementById('theme-toggle'); if(btn){var ico=btn.querySelector('.nav-ico')||btn;ico.innerHTML=t==='light'?'&#9728;&#65039;':t==='dark'?'&#127769;':'&#128187;';btn.setAttribute('data-theme',t);btn.title=t==='light'?'\u767d\u5929\u4e3b\u9898':t==='dark'?'\u9ed1\u591c\u4e3b\u9898':'\u8ddf\u968f\u7cfb\u7edf';}};
   function saveThemeMode(t){ try{ fetch('/api/settings/save',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({settings:{themeMode:t}}),cache:'no-store'}).catch(function(){}); }catch(e){} }
-  window.toggleTheme=function(){ var t=localStorage.getItem(themeKey)||'light'; var n=t==='light'?'dark':t==='dark'?'system':'light'; localStorage.setItem(themeKey,n); window.__applyTheme(); saveThemeMode(n); };
-  watchSystemTheme(function(){ if((localStorage.getItem(themeKey)||'light')==='system')window.__applyTheme(); });
+  window.toggleTheme=function(){ var t=localStorage.getItem(themeKey)||'light'; var n=t==='light'?'dark':t==='dark'?'system':'light'; localStorage.setItem(themeKey,n); window.__applyTheme();
+updateDebugProfileBadge(); saveThemeMode(n); };
+  watchSystemTheme(function(){ if((localStorage.getItem(themeKey)||'light')==='system')window.__applyTheme();
+updateDebugProfileBadge(); });
   var appStarted=false;
   function startApp(){ if(appStarted)return; appStarted=true; loadApp(); }
   function delay(ms){return new Promise(function(resolve){setTimeout(resolve,ms);});}
@@ -1015,8 +1052,10 @@ if(!('noModule' in HTMLScriptElement.prototype)){
   <a href="javascript:toggleTheme()" id="theme-toggle" class="nav-soft" title="&#20999;&#25442;&#20027;&#39064;"><span class="nav-ico">&#9728;&#65039;</span><span class="nav-text">&#20027;&#39064;</span></a>
   <a href="/admin" class="nav-soft" title="&#21518;&#21488;" aria-label="admin"><span class="nav-ico">&#9881;</span><span class="nav-text">&#21518;&#21488;</span></a>
 </nav>
+<div id="debugProfileBadge" style="position:fixed;right:12px;top:86px;z-index:9999;max-width:360px;padding:8px 10px;border-radius:10px;background:rgba(17,24,39,.88);color:#fff;font:12px/1.45 monospace;pointer-events:none;white-space:pre-wrap;box-shadow:0 8px 24px rgba(0,0,0,.25)">loading...</div>
 <div id="root"></div>
 
-<script>window.__applyTheme();</script>
+<script>window.__applyTheme();
+updateDebugProfileBadge();</script>
 </body>
 </html>
