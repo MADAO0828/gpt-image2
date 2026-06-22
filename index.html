@@ -825,9 +825,44 @@ if(!('noModule' in HTMLScriptElement.prototype)){
     }catch(e){}
     return null;
   }
+  function findWorkbenchTitleRect(header){
+    try{
+      var scope=header&&header.querySelectorAll?header:document;
+      var nodes=Array.prototype.slice.call(scope.querySelectorAll('h1,h2,[class],button,span,div'));
+      var candidates=[];
+      nodes.forEach(function(el){
+        var txt=String(el.textContent||'').replace(/\s+/g,' ').trim();
+        if(txt.indexOf('GPT Image Playground')!==0)return;
+        var r=visibleRect(el); if(!r)return;
+        if(r.left>(window.innerWidth||0)*0.45)return;
+        candidates.push({el:el,rect:r,area:r.width*r.height,text:txt});
+      });
+      candidates.sort(function(a,b){return a.area-b.area;});
+      return candidates[0]&&candidates[0].rect||null;
+    }catch(e){return null;}
+  }
+  function findHeaderLeftChromeRight(mode,header,titleRect){
+    try{
+      var limit=mode&&mode.rect?mode.rect.left-12:(window.innerWidth||0)*0.6;
+      var base=titleRect?titleRect.right:0;
+      var scope=header&&header.querySelectorAll?header:document;
+      Array.prototype.forEach.call(scope.querySelectorAll('button,a,h1,h2,span,svg'),function(el){
+        if(el.closest&&el.closest('#workbenchSiteNav,#agentShellHost'))return;
+        var txt=String(el.textContent||'').replace(/\s+/g,'').trim();
+        if(txt==='??'||txt==='Agent'||txt==='Gallery')return;
+        var r=visibleRect(el); if(!r)return;
+        if(r.left>=limit||r.right>limit||r.width>360||r.height>64)return;
+        if(header){var hr=header.getBoundingClientRect(); if(r.bottom<hr.top||r.top>hr.bottom)return;}
+        base=Math.max(base,r.right);
+      });
+      return Math.round(base||((header&&header.left)||16)+260);
+    }catch(e){return titleRect?Math.round(titleRect.right):260;}
+  }
   function positionShellChrome(){
     try{
       var mode=findWorkbenchModeButtons(), header=findWorkbenchHeaderRect(mode), nav=document.getElementById('workbenchSiteNav');
+      var titleRect=findWorkbenchTitleRect(header);
+      var leftChromeRight=findHeaderLeftChromeRight(mode,header,titleRect);
       var vw=Math.max(document.documentElement.clientWidth||0,window.innerWidth||0);
       if(nav){
         nav.style.position='fixed'; nav.style.margin='0'; nav.style.pointerEvents='auto';
@@ -835,13 +870,15 @@ if(!('noModule' in HTMLScriptElement.prototype)){
         var nr=nav.getBoundingClientRect();
         var top=header?Math.round(header.top+(header.height-(nr.height||48))/2):12;
         var right=header?Math.max(8,Math.round(vw-header.right+12)):16;
-        var available=mode?Math.max(160,Math.round(vw-mode.rect.right-right-18)):vw-24;
-        var compact=available<520||vw<900;
+        var leftLimit=mode?mode.rect.right+18:Math.round(vw*.55);
+        var available=Math.max(180,Math.round(vw-leftLimit-right));
+        var compact=available<620||vw<900;
         nav.setAttribute('data-compact',compact?'1':'0');
         nav.style.top=Math.max(6,top)+'px';
         nav.style.right=right+'px';
         nav.style.left='auto';
-        nav.style.maxWidth=Math.max(150,Math.min(available,vw-16))+'px';
+        nav.style.maxWidth=Math.max(180,Math.min(available,vw-16))+'px';
+        nav.style.overflow='hidden';
       }
       var store=window.__gptImageStore, st=store&&store.getState&&store.getState();
       var isAgent=!!(st&&st.appMode==='agent');
@@ -849,16 +886,23 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       if(box){
         if(!isAgent||!mode){box.style.display='none';}
         else{
-          box.style.display=box.getAttribute('data-visible')==='1'?'flex':'none';
-          var br=box.getBoundingClientRect();
-          var btop=Math.round(mode.rect.top+(mode.rect.height-(br.height||32))/2);
-          var bw=Math.max(120,Math.min(br.width||210,260));
-          var left=Math.round(mode.rect.left-bw-10);
-          if(left<8){left=8; bw=Math.max(116,mode.rect.left-18);}
-          box.style.top=Math.max(6,btop)+'px';
-          box.style.left=left+'px';
-          box.style.right='auto';
-          box.style.maxWidth=Math.round(bw)+'px';
+          var rightLimit=Math.max(0,mode.rect.left-14);
+          var titleSafeRight=titleRect?Math.max(titleRect.right,titleRect.left+360):0;
+          var leftBase=Math.round(Math.max(titleSafeRight,leftChromeRight)+18);
+          var room=rightLimit-leftBase;
+          if(room<132){
+            box.style.display='none';
+          }else{
+            box.style.display=box.getAttribute('data-visible')==='1'?'flex':'none';
+            var br=box.getBoundingClientRect();
+            var btop=Math.round(mode.rect.top+(mode.rect.height-(br.height||32))/2);
+            var bw=Math.max(132,Math.min(300,room,br.width||240));
+            box.style.top=Math.max(6,btop)+'px';
+            box.style.left=leftBase+'px';
+            box.style.right='auto';
+            box.style.maxWidth=Math.round(bw)+'px';
+            box.style.width=Math.round(bw)+'px';
+          }
         }
       }
       var controls=document.getElementById('agentExtraControls');
