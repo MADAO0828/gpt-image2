@@ -14,9 +14,9 @@
 <link rel="apple-touch-icon" href="./pwa-icon.svg" />
 <link rel="icon" href="./pwa-icon.svg" type="image/svg+xml" />
 <title>AI 工作台</title>
-<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=perf-agent-fix-20260622" crossorigin="anonymous">
-<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=perf-agent-fix-20260622" as="style" crossorigin="anonymous">
-<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=perf-agent-fix-20260622">
+<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=agent-runtime-recover1-20260622" crossorigin="anonymous">
+<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=agent-runtime-recover1-20260622" as="style" crossorigin="anonymous">
+<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=agent-runtime-recover1-20260622">
 <style>
 *{box-sizing:border-box}
 
@@ -30,7 +30,7 @@ body,*{-webkit-tap-highlight-color:transparent}
 body{margin:0;min-height:100vh;background:var(--loading-bg);color:#cbd5e1;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
 [aria-label="settings"],[aria-label="Settings"],button[aria-label="\8bbe\7f6e"],button[title="\8bbe\7f6e"],button[aria-label*="\8bbe\7f6e"],button[title*="\8bbe\7f6e"]{display:none!important;visibility:hidden!important}
 .loading-screen{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--loading-bg);z-index:99999}
-.loading-screen.hidden{opacity:0;pointer-events:none;transition:opacity .35s}
+.loading-screen.hidden{opacity:0;pointer-events:none;visibility:hidden;transition:opacity .25s,visibility 0s linear .25s}
 .spinner{width:40px;height:40px;border:3px solid var(--loading-spinner);border-top-color:var(--loading-spinner-top);border-radius:50%;animation:spin .7s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 .loading-screen p{margin-top:20px;font-size:14px;color:#64748b;letter-spacing:.3px}
@@ -173,23 +173,25 @@ if(!('noModule' in HTMLScriptElement.prototype)){
     try{
       var el=document.getElementById('loading-screen'); if(!el)return;
       el.classList.add('hidden');
+      el.setAttribute('aria-hidden','true');
       if(window.__gptImageLoadingLockInstalled)return;
       window.__gptImageLoadingLockInstalled=true;
       new MutationObserver(function(){
         if(window.__gptImageAppMounted&&el&&!el.classList.contains('hidden')){
           console.warn('[Shell] loading overlay was shown after mount; hiding it');
           el.classList.add('hidden');
+          el.setAttribute('aria-hidden','true');
         }
       }).observe(el,{attributes:true,attributeFilter:['class','style']});
       var lockTicks=0;
       var lockTimer=setInterval(function(){
         lockTicks++;
-        if(window.__gptImageAppMounted&&el&&!el.classList.contains('hidden'))el.classList.add('hidden');
+        if(window.__gptImageAppMounted&&el&&!el.classList.contains('hidden')){el.classList.add('hidden');el.setAttribute('aria-hidden','true');}
         if(window.__gptImageAppMounted||lockTicks>30){try{clearInterval(lockTimer);}catch(e){}}
       },1000);
     }catch(e){}
   }
-  function hideLoading(){ window.__gptImageAppMounted=true; lockLoadingAfterMount(); }
+  function hideLoading(){ window.__gptImageAppMounted=true; lockLoadingAfterMount(); installRuntimeHealthWatch(); }
   function setLoadingStage(text){
     try{
       var el=document.getElementById('loading-stage');
@@ -243,6 +245,45 @@ if(!('noModule' in HTMLScriptElement.prototype)){
     }
     el.classList.remove('hidden');
     el.innerHTML='<div style="max-width:460px;padding:22px;text-align:center"><h2 style="font-size:18px;margin:0 0 10px;color:var(--loading-text)">'+(wechat?'\u5fae\u4fe1\u6d4f\u89c8\u5668\u517c\u5bb9\u6027\u53d7\u9650':'\u4e3b\u9875\u9762\u52a0\u8f7d\u5931\u8d25')+'</h2><p style="margin:0 0 14px;color:#64748b;line-height:1.6">'+escHtml(detail)+'</p><div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap"><button onclick="location.reload()" style="border:0;border-radius:12px;padding:10px 16px;background:#6366f1;color:#fff;font-weight:700;cursor:pointer">\u91cd\u65b0\u52a0\u8f7d</button><button onclick="window.__gptImageCopyCurrentLink&&window.__gptImageCopyCurrentLink()" style="border:1px solid rgba(99,102,241,.35);border-radius:12px;padding:10px 16px;background:transparent;color:var(--loading-text);font-weight:700;cursor:pointer">\u590d\u5236\u94fe\u63a5</button><button onclick="location.href=\'/admin\'" style="border:1px solid rgba(99,102,241,.35);border-radius:12px;padding:10px 16px;background:transparent;color:var(--loading-text);font-weight:700;cursor:pointer">\u8fdb\u5165\u540e\u53f0</button><button onclick="location.href=\'/login\'" style="border:1px solid rgba(99,102,241,.35);border-radius:12px;padding:10px 16px;background:transparent;color:var(--loading-text);font-weight:700;cursor:pointer">\u91cd\u65b0\u767b\u5f55</button></div></div>';
+  }
+  function showRuntimeRecovery(msg){
+    try{
+      if(document.getElementById('runtime-recovery-panel'))return;
+      var panel=document.createElement('div');
+      panel.id='runtime-recovery-panel';
+      panel.setAttribute('role','alert');
+      panel.style.cssText='position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;background:#000;color:#fff;padding:24px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif';
+      panel.innerHTML='<div style="max-width:560px;width:100%;border:1px solid rgba(255,255,255,.14);border-radius:24px;background:rgba(15,23,42,.96);box-shadow:0 24px 80px rgba(0,0,0,.55);padding:22px;text-align:left"><h2 style="margin:0 0 10px;font-size:20px;font-weight:850">\u5df2\u963b\u6b62\u9ed1\u5c4f</h2><p style="margin:0 0 14px;color:#cbd5e1;line-height:1.65">'+escHtml(msg||'\u9875\u9762\u6e32\u67d3\u5f02\u5e38\uff0c\u5df2\u542f\u52a8\u6062\u590d\u9762\u677f\u3002')+'</p><pre id="runtime-recovery-detail" style="white-space:pre-wrap;word-break:break-word;max-height:34vh;overflow:auto;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);border-radius:14px;padding:12px;color:#e5e7eb;font-size:12px"></pre><div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap"><button id="runtime-recovery-gallery" style="border:0;border-radius:14px;padding:10px 16px;background:#2563eb;color:#fff;font-weight:800;cursor:pointer">\u8fd4\u56de\u753b\u5eca</button><button id="runtime-recovery-reload" style="border:1px solid rgba(255,255,255,.16);border-radius:14px;padding:10px 16px;background:rgba(255,255,255,.08);color:#fff;font-weight:800;cursor:pointer">\u5237\u65b0\u9875\u9762</button><button id="runtime-recovery-admin" style="border:1px solid rgba(255,255,255,.16);border-radius:14px;padding:10px 16px;background:transparent;color:#fff;font-weight:800;cursor:pointer">\u8fdb\u5165\u540e\u53f0</button></div></div>';
+      document.body.appendChild(panel);
+      var err=window.__gptImageLastRenderError;
+      var detail=document.getElementById('runtime-recovery-detail');
+      if(detail)detail.textContent=err?(err.message||'')+(err.stack?'\n\n'+err.stack:''):'';
+      document.getElementById('runtime-recovery-gallery').onclick=function(){
+        try{ window.__gptImageStore&&window.__gptImageStore.getState&&window.__gptImageStore.getState().setAppMode('gallery'); }catch(e){}
+        panel.remove();
+      };
+      document.getElementById('runtime-recovery-reload').onclick=function(){ location.reload(); };
+      document.getElementById('runtime-recovery-admin').onclick=function(){ location.href='/admin'; };
+    }catch(e){ try{ location.href='/admin'; }catch(_){} }
+  }
+  function installRuntimeHealthWatch(){
+    if(window.__gptImageRuntimeHealthWatchInstalled)return;
+    window.__gptImageRuntimeHealthWatchInstalled=true;
+    var emptySince=0;
+    setInterval(function(){
+      try{
+        if(!window.__gptImageAppMounted)return;
+        var root=document.getElementById('root');
+        if(!root)return;
+        var hasDom=root.children&&root.children.length>0;
+        var text=(root.innerText||'').trim();
+        if(hasDom&&text.length>0){emptySince=0;return;}
+        emptySince=emptySince||Date.now();
+        if(Date.now()-emptySince>1200){
+          showRuntimeRecovery('\u4e3b\u754c\u9762\u5df2\u6302\u8f7d\uff0c\u4f46 React \u6839\u8282\u70b9\u53d8\u6210\u7a7a\u767d\u3002\u8fd9\u901a\u5e38\u662f Agent \u6d88\u606f\u6e32\u67d3\u6216\u65e7\u7f13\u5b58\u72b6\u6001\u5f15\u53d1\u7684\u5d29\u6e83\u3002');
+        }
+      }catch(e){}
+    },700);
   }
   function handleAuthFailure(){
     clearTimeout(safetyTimer);
@@ -1002,7 +1043,7 @@ function applyPendingPrompt(st, pendingPrompt){
     var script=document.createElement('script');
     script.type='module';
     script.crossOrigin='anonymous';
-    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=perf-agent-fix-20260622';
+    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=agent-runtime-recover1-20260622';
     var settled=false;
     script.onload=function(){settled=true;setLoadingStage('\u4e3b\u7a0b\u5e8f\u811a\u672c\u5df2\u52a0\u8f7d\uff0c\u7b49\u5f85\u754c\u9762\u6302\u8f7d...');waitForAppReady();};
     script.onerror=function(){settled=true;showLoadError('\u4e3b\u7a0b\u5e8f\u811a\u672c\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u6e05\u7a7a\u7f13\u5b58\u540e\u91cd\u8bd5\u3002');};

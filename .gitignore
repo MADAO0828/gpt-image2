@@ -31,9 +31,11 @@ Thumbs.db
 __pycache__/
 *.pyo
 .deploy/
+.deploy2/
 .codegraph/
 .deploy_tmp_*
 .tmp-*
+.tmp_user.txt
 prompts_data.latest.tmp.json
 leaderai-index-latest.js
 leaderai-lab-*.js
