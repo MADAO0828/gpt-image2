@@ -30,12 +30,20 @@ ok(!/#agentShellHost\{[^}]*bottom:126px/.test(indexHtml),
   'Agent shell host still uses the old floating bottom layout instead of measured chrome alignment.');
 ok(indexHtml.includes('agent-chat-inputbar') && indexHtml.includes('agentExtraControls'),
   'Agent quick controls are not tied to the Agent input bar.');
+ok(indexHtml.includes('has-agent-text') && indexHtml.includes('clearAgentEditableSoon'),
+  'Agent input text-state/clear-after-send guard is missing.');
+ok(indexHtml.includes('findWorkbenchModeGroup') && indexHtml.includes('modeLeftOverride'),
+  'Workbench mode group is not explicitly spaced away from the right navigation.');
 
 // Multi-image generation needs explicit retry/recovery markers so a single 5xx/524 slot does not permanently fail while siblings succeed.
 ok(bundle.includes('__gptImage2MultiImageRetry'),
   'Main bundle lacks the multi-image retry/recovery patch marker.');
 ok(bundle.includes('failedRequests') && bundle.includes('retryableMultiImageFailure'),
   'Main bundle does not expose retryable failed multi-image slots.');
+ok(bundle.includes('fileSizeBytes') && bundle.includes('qM(ct.fileSizeBytes)'),
+  'Main bundle does not persist/display generated image byte size metadata.');
+ok(bundle.includes('Promise.all(r.map(async m=>') && bundle.includes('transparentOutput'),
+  'Generated image local post-processing is still fully sequential for non-transparent multi-image tasks.');
 
 // Cache/version discipline: entry HTML and dynamic chunks must use the same marker.
 const markerMatch = indexHtml.match(/index-CZHhOunP-gpt2-20260621-agent-prompts-2\.js\?v=([^"']+)/);
