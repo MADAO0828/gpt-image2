@@ -24,6 +24,12 @@ ok(indexHtml.includes('installDomOwnershipGuard') && indexHtml.includes('ignored
   'DOM ownership guard is missing; stale React/removeChild crashes can still black-screen Agent.');
 ok(/body>#workbenchSiteNav\.site-nav\{position:fixed/.test(indexHtml),
   'Workbench site nav is not protected by a fixed body-level selector.');
+ok(indexHtml.includes('function positionShellChrome') && indexHtml.includes('findWorkbenchModeButtons'),
+  'Shell chrome positioning is missing; body-level controls will drift away from the Gallery / Agent header.');
+ok(!/#agentShellHost\{[^}]*bottom:126px/.test(indexHtml),
+  'Agent shell host still uses the old floating bottom layout instead of measured chrome alignment.');
+ok(indexHtml.includes('agent-chat-inputbar') && indexHtml.includes('agentExtraControls'),
+  'Agent quick controls are not tied to the Agent input bar.');
 
 // Multi-image generation needs explicit retry/recovery markers so a single 5xx/524 slot does not permanently fail while siblings succeed.
 ok(bundle.includes('__gptImage2MultiImageRetry'),
@@ -37,10 +43,10 @@ ok(!!markerMatch, 'index.html is missing the main bundle version marker.');
 if (markerMatch) {
   const marker = markerMatch[1];
   for (const rel of [
-    'assets/highlighted-body-OFNGDK62-BCwJeCkr.js',
-    'assets/index-5eh8hj-Z.js',
-    'assets/index-DL1LPs_c.js',
-    'assets/mermaid-GHXKKRXX-DDXhDTxI.js'
+    'assets/highlighted-body-OFNGDK62-BCwJeCkr-a2.js',
+    'assets/index-5eh8hj-Z-a2.js',
+    'assets/index-DL1LPs_c-a2.js',
+    'assets/mermaid-GHXKKRXX-DDXhDTxI-a2.js'
   ]) {
     const text = fs.readFileSync(path.join(root, rel), 'utf8');
     ok(text.includes(`index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=${marker}`), `${rel} imports the main bundle with a stale marker.`);

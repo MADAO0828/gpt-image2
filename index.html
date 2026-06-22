@@ -95,22 +95,23 @@ html.gpt-agent-mode .agent-chat-inputbar button[aria-label*="\63d0\793a\8bcd\4ed
 .agent-reason-menu button:hover,.agent-reason-menu button.active{background:rgba(99,102,241,.12);color:#2563eb}
 @media(max-width:640px){.agent-extra-controls{gap:6px}.agent-tool-btn{height:34px;padding:0 9px;font-size:12px}.agent-tool-text{display:none}}
 
-/* Non-React Agent shell controls: keep custom controls outside #root to avoid React removeChild crashes */
-#agentShellHost{position:fixed;left:50%;right:auto;bottom:126px;width:min(840px,calc(100vw - 32px));transform:translateX(-50%);z-index:70;display:none;pointer-events:none}
-html.gpt-agent-mode #agentShellHost{display:block}
-#agentShellHost .agent-current-session-box,#agentShellHost .agent-extra-controls{pointer-events:auto}
-#agentShellHost .agent-current-session-box{margin:0 0 10px 0;box-shadow:0 12px 32px rgba(15,23,42,.14)}
-#agentShellHost .agent-extra-controls{justify-content:flex-end;gap:8px}
+/* Non-React Agent shell controls: keep custom controls outside #root, but visually align to React chrome by measured fixed positioning */
+#agentShellHost{position:fixed;inset:0;z-index:92;display:block;pointer-events:none}
+#agentShellHost .agent-current-session-box,#agentShellHost .agent-extra-controls{position:fixed;pointer-events:auto;will-change:left,top,right,bottom,transform}
+#agentShellHost .agent-current-session-box{box-shadow:0 8px 24px rgba(15,23,42,.12);z-index:92}
+#agentShellHost .agent-extra-controls{justify-content:flex-end;gap:8px;z-index:94}
 #agentShellHost .agent-reason-menu{bottom:42px;left:auto;right:0}
-@media(max-width:640px){#agentShellHost{left:12px;right:12px;bottom:178px;width:auto;transform:none}#agentShellHost .agent-current-session-box{max-width:100%;margin-left:0}#agentShellHost .agent-extra-controls{justify-content:flex-start}}
+html:not(.gpt-agent-mode) #agentShellHost .agent-current-session-box,html:not(.gpt-agent-mode) #agentShellHost .agent-extra-controls{display:none!important}
+@media(max-width:640px){#agentShellHost .agent-current-session-box{max-width:140px}#agentShellHost .agent-extra-controls{justify-content:flex-start}.agent-tool-text{display:none!important}}
 
 /* Agent placeholder copy without mutating React-owned text nodes */
 html.gpt-agent-mode .agent-chat-inputbar .prompt-placeholder{font-size:0!important}
 html.gpt-agent-mode .agent-chat-inputbar .prompt-placeholder::before{content:"\8f93\5165\4f60\60f3\548c Agent \8bf4\7684\8bdd...";font-size:15px;line-height:1.65}
-/* Keep site navigation outside React root; visually place it like a non-floating shell toolbar */
-body>#workbenchSiteNav.site-nav{position:fixed;right:16px;top:calc(env(safe-area-inset-top,0px) + 64px);z-index:90}
+/* Keep site navigation outside React root; align it to the same row as Gallery / Agent without owning React DOM */
+body>#workbenchSiteNav.site-nav{position:fixed;right:16px;top:calc(env(safe-area-inset-top,0px) + 12px);z-index:91}
 body>#workbenchSiteNav.site-nav[data-docked="1"]{display:flex}
-@media(max-width:760px){body>#workbenchSiteNav.site-nav{left:12px;right:12px;top:calc(env(safe-area-inset-top,0px) + 58px);justify-content:flex-start;overflow-x:auto}.site-nav .label{max-width:96px}}
+body>#workbenchSiteNav.site-nav[data-compact="1"] .label,body>#workbenchSiteNav.site-nav[data-compact="1"] .divider,body>#workbenchSiteNav.site-nav[data-compact="1"] a .nav-text,body>#workbenchSiteNav.site-nav[data-compact="1"] .profile-switch-wrap:before{display:none}
+@media(max-width:760px){body>#workbenchSiteNav.site-nav{left:auto;right:8px;max-width:calc(100vw - 16px);justify-content:flex-start;overflow-x:auto}.site-nav .label{max-width:96px}}
 </style>
 <script>
 (function(){
@@ -673,6 +674,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       var el=box.querySelector('.session-title');
       if(el)el.textContent=title;
       box.title='\u70b9\u51fb\u4fee\u6539\u5f53\u524d\u4f1a\u8bdd\u540d\u79f0\uff1a'+title;
+      positionShellChrome();
     }catch(e){}
   }
   function renameActiveAgentConversation(title){
@@ -786,6 +788,99 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       return controls;
     }catch(e){return null;}
   }
+  function visibleRect(el){
+    try{
+      if(!el||!el.getBoundingClientRect)return null;
+      var r=el.getBoundingClientRect(), cs=window.getComputedStyle?getComputedStyle(el):null;
+      if(!r||r.width<2||r.height<2||(cs&&(cs.display==='none'||cs.visibility==='hidden'||cs.opacity==='0')))return null;
+      return r;
+    }catch(e){return null;}
+  }
+  function findWorkbenchModeButtons(){
+    try{
+      var out=[];
+      Array.prototype.forEach.call(document.querySelectorAll('#root button'),function(btn){
+        var text=String(btn.textContent||'').replace(/\s+/g,'').trim();
+        if(text==='\u753b\u5eca'||text==='Agent'||text==='Gallery'){
+          var r=visibleRect(btn); if(r)out.push({button:btn,text:text,rect:r});
+        }
+      });
+      if(!out.length)return null;
+      var gallery=out.find(function(x){return x.text==='\u753b\u5eca'||x.text==='Gallery';})||out[0];
+      var agent=out.find(function(x){return x.text==='Agent';})||out[out.length-1];
+      var left=Math.min.apply(null,out.map(function(x){return x.rect.left;}));
+      var top=Math.min.apply(null,out.map(function(x){return x.rect.top;}));
+      var right=Math.max.apply(null,out.map(function(x){return x.rect.right;}));
+      var bottom=Math.max.apply(null,out.map(function(x){return x.rect.bottom;}));
+      return {items:out,gallery:gallery,agent:agent,rect:{left:left,top:top,right:right,bottom:bottom,width:right-left,height:bottom-top}};
+    }catch(e){return null;}
+  }
+  function findWorkbenchHeaderRect(mode){
+    try{
+      var el=mode&&mode.gallery&&mode.gallery.button;
+      var h=el&&el.closest&&el.closest('header');
+      var r=visibleRect(h);
+      if(r)return r;
+      if(mode&&mode.rect)return {left:12,top:Math.max(8,mode.rect.top-8),right:window.innerWidth-12,bottom:mode.rect.bottom+8,width:window.innerWidth-24,height:mode.rect.height+16};
+    }catch(e){}
+    return null;
+  }
+  function positionShellChrome(){
+    try{
+      var mode=findWorkbenchModeButtons(), header=findWorkbenchHeaderRect(mode), nav=document.getElementById('workbenchSiteNav');
+      var vw=Math.max(document.documentElement.clientWidth||0,window.innerWidth||0);
+      if(nav){
+        nav.style.position='fixed'; nav.style.margin='0'; nav.style.pointerEvents='auto';
+        nav.setAttribute('data-docked','1');
+        var nr=nav.getBoundingClientRect();
+        var top=header?Math.round(header.top+(header.height-(nr.height||48))/2):12;
+        var right=header?Math.max(8,Math.round(vw-header.right+12)):16;
+        var available=mode?Math.max(160,Math.round(vw-mode.rect.right-right-18)):vw-24;
+        var compact=available<520||vw<900;
+        nav.setAttribute('data-compact',compact?'1':'0');
+        nav.style.top=Math.max(6,top)+'px';
+        nav.style.right=right+'px';
+        nav.style.left='auto';
+        nav.style.maxWidth=Math.max(150,Math.min(available,vw-16))+'px';
+      }
+      var store=window.__gptImageStore, st=store&&store.getState&&store.getState();
+      var isAgent=!!(st&&st.appMode==='agent');
+      var box=document.getElementById('agentCurrentSessionBox');
+      if(box){
+        if(!isAgent||!mode){box.style.display='none';}
+        else{
+          box.style.display=box.getAttribute('data-visible')==='1'?'flex':'none';
+          var br=box.getBoundingClientRect();
+          var btop=Math.round(mode.rect.top+(mode.rect.height-(br.height||32))/2);
+          var bw=Math.max(120,Math.min(br.width||210,260));
+          var left=Math.round(mode.rect.left-bw-10);
+          if(left<8){left=8; bw=Math.max(116,mode.rect.left-18);}
+          box.style.top=Math.max(6,btop)+'px';
+          box.style.left=left+'px';
+          box.style.right='auto';
+          box.style.maxWidth=Math.round(bw)+'px';
+        }
+      }
+      var controls=document.getElementById('agentExtraControls');
+      if(controls){
+        var bar=document.querySelector('#root .agent-chat-inputbar')||((document.querySelector('#root [contenteditable="true"]')||{}).closest&&document.querySelector('#root [contenteditable="true"]').closest('div.fixed.bottom-4,div.fixed.sm\\:bottom-6'));
+        var rr=visibleRect(bar);
+        if(!isAgent||!rr){controls.style.display='none';}
+        else{
+          controls.style.display='flex';
+          var cr=controls.getBoundingClientRect();
+          var cRight=Math.max(14,Math.round(vw-rr.right+58));
+          var cBottom=Math.max(10,Math.round((window.innerHeight||document.documentElement.clientHeight)-rr.bottom+18));
+          controls.style.right=cRight+'px';
+          controls.style.left='auto';
+          controls.style.bottom=cBottom+'px';
+          controls.style.top='auto';
+          controls.style.maxWidth=Math.max(140,Math.min(cr.width||260,rr.width-96))+'px';
+        }
+      }
+    }catch(e){}
+  }
+
   function updateAgentInputModePolish(){
     try{
       var store=window.__gptImageStore, st=store&&store.getState&&store.getState();
@@ -795,10 +890,11 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       var bar=editable&&editable.closest&&editable.closest('div.fixed.bottom-4,div.fixed.sm\\:bottom-6');
       if(bar)bar.classList.toggle('agent-chat-inputbar',isAgent);
       var host=document.getElementById('agentShellHost');
-      if(host)host.style.display=isAgent?'block':'none';
+      if(host)host.style.display='block';
       if(!isAgent){
         var ph0=bar&&bar.querySelector&&bar.querySelector('.prompt-placeholder');
         if(ph0)ph0.setAttribute('data-shell-placeholder','gallery');
+        positionShellChrome();
         return;
       }
       var controls=ensureAgentExtraControls(bar);
@@ -812,6 +908,8 @@ if(!('noModule' in HTMLScriptElement.prototype)){
         var lab=controls.querySelector('#agentReasonLabel'); if(lab)lab.textContent=agentReasonLabel(reason);
         Array.prototype.slice.call(controls.querySelectorAll('[data-reason]')).forEach(function(btn){btn.classList.toggle('active',btn.getAttribute('data-reason')===reason);});
       }
+      updateAgentCurrentSessionBox();
+      positionShellChrome();
     }catch(e){}
   }
   function installAgentInputModePolish(){
@@ -824,6 +922,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       try{new MutationObserver(queuePolish).observe(root,{childList:true,subtree:false});}catch(e){}
       var store=window.__gptImageStore;
       if(store&&store.subscribe){try{store.subscribe(queuePolish);}catch(e){}}
+      try{window.addEventListener('resize',queuePolish,{passive:true});window.addEventListener('scroll',queuePolish,{passive:true,capture:true});}catch(e){}
     }catch(e){}
   }
   function profileRuntimeFields(p, fallback){
@@ -1101,6 +1200,7 @@ function applyPendingPrompt(st, pendingPrompt){
       nav.style.pointerEvents='auto';
       nav.setAttribute('data-has-running',hasRunningWorkbenchTask()?'1':'0');
       renderProfileSwitcher(window.__gptImageRuntimeConfig);
+      positionShellChrome();
       return true;
     }catch(e){return false;}
   }
