@@ -306,3 +306,63 @@ html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6 .mt-3 button:last-child{b
 @media(min-width:1760px){main.pb-48 [data-task-grid-root]>.grid.grid-cols-1{grid-template-columns:repeat(4,minmax(0,1fr))!important;}}
 @media(max-width:1120px){:root{--pd-b6-card-min:300px;--pd-b6-gap:16px;}main.pb-48 .safe-area-x.max-w-7xl{padding-left:18px!important;padding-right:18px!important;}html:not(.gpt-agent-mode) #root>div.fixed.bottom-4 .grid.grid-cols-6,html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6 .grid.grid-cols-6{grid-template-columns:repeat(3,minmax(0,1fr))!important;}}
 @media(max-width:680px){:root{--pd-b6-card-min:min(100%,320px);--pd-b6-gap:14px;}main.pb-48 .safe-area-x.max-w-7xl{padding-left:12px!important;padding-right:12px!important;}main.pb-48 [data-task-grid-root]>.grid.grid-cols-1{grid-template-columns:1fr!important;padding-bottom:230px!important;}html:not(.gpt-agent-mode) #root>div.fixed.bottom-4,html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6{width:calc(100vw - 18px)!important;max-width:calc(100vw - 18px)!important;}html:not(.gpt-agent-mode) #root>div.fixed.bottom-4 .mt-3 button,html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6 .mt-3 button{width:44px!important;height:44px!important;min-width:44px!important;min-height:44px!important;}}
+
+/* product-design B7 - global macOS commercial polish */
+:root{
+  --pd-page-max:1540px;
+  --pd-nav-h:58px;
+  --pd-glass:rgba(255,255,255,.78);
+  --pd-glass-strong:rgba(255,255,255,.88);
+  --pd-hairline:rgba(15,23,42,.10);
+}
+html.dark{--pd-glass:rgba(22,22,24,.76);--pd-glass-strong:rgba(28,28,30,.88);--pd-hairline:rgba(255,255,255,.12);}
+/* A calmer, reusable macOS navigation language across admin / prompts / workbench. */
+.nav,.site-nav,.nav-actions,.h{min-height:var(--pd-nav-h)!important;background:linear-gradient(180deg,var(--pd-glass-strong),color-mix(in srgb,var(--pd-glass) 82%,transparent))!important;border:1px solid var(--pd-hairline)!important;box-shadow:0 18px 54px rgba(15,23,42,.10),inset 0 1px 0 rgba(255,255,255,.58)!important;}
+html.dark .nav,html.dark .site-nav,html.dark .nav-actions,html.dark .h{box-shadow:0 20px 64px rgba(0,0,0,.42),inset 0 1px 0 rgba(255,255,255,.08)!important;}
+.nav,.nav-actions{width:min(var(--pd-page-max),calc(100vw - 48px))!important;margin:14px auto 0!important;justify-content:flex-end!important;padding:8px!important;}
+.nav::before,.nav-actions::before{content:"";display:block;margin-right:auto;min-width:80px;}
+.nav a,.nav button,.site-nav a,.nav-actions .b,.nav-actions a{height:42px!important;border-radius:17px!important;padding:0 14px!important;font-size:14px!important;letter-spacing:-.01em!important;}
+.nav .nav-primary,.site-nav a.nav-primary,.nav-actions .primary,.btn-p{box-shadow:0 13px 28px rgba(10,132,255,.24)!important;}
+.account-chip,.acct{height:30px!important;padding:0 10px!important;max-width:280px!important;font-weight:850!important;}
+/* Admin page: centered premium dashboard with better table scanning. */
+.ct{max-width:var(--pd-page-max)!important;padding-top:28px!important;}
+.title{min-height:110px!important;align-items:center!important;background:linear-gradient(135deg,rgba(255,255,255,.84),rgba(250,252,255,.72))!important;}
+html.dark .title{background:linear-gradient(135deg,rgba(28,28,30,.86),rgba(20,20,22,.78))!important;}
+.title h1{font-size:38px!important;letter-spacing:-.045em!important;}
+.stats{grid-template-columns:repeat(3,minmax(220px,1fr))!important;}
+.stat{min-height:104px!important;display:flex!important;flex-direction:column!important;justify-content:center!important;}
+.tabs{min-height:58px!important;display:flex!important;align-items:center!important;gap:8px!important;padding:7px!important;}
+.tabs .tab{height:44px!important;padding:0 18px!important;display:inline-flex!important;align-items:center!important;gap:7px!important;}
+.sec{border-radius:28px!important;padding:24px 26px!important;}
+.tbl-wrap{border-radius:24px!important;}
+.tbl th{height:46px!important;background:color-mix(in srgb,var(--mac-blue) 5%,var(--mac-surface-2))!important;color:var(--mac-muted)!important;}
+.tbl td{height:58px!important;vertical-align:middle!important;}
+.tbl tr:nth-child(even) td{background:color-mix(in srgb,var(--mac-blue) 2.5%,transparent)!important;}
+.tbl .role,.tbl .pill,.badge{border-radius:999px!important;}
+/* Prompts page: match nav height, improve card breathing, keep density useful. */
+body:has(.c) .h{min-height:74px!important;border-radius:0 0 28px 28px!important;padding-left:28px!important;padding-right:28px!important;}
+body:has(.c) .c{max-width:var(--pd-page-max)!important;padding-left:28px!important;padding-right:28px!important;}
+body:has(.c) .srch{top:92px!important;margin-top:10px!important;}
+body:has(.c) .srch input{height:54px!important;border-radius:24px!important;font-size:16px!important;}
+body:has(.c) .cats{gap:9px!important;line-height:1.1!important;}
+body:has(.c) .cat{height:36px!important;padding:0 15px!important;border:1px solid var(--pd-line)!important;}
+body:has(.c) .info{display:flex!important;justify-content:space-between!important;align-items:center!important;margin:10px 4px 18px!important;color:var(--mac-muted)!important;}
+body:has(.c) .grid{grid-template-columns:repeat(auto-fill,minmax(250px,1fr))!important;gap:22px!important;}
+body:has(.c) .grid .card{border-radius:26px!important;min-height:276px!important;background:var(--pd-panel)!important;border:1px solid var(--pd-line)!important;box-shadow:0 12px 34px rgba(15,23,42,.08)!important;}
+body:has(.c) .grid .card:hover{transform:translateY(-5px)!important;box-shadow:0 24px 64px rgba(15,23,42,.14)!important;}
+body:has(.c) .card-img{height:138px!important;border-radius:20px!important;margin:12px 12px 0!important;width:calc(100% - 24px)!important;}
+body:has(.c) .card-body{padding:13px 16px 17px!important;}
+body:has(.c) .card-p{-webkit-line-clamp:2!important;color:var(--mac-muted)!important;}
+/* Prompt/detail modals: do not feel like raw utility panels. */
+.overlay .modal,.modal-cover .modal,#root>div.fixed.inset-0>div{border-radius:32px!important;background:color-mix(in srgb,var(--pd-panel-solid) 86%,transparent)!important;backdrop-filter:saturate(180%) blur(30px)!important;-webkit-backdrop-filter:saturate(180%) blur(30px)!important;}
+/* Login: tighter, more Apple-like form without changing registration behavior. */
+.login-shell,.auth-card,.login-card{border-radius:30px!important;box-shadow:0 28px 90px rgba(15,23,42,.12),inset 0 1px 0 rgba(255,255,255,.66)!important;}
+#submitBtn,button[type="submit"]{border-radius:17px!important;height:50px!important;font-weight:900!important;}
+/* Workbench empty state and composer final touch. */
+main.pb-48 .text-center.py-20{border-radius:30px!important;background:transparent!important;}
+html:not(.gpt-agent-mode) #root>div.fixed.bottom-4>div,
+html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6>div{box-shadow:0 24px 74px rgba(15,23,42,.13),0 1px 0 rgba(255,255,255,.54) inset!important;}
+html:not(.gpt-agent-mode) #root>div.fixed.bottom-4 [contenteditable="true"],
+html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6 [contenteditable="true"]{min-height:60px!important;}
+@media(max-width:900px){.nav,.nav-actions{width:calc(100vw - 20px)!important;margin-top:8px!important;overflow-x:auto!important;justify-content:flex-start!important}.nav::before,.nav-actions::before{display:none}.ct,body:has(.c) .c{padding-left:14px!important;padding-right:14px!important}.title{min-height:0!important}.stats{grid-template-columns:1fr!important}body:has(.c) .grid{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:14px!important}body:has(.c) .card-img{height:118px!important}}
+@media(max-width:520px){body:has(.c) .grid{grid-template-columns:1fr!important}.tabs{overflow-x:auto!important}.tabs .tab{white-space:nowrap!important}.sec{padding:18px!important}.title h1{font-size:30px!important}}
