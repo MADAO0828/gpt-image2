@@ -1,0 +1,225 @@
+/* GPT Image2 unified shell layer - b18 20260623
+   Keep this file as the final visual contract for cross-page navigation.
+   It intentionally overrides legacy .nav / .nav-actions / .site-nav differences
+   without changing auth, routing, or React-owned DOM ownership. */
+
+:root {
+  --shell-nav-h: 48px;
+  --shell-radius: 24px;
+  --shell-control-radius: 17px;
+  --shell-gap: 7px;
+  --shell-blue: #0a84ff;
+  --shell-indigo: #5e5ce6;
+  --shell-admin: #8b5cf6;
+  --shell-warn: #f59e0b;
+  --shell-text: var(--mac-text, #111827);
+  --shell-muted: var(--mac-muted, #6b7280);
+  --shell-border: var(--pd-hairline, rgba(15, 23, 42, .11));
+  --shell-surface: var(--mac-bg-elevated, rgba(255, 255, 255, .86));
+  --shell-surface-2: var(--mac-surface-2, rgba(248, 250, 252, .82));
+  --shell-shadow: 0 12px 32px rgba(15, 23, 42, .10), inset 0 1px 0 rgba(255, 255, 255, .55);
+  --shell-blur: saturate(180%) blur(24px);
+}
+
+html.dark {
+  --shell-text: #f8fafc;
+  --shell-muted: #a1a1aa;
+  --shell-border: rgba(255, 255, 255, .13);
+  --shell-surface: rgba(28, 28, 30, .82);
+  --shell-surface-2: rgba(255, 255, 255, .075);
+  --shell-shadow: 0 16px 42px rgba(0, 0, 0, .38), inset 0 1px 0 rgba(255, 255, 255, .08);
+}
+
+.shell-nav,
+.admin-hero .nav,
+.prompts-unified .nav-actions,
+body > #workbenchSiteNav.site-nav {
+  min-height: var(--shell-nav-h) !important;
+  height: var(--shell-nav-h) !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: var(--shell-gap) !important;
+  padding: 5px !important;
+  border-radius: var(--shell-radius) !important;
+  border: 1px solid var(--shell-border) !important;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--shell-surface) 94%, transparent), color-mix(in srgb, var(--shell-surface) 80%, transparent)) !important;
+  box-shadow: var(--shell-shadow) !important;
+  backdrop-filter: var(--shell-blur) !important;
+  -webkit-backdrop-filter: var(--shell-blur) !important;
+}
+
+.shell-nav a,
+.shell-nav button,
+.admin-hero .nav a,
+.admin-hero .nav button,
+.prompts-unified .nav-actions .b,
+.prompts-unified .nav-actions a,
+body > #workbenchSiteNav.site-nav a {
+  height: 38px !important;
+  min-height: 38px !important;
+  min-width: 38px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 7px !important;
+  padding: 0 13px !important;
+  border-radius: var(--shell-control-radius) !important;
+  border: 1px solid transparent !important;
+  background: color-mix(in srgb, var(--shell-surface-2) 72%, transparent) !important;
+  color: var(--shell-text) !important;
+  font-size: 13px !important;
+  font-weight: 850 !important;
+  letter-spacing: -.01em !important;
+  white-space: nowrap !important;
+  transition: transform .16s cubic-bezier(.2, .8, .2, 1), background .16s ease, color .16s ease, box-shadow .16s ease !important;
+}
+
+.shell-nav a:hover,
+.shell-nav button:hover,
+.admin-hero .nav a:hover,
+.admin-hero .nav button:hover,
+.prompts-unified .nav-actions .b:hover,
+.prompts-unified .nav-actions a:hover,
+body > #workbenchSiteNav.site-nav a:hover {
+  transform: translateY(-1px) !important;
+  color: var(--shell-blue) !important;
+  border-color: color-mix(in srgb, var(--shell-blue) 22%, transparent) !important;
+  background: color-mix(in srgb, var(--shell-blue) 12%, var(--shell-surface)) !important;
+}
+
+.shell-nav a:active,
+.shell-nav button:active,
+.admin-hero .nav a:active,
+.admin-hero .nav button:active,
+.prompts-unified .nav-actions .b:active,
+.prompts-unified .nav-actions a:active,
+body > #workbenchSiteNav.site-nav a:active {
+  transform: scale(.965) !important;
+}
+
+.shell-nav .nav-primary,
+.admin-hero .nav .nav-primary,
+.prompts-unified .nav-actions .primary,
+body > #workbenchSiteNav.site-nav .nav-primary {
+  color: #fff !important;
+  background: linear-gradient(135deg, var(--shell-blue), var(--shell-indigo)) !important;
+  border-color: rgba(255, 255, 255, .24) !important;
+  box-shadow: 0 12px 26px color-mix(in srgb, var(--shell-blue) 24%, transparent) !important;
+}
+
+.shell-account,
+.account-chip.shell-account,
+.nav .label.shell-account,
+.nav-actions .acct.shell-account,
+body > #workbenchSiteNav.site-nav .account-chip {
+  height: 38px !important;
+  min-height: 38px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  padding: 0 12px !important;
+  border-radius: 18px !important;
+  border: 1px solid color-mix(in srgb, var(--shell-blue) 18%, transparent) !important;
+  background: color-mix(in srgb, var(--shell-blue) 8%, var(--shell-surface)) !important;
+  color: var(--shell-text) !important;
+  font-size: 13px !important;
+  font-weight: 900 !important;
+  white-space: nowrap !important;
+  max-width: 320px !important;
+  overflow: hidden !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .42) !important;
+}
+
+.shell-account .account-role,
+.account-chip .account-role {
+  height: 22px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  padding: 0 8px !important;
+  border-radius: 999px !important;
+  background: color-mix(in srgb, var(--shell-blue) 16%, transparent) !important;
+  color: var(--shell-blue) !important;
+  font-size: 12px !important;
+  font-weight: 950 !important;
+  flex: 0 0 auto !important;
+}
+
+.shell-account .account-name,
+.account-chip .account-name {
+  display: block !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  max-width: 220px !important;
+}
+
+.shell-account[data-role="admin"],
+.account-chip[data-role="admin"] {
+  border-color: color-mix(in srgb, var(--shell-admin) 34%, transparent) !important;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--shell-admin) 16%, var(--shell-surface)), color-mix(in srgb, var(--shell-warn) 9%, var(--shell-surface))) !important;
+}
+
+.shell-account[data-role="admin"] .account-role,
+.account-chip[data-role="admin"] .account-role {
+  color: #fff !important;
+  background: linear-gradient(135deg, var(--shell-admin), var(--shell-warn)) !important;
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--shell-admin) 24%, transparent) !important;
+}
+
+.admin-hero {
+  align-items: center !important;
+}
+
+.admin-hero .nav {
+  min-width: min(720px, 100%) !important;
+}
+
+.admin-hero .title h1,
+.prompts-unified .hl {
+  letter-spacing: -.035em !important;
+}
+
+.prompts-unified .nav-actions {
+  align-self: center !important;
+}
+
+.prompts-unified .top-srch input {
+  height: 48px !important;
+}
+
+@media (max-width: 1180px) {
+  .admin-hero .nav,
+  .prompts-unified .nav-actions {
+    width: 100% !important;
+    min-width: 0 !important;
+    overflow-x: auto !important;
+    justify-content: flex-start !important;
+  }
+
+  .shell-account,
+  .account-chip.shell-account,
+  .nav .label.shell-account,
+  .nav-actions .acct.shell-account {
+    min-width: 176px !important;
+  }
+}
+
+@media (max-width: 760px) {
+  .shell-nav .nav-text,
+  .admin-hero .nav .nav-text,
+  .prompts-unified .nav-actions .nav-text,
+  body > #workbenchSiteNav.site-nav .nav-text {
+    display: none !important;
+  }
+
+  .shell-account .account-role,
+  .account-chip .account-role {
+    padding: 0 7px !important;
+  }
+
+  .shell-account .account-name,
+  .account-chip .account-name {
+    max-width: 128px !important;
+  }
+}
