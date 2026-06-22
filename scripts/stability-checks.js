@@ -34,6 +34,8 @@ ok(indexHtml.includes('has-agent-text') && indexHtml.includes('clearAgentEditabl
   'Agent input text-state/clear-after-send guard is missing.');
 ok(indexHtml.includes('findWorkbenchModeGroup') && indexHtml.includes('modeLeftOverride'),
   'Workbench mode group is not explicitly spaced away from the right navigation.');
+ok(indexHtml.includes('account-chip') && indexHtml.includes('workbenchAccountInfo') && !indexHtml.includes('[data-compact="1"] .label'),
+  'Workbench username chip is missing or can still be hidden by compact nav mode.');
 
 // Multi-image generation needs explicit retry/recovery markers so a single 5xx/524 slot does not permanently fail while siblings succeed.
 ok(bundle.includes('__gptImage2MultiImageRetry'),
