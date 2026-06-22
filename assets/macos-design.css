@@ -249,3 +249,60 @@ html:not(.gpt-agent-mode) #root>div.fixed.bottom-4 .mt-3 button,html:not(.gpt-ag
 html.gpt-agent-mode .agent-chat-inputbar .prompt-placeholder[data-shell-placeholder="agent"]{position:relative!important;color:transparent!important;-webkit-text-fill-color:transparent!important;}
 html.gpt-agent-mode .agent-chat-inputbar .prompt-placeholder[data-shell-placeholder="agent"]::before{content:"输入你想和 Agent 说的话..."!important;position:absolute!important;left:16px!important;top:14px!important;color:var(--pd-sub)!important;-webkit-text-fill-color:var(--pd-sub)!important;font-size:16px!important;line-height:1.5!important;white-space:nowrap!important;}
 html.gpt-agent-mode .agent-chat-inputbar.has-agent-text .prompt-placeholder[data-shell-placeholder="agent"]::before{display:none!important;}
+
+/* product-design B6 - modal focus, gallery breathing room, coordinated composer */
+:root{--pd-b6-gap:22px;--pd-b6-card-min:360px;--pd-b6-card-pad:10px;}
+/* Any React dialog/lightbox should own the screen: hide shell chrome and the workbench composer behind it. */
+html.gpt-modal-open body>#workbenchSiteNav.site-nav,
+html.gpt-modal-open #agentShellHost,
+html.gpt-modal-open #root header.safe-area-top,
+html.gpt-modal-open #root>div.fixed.top-0,
+html.gpt-modal-open #root>div.fixed.bottom-4,
+html.gpt-modal-open #root>div.fixed.sm\:bottom-6{opacity:0!important;visibility:hidden!important;pointer-events:none!important;transform:translateY(10px)!important;transition:opacity .16s var(--mac-ease),visibility .16s var(--mac-ease),transform .16s var(--mac-ease)!important;}
+html.gpt-modal-open{overflow:hidden;}
+html.gpt-modal-open body{overflow:hidden!important;}
+/* Lift modals above every shell element and make their layout feel intentional. */
+#root>div.fixed.inset-0{z-index:180!important;}
+#root>div.fixed.inset-0:has(button):not(.pointer-events-none){backdrop-filter:saturate(135%) blur(16px)!important;-webkit-backdrop-filter:saturate(135%) blur(16px)!important;}
+#root>div.fixed.inset-0>div{box-shadow:0 34px 120px rgba(15,23,42,.24),0 1px 0 rgba(255,255,255,.72) inset!important;border:1px solid rgba(255,255,255,.38)!important;}
+html.dark #root>div.fixed.inset-0>div{box-shadow:0 36px 130px rgba(0,0,0,.72),0 1px 0 rgba(255,255,255,.08) inset!important;border-color:rgba(255,255,255,.12)!important;}
+/* Size modal: less cramped controls, Apple-style segmented picker and buttons. */
+#root>div.fixed.inset-0 button{transition:transform .14s var(--mac-ease),background .16s var(--mac-ease),border-color .16s var(--mac-ease),box-shadow .16s var(--mac-ease)!important;}
+#root>div.fixed.inset-0 button:hover{transform:translateY(-1px)!important;}
+#root>div.fixed.inset-0 button:active{transform:scale(.97)!important;}
+/* Gallery: reduce density from 3 cramped columns to spacious responsive cards. */
+main.pb-48 .safe-area-x.max-w-7xl{max-width:1540px!important;padding-left:34px!important;padding-right:34px!important;}
+main.pb-48 [data-task-grid-root]>.grid.grid-cols-1{grid-template-columns:repeat(auto-fill,minmax(var(--pd-b6-card-min),1fr))!important;gap:var(--pd-b6-gap)!important;padding-bottom:260px!important;}
+main.pb-48 .task-card-wrapper{min-width:0!important;}
+main.pb-48 .task-card-wrapper>div{border-radius:26px!important;overflow:hidden!important;background:var(--pd-panel)!important;border:1px solid var(--pd-line)!important;box-shadow:0 12px 34px rgba(15,23,42,.08)!important;transition:transform .18s var(--mac-ease),box-shadow .18s var(--mac-ease),border-color .18s var(--mac-ease)!important;}
+main.pb-48 .task-card-wrapper>div:hover{transform:translateY(-3px)!important;box-shadow:0 22px 58px rgba(15,23,42,.13)!important;border-color:color-mix(in srgb,var(--pd-blue) 24%,var(--pd-line))!important;}
+main.pb-48 .task-card-wrapper img{border-radius:20px!important;}
+/* Composer B6: clearer hierarchy, evenly sized actions, no cramped giant blue pill. */
+html:not(.gpt-agent-mode):not(.gpt-modal-open) #root>div.fixed.bottom-4,
+html:not(.gpt-agent-mode):not(.gpt-modal-open) #root>div.fixed.sm\:bottom-6{width:min(1240px,calc(100vw - 56px))!important;max-width:min(1240px,calc(100vw - 56px))!important;}
+html:not(.gpt-agent-mode) #root>div.fixed.bottom-4>div,
+html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6>div{padding:14px!important;border-radius:28px!important;}
+html:not(.gpt-agent-mode) #root>div.fixed.bottom-4 .mt-3,
+html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6 .mt-3{margin-top:12px!important;padding-top:12px!important;}
+html:not(.gpt-agent-mode) #root>div.fixed.bottom-4 .mt-3>div.hidden.sm\:flex,
+html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6 .mt-3>div.hidden.sm\:flex{gap:14px!important;align-items:end!important;}
+html:not(.gpt-agent-mode) #root>div.fixed.bottom-4 .grid.grid-cols-6,
+html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6 .grid.grid-cols-6{grid-template-columns:minmax(118px,.92fr) minmax(118px,.88fr) minmax(116px,.86fr) minmax(132px,.98fr) minmax(116px,.84fr) minmax(118px,.84fr)!important;gap:9px!important;}
+html:not(.gpt-agent-mode) #root>div.fixed.bottom-4 .mt-3 label,
+html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6 .mt-3 label{gap:6px!important;}
+html:not(.gpt-agent-mode) #root>div.fixed.bottom-4 .mt-3 input,
+html:not(.gpt-agent-mode) #root>div.fixed.bottom-4 .mt-3 select,
+html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6 .mt-3 input,
+html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6 .mt-3 select{height:42px!important;border-radius:15px!important;background:rgba(248,250,252,.74)!important;}
+html.dark:not(.gpt-agent-mode) #root>div.fixed.bottom-4 .mt-3 input,
+html.dark:not(.gpt-agent-mode) #root>div.fixed.bottom-4 .mt-3 select,
+html.dark:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6 .mt-3 input,
+html.dark:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6 .mt-3 select{background:rgba(255,255,255,.07)!important;}
+html:not(.gpt-agent-mode) #root>div.fixed.bottom-4 .mt-3 button,
+html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6 .mt-3 button{width:48px!important;height:48px!important;min-width:48px!important;min-height:48px!important;border-radius:17px!important;}
+html:not(.gpt-agent-mode) #root>div.fixed.bottom-4 .mt-3 button:last-child,
+html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6 .mt-3 button:last-child{background:linear-gradient(135deg,#0a84ff,#5e5ce6)!important;color:#fff!important;box-shadow:0 14px 28px rgba(10,132,255,.28)!important;}
+@media(min-width:1360px){main.pb-48 [data-task-grid-root]>.grid.grid-cols-1{grid-template-columns:repeat(3,minmax(0,1fr))!important;}}
+@media(min-width:1760px){main.pb-48 [data-task-grid-root]>.grid.grid-cols-1{grid-template-columns:repeat(4,minmax(0,1fr))!important;}}
+@media(max-width:1120px){:root{--pd-b6-card-min:300px;--pd-b6-gap:16px;}main.pb-48 .safe-area-x.max-w-7xl{padding-left:18px!important;padding-right:18px!important;}html:not(.gpt-agent-mode) #root>div.fixed.bottom-4 .grid.grid-cols-6,html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6 .grid.grid-cols-6{grid-template-columns:repeat(3,minmax(0,1fr))!important;}}
+@media(max-width:680px){:root{--pd-b6-card-min:min(100%,320px);--pd-b6-gap:14px;}main.pb-48 .safe-area-x.max-w-7xl{padding-left:12px!important;padding-right:12px!important;}main.pb-48 [data-task-grid-root]>.grid.grid-cols-1{grid-template-columns:1fr!important;padding-bottom:230px!important;}html:not(.gpt-agent-mode) #root>div.fixed.bottom-4,html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6{width:calc(100vw - 18px)!important;max-width:calc(100vw - 18px)!important;}html:not(.gpt-agent-mode) #root>div.fixed.bottom-4 .mt-3 button,html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6 .mt-3 button{width:44px!important;height:44px!important;min-width:44px!important;min-height:44px!important;}}
