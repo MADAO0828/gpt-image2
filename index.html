@@ -14,9 +14,9 @@
 <link rel="apple-touch-icon" href="./pwa-icon.svg" />
 <link rel="icon" href="./pwa-icon.svg" type="image/svg+xml" />
 <title>AI 工作台</title>
-<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=macos-b11-20260622" crossorigin="anonymous">
-<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=macos-b11-20260622" as="style" crossorigin="anonymous">
-<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=macos-b11-20260622">
+<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=macos-b15-20260622" crossorigin="anonymous">
+<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=macos-b15-20260622" as="style" crossorigin="anonymous">
+<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=macos-b15-20260622">
 <style>
 *{box-sizing:border-box}
 
@@ -144,7 +144,7 @@ html.dark #fast-workbench-skeleton{background:#000;color:#fff}html.dark #fast-wo
 </style>
 <script>
 (function(){
-  var shellVersion='gpt2-shell-20260622-macos-b11';
+  var shellVersion='gpt2-shell-20260622-macos-b15';
   try{
     var last=localStorage.getItem('gpt-image2-shell-version');
     if(last!==shellVersion){
@@ -166,7 +166,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
   var storeOwnerKey = 'gpt-image-playground:owner';
   var storeUserPrefix = 'gpt-image-playground:user:';
   var themeKey = 'gpt-image2-theme';
-  var assetVersion = 'gpt2-shell-20260622-macos-b11';
+  var assetVersion = 'gpt2-shell-20260622-macos-b15';
   function installDomOwnershipGuard(){
     try{
       if(window.__gptImageDomOwnershipGuardInstalled||!window.Node||!Node.prototype)return;
@@ -455,7 +455,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
         clearInterval(timer);
         hideLoading();
         hideFastBootSkeleton();
-        setTimeout(function(){watchWorkbenchSettings();watchSiteNavDock();installPromptRepoWheel();installModalChromeGuard();installAgentGuard();installAgentNavConflictFix();installAgentCurrentSessionBox();installAgentInputModePolish();installRunningTaskNavigationGuard();},300);
+        setTimeout(function(){watchWorkbenchSettings();watchSiteNavDock();installPromptRepoWheel();installModalChromeGuard();installAgentGuard();installAgentNavConflictFix();installAgentCurrentSessionBox();installAgentInputModePolish();installRunningTaskNavigationGuard();removeUpstreamBrandingAndUpdates();},300);
       } else if(!mounted&&Date.now()-started>20000){
         clearInterval(timer);
         showLoadError('\u4e3b\u7a0b\u5e8f\u542f\u52a8\u8d85\u65f6\uff1a\u4e3b\u811a\u672c\u5df2\u8bf7\u6c42\uff0c\u4f46\u9875\u9762\u6839\u8282\u70b9\u6ca1\u6709\u6210\u529f\u6302\u8f7d\u3002\u8bf7\u5237\u65b0\u91cd\u8bd5\uff0c\u6216\u8fdb\u5165\u540e\u53f0\u68c0\u67e5\u5f53\u524d\u7528\u6237\u914d\u7f6e\u3002');
@@ -951,9 +951,11 @@ if(!('noModule' in HTMLScriptElement.prototype)){
           sessionW=Math.max(132,Math.min(200,(box.getBoundingClientRect().width||180)));
         }
         var navReserve=560;
-        var minLeft=sessionW?sessionLeft+sessionW+18:Math.max((titleRect?titleRect.right:260)+90,Math.round(vw*.36));
+        var centeredLeft=Math.round((vw-modeW)/2);
+        var minLeft=sessionW?Math.min(centeredLeft,sessionLeft+sessionW+18):centeredLeft;
         var maxLeft=Math.max(minLeft,Math.round(vw-navReserve-modeW));
-        var targetLeft=Math.min(maxLeft,Math.max(minLeft,Math.round(vw*(sessionW?0.42:0.46))));
+        var targetLeft=centeredLeft;
+        if(sessionW&&targetLeft<sessionLeft+sessionW+18)targetLeft=Math.min(maxLeft,sessionLeft+sessionW+18);
         var targetTop=Math.round(header.top+(header.height-(mr.height||48))/2);
         modeGroup.style.position='fixed';
         modeGroup.style.left=targetLeft+'px';
@@ -972,6 +974,23 @@ if(!('noModule' in HTMLScriptElement.prototype)){
         modeGroup.style.margin='';
         modeGroup.style.zIndex='';
         modeGroup.style.transform='';
+      }
+      if(modeGroup&&mode&&vw>900){
+        try{
+          var forcedModeW=Math.max(160,Math.round(mode.rect.width||190));
+          modeGroup.style.setProperty('position','fixed','important');
+          modeGroup.style.setProperty('left','50%','important');
+          modeGroup.style.setProperty('transform','translateX(-50%)','important');
+          modeGroup.style.setProperty('right','auto','important');
+          modeGroup.style.setProperty('margin','0','important');
+          modeGroup.style.setProperty('z-index','90','important');
+          if(header){
+            var forcedTop=Math.round(header.top+(header.height-(mode.rect.height||42))/2);
+            modeGroup.style.setProperty('top',Math.max(6,forcedTop)+'px','important');
+          }
+          modeLeftOverride=Math.round((vw-forcedModeW)/2);
+          modeRightOverride=Math.round((vw+forcedModeW)/2);
+        }catch(e){}
       }
       if(nav){
         nav.style.position='fixed'; nav.style.margin='0'; nav.style.pointerEvents='auto';
@@ -1016,6 +1035,13 @@ if(!('noModule' in HTMLScriptElement.prototype)){
         var rr=visibleRect(bar);
         if(!isAgent||!rr){controls.style.display='none';}
         else{
+          try{
+            bar.style.setProperty('width','min(1280px,calc(100vw - 56px))','important');
+            bar.style.setProperty('max-width','min(1280px,calc(100vw - 56px))','important');
+            bar.style.setProperty('left','50%','important');
+            bar.style.setProperty('transform','translateX(-50%)','important');
+            rr=visibleRect(bar)||rr;
+          }catch(e){}
           controls.style.display='flex';
           var cr=controls.getBoundingClientRect();
           var cLeft=Math.max(14,Math.round(rr.left+22));
@@ -1452,6 +1478,29 @@ function applyPendingPrompt(st, pendingPrompt){
       update();
     }catch(e){}
   }
+  function removeUpstreamBrandingAndUpdates(){
+    try{
+      function hasUpdateDialogWords(txt){
+        txt=String(txt||'');
+        return /CookSleep|GitHub|release|version/i.test(txt) ||
+          txt.indexOf('\u53d1\u73b0\u65b0\u7248\u672c')>=0 ||
+          txt.indexOf('\u66f4\u65b0\u65e5\u5fd7')>=0 ||
+          txt.indexOf('\u7248\u672c\u66f4\u65b0')>=0;
+      }
+      Array.prototype.forEach.call(document.querySelectorAll('#root header h1,#root header [data-brand],#root header a[href*="github"],#root header a[href*="release"]'),function(el){
+        var txt=String(el.textContent||'').trim();
+        if(/GPT Image Playground|CookSleep|GitHub|release|version/i.test(txt)||/github|release/i.test(String(el.getAttribute('href')||''))){
+          el.style.display='none'; el.setAttribute('aria-hidden','true');
+        }
+      });
+      Array.prototype.forEach.call(document.querySelectorAll('[role="dialog"],.modal'),function(el){
+        if(hasUpdateDialogWords(el.textContent||'')){
+          el.style.display='none'; el.setAttribute('aria-hidden','true');
+        }
+      });
+    }catch(e){}
+  }
+
   function installPromptRepoWheel(){
     var raf=0,targetPanel=null,velocity=0,lastTs=0;
     function normDelta(ev){var d=ev.deltaY||0;if(ev.deltaMode===1)d*=18;else if(ev.deltaMode===2)d*=Math.max(320,window.innerHeight*.82);return d;}
@@ -1502,7 +1551,7 @@ function applyPendingPrompt(st, pendingPrompt){
     var script=document.createElement('script');
     script.type='module';
     script.crossOrigin='anonymous';
-    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=macos-b11-20260622';
+    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=macos-b15-20260622';
     var settled=false;
     script.onload=function(){settled=true;setLoadingStage('\u4e3b\u7a0b\u5e8f\u811a\u672c\u5df2\u52a0\u8f7d\uff0c\u7b49\u5f85\u754c\u9762\u6302\u8f7d...');waitForAppReady();};
     script.onerror=function(){settled=true;showLoadError('\u4e3b\u7a0b\u5e8f\u811a\u672c\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u6e05\u7a7a\u7f13\u5b58\u540e\u91cd\u8bd5\u3002');};
@@ -1585,7 +1634,7 @@ function applyPendingPrompt(st, pendingPrompt){
     // user-scoped local store, then hot-apply cloud settings when they arrive.
     showFastBootSkeleton();
     startWhenDomReady();
-    setLoadingStage('?????????&#27491;&#22312;&#25171;&#24320;&#24037;&#20316;&#21488;...');
+    setLoadingStage('???????...');
     return syncRuntimeConfig().catch(function(e){
       console.warn('[Shell] runtime config sync failed after fast boot',e);
       // Keep the already-mounted workbench visible. Missing API configuration is
@@ -1597,14 +1646,14 @@ function applyPendingPrompt(st, pendingPrompt){
   });
 })();
 </script>
-<link rel="stylesheet" href="/assets/macos-design.css?v=macos-b11-20260622"></head>
+<link rel="stylesheet" href="/assets/macos-design.css?v=macos-b15-20260622"></head>
 <body>
 <div id="loading-screen" class="loading-screen">
   <div class="spinner"></div>
   <p>&#21152;&#36733;&#20013;...</p>
   <p id="loading-stage" style="margin-top:8px;font-size:12px;color:#94a3b8">&#27491;&#22312;&#26657;&#39564;&#30331;&#24405;&#29366;&#24577;...</p>
 </div>
-<nav class="site-nav" data-docked="0" aria-label="site navigation">
+<nav id="workbenchSiteNav" class="site-nav" data-docked="1" aria-label="site navigation">
   <span class="account-chip" id="workbenchAccountInfo"><span class="account-role">&#29992;&#25143;</span><span class="account-name">&#39564;&#35777;&#20013;...</span></span>
   <span class="profile-switch-wrap"><select id="profileSwitch" class="profile-switch" aria-label="API profile"><option value="">&#37197;&#32622;</option></select></span>
   <span class="divider"></span>

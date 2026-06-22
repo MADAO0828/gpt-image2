@@ -366,3 +366,91 @@ html:not(.gpt-agent-mode) #root>div.fixed.bottom-4 [contenteditable="true"],
 html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6 [contenteditable="true"]{min-height:60px!important;}
 @media(max-width:900px){.nav,.nav-actions{width:calc(100vw - 20px)!important;margin-top:8px!important;overflow-x:auto!important;justify-content:flex-start!important}.nav::before,.nav-actions::before{display:none}.ct,body:has(.c) .c{padding-left:14px!important;padding-right:14px!important}.title{min-height:0!important}.stats{grid-template-columns:1fr!important}body:has(.c) .grid{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:14px!important}body:has(.c) .card-img{height:118px!important}}
 @media(max-width:520px){body:has(.c) .grid{grid-template-columns:1fr!important}.tabs{overflow-x:auto!important}.tabs .tab{white-space:nowrap!important}.sec{padding:18px!important}.title h1{font-size:30px!important}}
+
+/* product-design B12 - integrated nav, aligned composer, refined size controls */
+:root{--b12-nav-h:58px;--b12-top-gap:12px;--b12-composer-w:min(1280px,calc(100vw - 56px));}
+/* Workbench: fuse custom nav with upstream top bar and remove upstream product title/author chrome. */
+#root header.safe-area-top{height:72px!important;background:var(--pd-glass-strong)!important;border-bottom:1px solid var(--pd-hairline)!important;box-shadow:0 12px 34px rgba(15,23,42,.08)!important;backdrop-filter:saturate(180%) blur(24px)!important;-webkit-backdrop-filter:saturate(180%) blur(24px)!important;}
+#root header.safe-area-top h1{opacity:0!important;visibility:hidden!important;pointer-events:none!important;max-width:0!important;width:0!important;overflow:hidden!important;}
+body>#workbenchSiteNav.site-nav{top:12px!important;right:18px!important;height:48px!important;min-height:48px!important;border-radius:24px!important;padding:5px!important;box-shadow:0 12px 30px rgba(15,23,42,.10)!important;}
+body>#workbenchSiteNav.site-nav .account-chip{height:38px!important;border-radius:18px!important;}
+.site-nav .profile-switch{height:38px!important;border-radius:18px!important;}
+#root header.safe-area-top .hidden.sm\:flex.items-center.gap-1{left:50%!important;transform:translateX(-50%)!important;top:15px!important;margin:0!important;z-index:88!important;border-radius:18px!important;}
+/* In Agent mode, keep session/history/new chat on the left, mode switch centered. */
+html.gpt-agent-mode #agentShellHost .agent-current-session-box{left:116px!important;top:15px!important;height:42px!important;max-width:240px!important;width:220px!important;border-radius:18px!important;}
+html.gpt-agent-mode #root header.safe-area-top button:has(svg),html.gpt-agent-mode #root header.safe-area-top a:has(svg){border-radius:16px!important;}
+/* Composer: all fields and buttons share a baseline and height. */
+html:not(.gpt-agent-mode) #root>div.fixed.bottom-4,html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6,html.gpt-agent-mode .agent-chat-inputbar{width:var(--b12-composer-w)!important;max-width:var(--b12-composer-w)!important;}
+html:not(.gpt-agent-mode) #root>div.fixed.bottom-4 .mt-3>div.hidden.sm\:flex,html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6 .mt-3>div.hidden.sm\:flex{display:grid!important;grid-template-columns:minmax(132px,.82fr) minmax(132px,.9fr) minmax(132px,.9fr) minmax(150px,1fr) minmax(132px,.88fr) minmax(132px,.84fr) auto!important;align-items:end!important;gap:12px!important;}
+html:not(.gpt-agent-mode) #root>div.fixed.bottom-4 .grid.grid-cols-6,html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6 .grid.grid-cols-6{display:contents!important;}
+html:not(.gpt-agent-mode) #root>div.fixed.bottom-4 .mt-3 label,html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6 .mt-3 label{height:66px!important;display:flex!important;flex-direction:column!important;justify-content:flex-end!important;gap:6px!important;}
+html:not(.gpt-agent-mode) #root>div.fixed.bottom-4 .mt-3 input,html:not(.gpt-agent-mode) #root>div.fixed.bottom-4 .mt-3 select,html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6 .mt-3 input,html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6 .mt-3 select{height:44px!important;min-height:44px!important;border-radius:18px!important;padding:0 14px!important;}
+html:not(.gpt-agent-mode) #root>div.fixed.bottom-4 .mt-3 .flex.gap-2,html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6 .mt-3 .flex.gap-2{height:66px!important;align-items:flex-end!important;gap:10px!important;}
+html:not(.gpt-agent-mode) #root>div.fixed.bottom-4 .mt-3 button,html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6 .mt-3 button{width:52px!important;height:52px!important;min-width:52px!important;min-height:52px!important;border-radius:18px!important;}
+/* Size control: no more blue blob; use elegant compact readout. */
+html:not(.gpt-agent-mode) #root>div.fixed.bottom-4 .mt-3 label:first-child button,html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6 .mt-3 label:first-child button{width:100%!important;height:44px!important;min-width:0!important;min-height:44px!important;border-radius:18px!important;background:linear-gradient(135deg,color-mix(in srgb,var(--pd-blue) 12%,var(--pd-field)),color-mix(in srgb,var(--pd-blue) 5%,var(--pd-field)))!important;color:var(--pd-blue)!important;border:1px solid color-mix(in srgb,var(--pd-blue) 26%,var(--pd-line))!important;box-shadow:none!important;font-weight:900!important;justify-content:center!important;overflow:hidden!important;text-overflow:ellipsis!important;white-space:nowrap!important;font-size:14px!important;}
+html:not(.gpt-agent-mode) #root>div.fixed.bottom-4 .mt-3 label:first-child button *{max-width:100%!important;overflow:hidden!important;text-overflow:ellipsis!important;}
+/* Size modal redesign: compact segmented tiers + usable ratio grid. */
+#root div.fixed.inset-0:has(button){--size-card:rgba(255,255,255,.78)}
+#root div.fixed.inset-0 button{border-radius:18px!important;}
+#root div.fixed.inset-0 section:has(button){margin-top:18px!important;}
+#root div.fixed.inset-0 section .grid.grid-cols-3{grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:10px!important;}
+#root div.fixed.inset-0 section .grid.grid-cols-3 button{height:48px!important;padding:0!important;font-weight:900!important;}
+#root div.fixed.inset-0 section .grid.grid-cols-4{grid-template-columns:repeat(4,minmax(92px,1fr))!important;gap:10px!important;}
+#root div.fixed.inset-0 section .grid.grid-cols-4 button{height:76px!important;min-height:76px!important;padding:10px!important;}
+#root div.fixed.inset-0 [class*="max-h"]{scrollbar-width:thin!important;}
+/* Agent composer: same width as gallery, controls inside from first frame. */
+html.gpt-agent-mode .agent-chat-inputbar>div{border-radius:28px!important;padding:14px!important;}
+html.gpt-agent-mode .agent-chat-inputbar .mt-3{display:grid!important;grid-template-columns:auto 1fr auto!important;align-items:center!important;gap:10px!important;min-height:54px!important;}
+html.gpt-agent-mode .agent-chat-inputbar .mt-3>div.hidden.sm\:flex{grid-column:3!important;}
+html.gpt-agent-mode #agentShellHost .agent-extra-controls{position:fixed!important;left:calc(50% - min(1280px,calc(100vw - 56px))/2 + 18px)!important;bottom:calc(28px + env(safe-area-inset-bottom))!important;z-index:95!important;}
+@media(max-width:980px){body>#workbenchSiteNav.site-nav{right:8px!important;max-width:calc(100vw - 16px)!important}html:not(.gpt-agent-mode) #root>div.fixed.bottom-4 .mt-3>div.hidden.sm\:flex,html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6 .mt-3>div.hidden.sm\:flex{grid-template-columns:repeat(3,1fr)!important}.site-nav .nav-text{display:none!important}}
+
+/* B12 page-specific structural polish */
+.prompts-unified.h{display:grid!important;grid-template-columns:auto minmax(320px,1fr) auto!important;align-items:center!important;gap:18px!important;min-height:86px!important;padding:14px 28px!important;}
+.prompts-unified .hl{white-space:nowrap!important;}
+.prompts-unified .top-srch{position:static!important;margin:0!important;top:auto!important;width:100%!important;}
+.prompts-unified .top-srch input{margin:0!important;height:50px!important;border-radius:22px!important;}
+.prompts-unified .nav-actions{width:auto!important;margin:0!important;justify-content:flex-end!important;min-height:52px!important;}
+.prompts-unified .nav-actions:before{display:none!important;}
+body:has(.prompts-unified) .c{padding-top:22px!important;}
+.admin-hero{display:grid!important;grid-template-columns:minmax(320px,1fr) auto!important;align-items:center!important;gap:22px!important;margin:10px 0 22px!important;padding:26px 28px!important;border-radius:32px!important;background:linear-gradient(135deg,var(--pd-glass-strong),color-mix(in srgb,var(--pd-glass) 78%,transparent))!important;border:1px solid var(--pd-hairline)!important;box-shadow:0 24px 70px rgba(15,23,42,.12),inset 0 1px 0 rgba(255,255,255,.42)!important;backdrop-filter:saturate(180%) blur(26px)!important;-webkit-backdrop-filter:saturate(180%) blur(26px)!important;}
+.admin-hero .title{margin:0!important;padding:0!important;min-height:0!important;background:transparent!important;border:0!important;box-shadow:none!important;}
+.admin-hero .nav{width:auto!important;margin:0!important;min-width:520px!important;justify-content:flex-end!important;background:color-mix(in srgb,var(--mac-surface) 42%,transparent)!important;box-shadow:none!important;}
+.admin-hero .nav:before{display:none!important;}
+@media(max-width:980px){.prompts-unified.h,.admin-hero{grid-template-columns:1fr!important}.prompts-unified .nav-actions,.admin-hero .nav{width:100%!important;min-width:0!important;justify-content:flex-start!important;overflow-x:auto!important}}
+
+
+/* product-design B15 - unified top bars, agent composer containment, refined modal density */
+:root{--b15-header-max:1540px;--b15-composer-w:min(1280px,calc(100vw - 56px));}
+body>#workbenchSiteNav.site-nav{display:flex!important;align-items:center!important;gap:6px!important;width:auto!important;max-width:min(620px,calc(50vw - 150px))!important;min-width:360px!important;overflow:hidden!important;background:color-mix(in srgb,var(--pd-glass-strong) 92%,transparent)!important;border:1px solid var(--pd-hairline)!important;box-shadow:0 10px 28px rgba(15,23,42,.10),inset 0 1px 0 rgba(255,255,255,.52)!important;backdrop-filter:saturate(180%) blur(24px)!important;-webkit-backdrop-filter:saturate(180%) blur(24px)!important;}
+body>#workbenchSiteNav.site-nav[data-compact="1"]{min-width:300px!important;max-width:min(420px,calc(50vw - 120px))!important;}
+body>#workbenchSiteNav.site-nav .account-chip{flex:1 1 auto!important;min-width:104px!important;}
+body>#workbenchSiteNav.site-nav .profile-switch-wrap{flex:0 1 168px!important;min-width:116px!important;}
+body>#workbenchSiteNav.site-nav .profile-switch{width:100%!important;max-width:168px!important;}
+body>#workbenchSiteNav.site-nav a{flex:0 0 auto!important;}
+@media(max-width:1120px){body>#workbenchSiteNav.site-nav{min-width:0!important;max-width:calc(100vw - 18px)!important}.site-nav .nav-text,body>#workbenchSiteNav.site-nav .divider{display:none!important}}
+html.gpt-agent-mode .agent-chat-inputbar{width:var(--b15-composer-w)!important;max-width:var(--b15-composer-w)!important;left:50%!important;transform:translateX(-50%)!important;}
+html.gpt-agent-mode #agentShellHost .agent-extra-controls{left:calc(50% - var(--b15-composer-w)/2 + 22px)!important;bottom:calc(32px + env(safe-area-inset-bottom))!important;height:38px!important;z-index:96!important;}
+html.gpt-agent-mode .agent-chat-inputbar .prompt-placeholder[data-shell-placeholder="agent"]{padding-left:214px!important;}
+html.gpt-agent-mode .agent-chat-inputbar .mt-3{min-height:54px!important;}
+html.gpt-agent-mode #agentShellHost .agent-current-session-box{left:18px!important;top:15px!important;width:220px!important;max-width:220px!important;}
+#root header.safe-area-top .hidden.sm\:flex.items-center.gap-1{left:50%!important;transform:translateX(-50%)!important;}
+.admin-hero{grid-template-columns:minmax(280px,1fr) minmax(520px,auto)!important;}
+.admin-hero .nav{min-width:520px!important;display:flex!important;align-items:center!important;}
+.admin-hero .nav .label{margin-right:auto!important;max-width:230px!important;height:36px!important;display:inline-flex!important;align-items:center!important;border-radius:999px!important;background:color-mix(in srgb,var(--mac-blue) 8%,transparent)!important;padding:0 12px!important;color:var(--mac-text)!important;}
+@media(max-width:980px){.admin-hero{grid-template-columns:1fr!important}.admin-hero .nav{min-width:0!important;width:100%!important}.admin-hero .nav .label{max-width:180px!important}}
+.prompts-unified.h{position:sticky!important;top:0!important;z-index:30!important;border-radius:0 0 28px 28px!important;}
+.prompts-unified .hl{font-size:22px!important;font-weight:950!important;letter-spacing:-.03em!important;}
+body:has(.prompts-unified) .srch.top-srch input{box-shadow:inset 0 1px 0 rgba(255,255,255,.62),0 8px 24px rgba(15,23,42,.05)!important;}
+body:has(.prompts-unified) .card-img img[src]{background:transparent!important;}
+html:not(.gpt-agent-mode) #root>div.fixed.bottom-4 .mt-3>div.hidden.sm\:flex>*,
+html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6 .mt-3>div.hidden.sm\:flex>*{align-self:end!important;}
+html:not(.gpt-agent-mode) #root>div.fixed.bottom-4 .mt-3 label span,
+html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6 .mt-3 label span{line-height:16px!important;min-height:16px!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;}
+#root div.fixed.inset-0>div{max-height:min(760px,calc(100vh - 48px))!important;border-radius:30px!important;}
+#root div.fixed.inset-0 section{margin-top:14px!important;}
+#root div.fixed.inset-0 section .grid.grid-cols-3 button{height:46px!important;min-height:46px!important;}
+#root div.fixed.inset-0 section .grid.grid-cols-4 button{height:62px!important;min-height:62px!important;padding:8px!important;}
+#root div.fixed.inset-0 [class*="space-y"]{gap:12px!important;}
+@media(max-width:760px){.prompts-unified.h{grid-template-columns:1fr!important}.prompts-unified .hl{font-size:20px!important}.prompts-unified .nav-actions{justify-content:flex-start!important}html.gpt-agent-mode .agent-chat-inputbar .prompt-placeholder[data-shell-placeholder="agent"]{padding-left:0!important}html.gpt-agent-mode #agentShellHost .agent-extra-controls{left:22px!important;bottom:92px!important}}

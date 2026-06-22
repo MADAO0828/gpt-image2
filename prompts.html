@@ -128,16 +128,15 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
   });
 })();
 </script>
-<link rel="stylesheet" href="/assets/macos-design.css?v=macos-b11-20260622"></head><body>
-<header class="h"><span class="hl">📚 提示词仓库</span>
-<div class="nav-actions"><span class="acct" id="promptAccountInfo">&#39564;&#35777;&#20013;...</span>
+<link rel="stylesheet" href="/assets/macos-design.css?v=macos-b15-20260622"></head><body>
+<header class="h prompts-unified"><span class="hl">📚 提示词仓库</span><div class="srch top-srch"><input id="s" placeholder="🔍 搜索提示词..." /></div><div class="nav-actions"><span class="acct" id="promptAccountInfo">&#39564;&#35777;&#20013;...</span>
   <button onclick="toggleTheme()" id="theme-toggle" class="b" title="&#20999;&#25442;&#20027;&#39064;"><span class="nav-ico">&#128187;</span><span class="nav-text">&#20027;&#39064;</span></button><script>window.__applyTheme();</script>
   <a href="/admin" class="b" title="&#21518;&#21488;"><span class="nav-ico">&#9881;</span><span class="nav-text">&#21518;&#21488;</span></a>
   <a href="/" class="b primary" title="&#36820;&#22238;&#24037;&#20316;&#21488;"><span class="nav-ico">&#127956;</span><span class="nav-text">&#24037;&#20316;&#21488;</span></a>
 </div>
 </header>
 <div class="c">
-<div class="srch"><input id="s" placeholder="🔍 搜索提示词..." /></div>
+
 <div class="cats" id="cats"><div class="ld">加载分类...</div></div>
 <div class="info"><span id="info"></span><span id="pi"></span></div>
 <div class="grid" id="grid"></div>
@@ -154,7 +153,7 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 </div></div></div>
 <div class="overlay" id="imgViewer" style="cursor:zoom-out"><img id="vi" style="max-width:95%;max-height:95%;object-fit:contain;border-radius:8px" /></div>
 <script>
-var ITEMS_PER_PAGE = 30;
+var ITEMS_PER_PAGE = 60;
 var allData = [], filteredData = [], currentCat = "all", currentPage = 1, totalItems = 0, currentPrompt = -1;
 var useServerMode = true;
 function escHtml(s){if(!s)return"";return(""+s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}
@@ -172,7 +171,7 @@ function ensureImageObserver(){
       if(src){img.src=src;img.removeAttribute('data-src')}
       imageObserver.unobserve(img);
     });
-  },{rootMargin:'2400px 0px',threshold:0.01});
+  },{rootMargin:'5200px 0px',threshold:0.01});
   return imageObserver;
 }
 function observePromptImages(root){
@@ -251,7 +250,7 @@ function renderItems(rows, startIdx){
     card.className="card";card.style.animationDelay=Math.min(i*12,240)+'ms';card.setAttribute("data-idx",idx);
     card.onclick=function(){openModal(parseInt(this.getAttribute("data-idx")))};
     var html="";
-    if(p.i)html+='<div class="card-img"><img data-src="'+escAttr(imgProxyUrl(p.i))+'" referrerpolicy="no-referrer" alt="" loading="lazy" decoding="async" fetchpriority="low" onerror="this.style.display=\'none\'"></div>';
+    if(p.i){var src=escAttr(imgProxyUrl(p.i));var eager=idx<24;html+='<div class="card-img"><img '+(eager?'src="'+src+'"':'data-src="'+src+'"')+' referrerpolicy="no-referrer" alt="" loading="'+(eager?'eager':'lazy')+'" decoding="async" fetchpriority="'+(eager?'high':'low')+'" onerror="this.style.display=\'none\'"></div>';}
     html+='<div class="card-body"><div class="card-cat">'+escHtml(p.c)+'</div><div class="card-t">'+escHtml(p.t)+'</div><div class="card-p">'+escHtml(trunc(p.p,60))+'</div></div>';
     card.innerHTML=html;grid.appendChild(card);observePromptImages(card);
   }
@@ -263,7 +262,7 @@ function updateInfo(){
 }
 function reloadList(){filteredData=[];document.getElementById("grid").innerHTML="";loadPage(1,true)}
 document.getElementById("lb").addEventListener("click",function(){loadPage(currentPage+1,false)});
-var sentinelObserver=new IntersectionObserver(function(entries){if(entries[0].isIntersecting&&filteredData.length<totalItems){loadPage(currentPage+1,false)}},{rootMargin:'1800px 0px'});setTimeout(function(){var s=document.getElementById('loadSentinel');if(s)sentinelObserver.observe(s)},1000);
+var sentinelObserver=new IntersectionObserver(function(entries){if(entries[0].isIntersecting&&filteredData.length<totalItems){loadPage(currentPage+1,false)}},{rootMargin:'5200px 0px'});setTimeout(function(){var s=document.getElementById('loadSentinel');if(s)sentinelObserver.observe(s)},1000);
 document.getElementById("cats").addEventListener("click",function(e){var t=e.target;if(!t.classList.contains("cat"))return;currentCat=t.getAttribute("data-c");Array.from(document.querySelectorAll(".cat")).forEach(function(el){el.classList.remove("on")});t.classList.add("on");reloadList()});
 var timer=null;document.getElementById("s").addEventListener("input",function(){clearTimeout(timer);timer=setTimeout(reloadList,250)});
 function openModal(i){if(!filteredData[i])return;currentPrompt=i;var p=filteredData[i];document.getElementById("mc2").textContent=p.c||"";document.getElementById("mt").textContent=p.t||"";document.getElementById("mp").textContent=p.p||"";var img=document.getElementById("mi");if(p.i){img.src=imgProxyUrl(p.i);img.setAttribute("data-original-src",p.i);img.style.display="block"}else{img.style.display="none"}document.getElementById("modal").classList.add("show")}
