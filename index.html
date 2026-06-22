@@ -14,9 +14,9 @@
 <link rel="apple-touch-icon" href="./pwa-icon.svg" />
 <link rel="icon" href="./pwa-icon.svg" type="image/svg+xml" />
 <title>AI 工作台</title>
-<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=stability-a5-20260622" crossorigin="anonymous">
-<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=stability-a5-20260622" as="style" crossorigin="anonymous">
-<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=stability-a5-20260622">
+<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=stability-a6-20260622" crossorigin="anonymous">
+<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=stability-a6-20260622" as="style" crossorigin="anonymous">
+<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=stability-a6-20260622">
 <style>
 *{box-sizing:border-box}
 
@@ -57,7 +57,7 @@ html.dark body,html.dark #root,html.dark [data-home-main]{background:#000!import
 #root header.safe-area-top .safe-header-inner>.flex-1 button.text-sm.font-semibold.truncate{display:none!important}
 /* Hide upstream centered conversation title block that can overlay mode buttons */
 #root header.safe-area-top .safe-header-inner>div[class*="left-1/2"][class*="max-w-[30%]"]{display:none!important;pointer-events:none!important}
-.agent-current-session-box{display:none;align-items:center;gap:6px;min-width:150px;max-width:240px;height:34px;padding:0 12px;border:1px solid rgba(148,163,184,.35);border-radius:14px;background:rgba(15,23,42,.04);color:#111827;font-size:13px;line-height:1;transition:background .16s ease,border-color .16s ease,transform .12s ease}
+.agent-current-session-box{display:none;align-items:center;gap:6px;min-width:132px;max-width:200px;height:34px;padding:0 11px;border:1px solid rgba(148,163,184,.35);border-radius:14px;background:rgba(15,23,42,.04);color:#111827;font-size:13px;line-height:1;transition:background .16s ease,border-color .16s ease,transform .12s ease}
 .dark .agent-current-session-box{background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.12);color:#fff}
 .agent-current-session-box[data-visible="1"]{display:flex}
 .agent-current-session-box:hover{background:rgba(99,102,241,.10);border-color:rgba(99,102,241,.42);transform:translateY(-1px)}
@@ -66,7 +66,7 @@ html.dark body,html.dark #root,html.dark [data-home-main]{background:#000!import
 .agent-current-session-box .session-title{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700}
 .agent-current-session-box .session-edit{opacity:.72;font-size:14px}
 .agent-current-session-box input{width:100%;min-width:80px;border:0;outline:0;background:transparent;color:inherit;font:inherit;font-weight:700}
-@media(max-width:900px){.agent-current-session-box{max-width:160px;min-width:116px;padding:0 9px}.agent-current-session-box .session-label{display:none}}
+@media(max-width:900px){.agent-current-session-box{max-width:150px;min-width:112px;padding:0 9px}.agent-current-session-box .session-label{display:none}}
 html.gpt-agent-mode #root>div.fixed.bottom-4,
 html.gpt-agent-mode #root>div.fixed.sm\:bottom-6{max-width:56rem!important}
 html.gpt-agent-mode .agent-chat-inputbar{max-width:56rem!important}
@@ -125,7 +125,7 @@ body>#workbenchSiteNav.site-nav[data-compact="1"] .account-name{max-width:130px}
 </style>
 <script>
 (function(){
-  var shellVersion='gpt2-shell-20260622-session-user-a5';
+  var shellVersion='gpt2-shell-20260622-title-safe-a6';
   try{
     var last=localStorage.getItem('gpt-image2-shell-version');
     if(last!==shellVersion){
@@ -147,7 +147,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
   var storeOwnerKey = 'gpt-image-playground:owner';
   var storeUserPrefix = 'gpt-image-playground:user:';
   var themeKey = 'gpt-image2-theme';
-  var assetVersion = 'gpt2-shell-20260622-session-user-a5';
+  var assetVersion = 'gpt2-shell-20260622-title-safe-a6';
   function installDomOwnershipGuard(){
     try{
       if(window.__gptImageDomOwnershipGuardInstalled||!window.Node||!Node.prototype)return;
@@ -895,11 +895,22 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       return Math.round(base||((header&&header.left)||16)+260);
     }catch(e){return titleRect?Math.round(titleRect.right):260;}
   }
+  function workbenchTitleSafeRight(header,titleRect){
+    try{
+      var base=titleRect?Math.round(titleRect.right):0;
+      var left=titleRect?Math.round(titleRect.left):((header&&header.left)||16);
+      var byWidth=left+360;
+      var byHeader=((header&&header.left)||16)+430;
+      return Math.max(base+24,byWidth,byHeader);
+    }catch(e){return 430;}
+  }
   function positionShellChrome(){
     try{
       var mode=findWorkbenchModeButtons(), header=findWorkbenchHeaderRect(mode), nav=document.getElementById('workbenchSiteNav');
       var titleRect=findWorkbenchTitleRect(header);
       var leftChromeRight=findHeaderLeftChromeRight(mode,header,titleRect);
+      var titleSafeRight=workbenchTitleSafeRight(header,titleRect);
+      leftChromeRight=Math.max(leftChromeRight,titleSafeRight);
       var vw=Math.max(document.documentElement.clientWidth||0,window.innerWidth||0);
       var store=window.__gptImageStore, st=store&&store.getState&&store.getState();
       var isAgent=!!(st&&st.appMode==='agent');
@@ -908,10 +919,10 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       var modeGroup=findWorkbenchModeGroup(mode);
       if(modeGroup&&mode&&header&&vw>900){
         var mr=mode.rect, modeW=Math.max(160,Math.round(mr.width||190));
-        var sessionLeft=Math.round(leftChromeRight+14);
+        var sessionLeft=Math.round(titleSafeRight+14);
         var sessionW=0;
         if(isAgent&&box&&box.getAttribute('data-visible')==='1'){
-          sessionW=Math.max(160,Math.min(240,(box.getBoundingClientRect().width||220)));
+          sessionW=Math.max(132,Math.min(200,(box.getBoundingClientRect().width||180)));
         }
         var navReserve=560;
         var minLeft=sessionW?sessionLeft+sessionW+18:Math.max((titleRect?titleRect.right:260)+90,Math.round(vw*.36));
@@ -956,7 +967,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
         if(!isAgent||!mode){box.style.display='none';}
         else{
           var rightLimit=Math.max(0,(modeLeftOverride||mode.rect.left)-16);
-          var leftBase=Math.round(leftChromeRight+14);
+          var leftBase=Math.round(titleSafeRight+14);
           var room=rightLimit-leftBase;
           if(room<128){
             box.style.display='none';
@@ -964,7 +975,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
             box.style.display=box.getAttribute('data-visible')==='1'?'flex':'none';
             var br=box.getBoundingClientRect();
             var btop=Math.round(mode.rect.top+(mode.rect.height-(br.height||32))/2);
-            var bw=Math.max(140,Math.min(240,room,br.width||220));
+            var bw=Math.max(132,Math.min(200,room,br.width||180));
             box.style.top=Math.max(6,btop)+'px';
             box.style.left=leftBase+'px';
             box.style.right='auto';
@@ -1428,7 +1439,7 @@ function applyPendingPrompt(st, pendingPrompt){
     var script=document.createElement('script');
     script.type='module';
     script.crossOrigin='anonymous';
-    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=stability-a5-20260622';
+    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=stability-a6-20260622';
     var settled=false;
     script.onload=function(){settled=true;setLoadingStage('\u4e3b\u7a0b\u5e8f\u811a\u672c\u5df2\u52a0\u8f7d\uff0c\u7b49\u5f85\u754c\u9762\u6302\u8f7d...');waitForAppReady();};
     script.onerror=function(){settled=true;showLoadError('\u4e3b\u7a0b\u5e8f\u811a\u672c\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u6e05\u7a7a\u7f13\u5b58\u540e\u91cd\u8bd5\u3002');};

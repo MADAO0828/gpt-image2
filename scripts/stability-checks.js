@@ -38,8 +38,10 @@ ok(indexHtml.includes('account-chip') && indexHtml.includes('workbenchAccountInf
   'Workbench username chip is missing or can still be hidden by compact nav mode.');
 ok(indexHtml.includes('account-role') && indexHtml.includes('account-name') && indexHtml.includes('data-role="admin"'),
   'Workbench account chip does not expose full username with role-specific styling.');
-ok(indexHtml.includes('sessionLeft+sessionW+18') && indexHtml.includes('leftChromeRight+14'),
+ok(indexHtml.includes('sessionLeft+sessionW+18') && indexHtml.includes('titleSafeRight+14'),
   'Agent current-session box is not anchored next to the left conversation controls.');
+ok(indexHtml.includes('workbenchTitleSafeRight') && indexHtml.includes('titleSafeRight+14') && indexHtml.includes('left+360'),
+  'Workbench top chrome lacks a hard title-safe boundary; session controls may overlap the title.');
 
 // Multi-image generation needs explicit retry/recovery markers so a single 5xx/524 slot does not permanently fail while siblings succeed.
 ok(bundle.includes('__gptImage2MultiImageRetry'),
