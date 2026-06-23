@@ -14,9 +14,9 @@
 <link rel="apple-touch-icon" href="./pwa-icon.svg" />
 <link rel="icon" href="./pwa-icon.svg" type="image/svg+xml" />
 <title>AI 工作台</title>
-<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=macos-b29-20260623" crossorigin="anonymous">
-<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=macos-b29-20260623" as="style" crossorigin="anonymous">
-<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=macos-b29-20260623">
+<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=macos-b31-20260623" crossorigin="anonymous">
+<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=macos-b31-20260623" as="style" crossorigin="anonymous">
+<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=macos-b31-20260623">
 <style>
 *{box-sizing:border-box}
 
@@ -157,31 +157,8 @@ html.dark #fast-workbench-skeleton{background:#000;color:#fff}html.dark #fast-wo
 </script>
 <script>
 if(!('noModule' in HTMLScriptElement.prototype)){
-  document.write('<body style="background:#111827;color:#cbd5e1;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;text-align:center;font-family:sans-serif"><div><h2 style="color:#60a5fa;margin-bottom:8px">&#27983;&#35272;&#22120;&#19981;&#20860;&#23481;</h2><p>&#35831;&#20351;&#29992;&#26368;&#26032;&#29256; Chrome&#12289;Edge &#25110; Safari</p></div><script>
-(function installWorkbenchPromptDetailParity(){
-  function esc(s){return String(s||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
-  function isPromptPortal(portal){return portal&&portal.matches&&portal.matches('body>div.fixed.inset-0')&&/提示词仓库/.test(portal.textContent||'')}
-  function imgSrcFromDetail(root){var img=root.querySelector('img[src]');return img?img.getAttribute('src')||'':''}
-  function usePromptText(text){try{sessionStorage.setItem('prompt_to_use',text||'');localStorage.setItem('gpt-image2-pending-prompt',text||'')}catch(e){} location.href='/'}
-  function copyText(text){if(navigator.clipboard&&navigator.clipboard.writeText)return navigator.clipboard.writeText(text);var ta=document.createElement('textarea');ta.value=text||'';ta.style.position='fixed';ta.style.left='-9999px';document.body.appendChild(ta);ta.focus();ta.select();try{document.execCommand('copy')}finally{ta.remove()}return Promise.resolve()}
-  function toast(msg){var d=document.createElement('div');d.className='ts';d.style.cssText='position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:280;padding:9px 16px;border-radius:999px;background:rgba(16,185,129,.12);color:#10b981;border:1px solid rgba(16,185,129,.28);font:800 13px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;backdrop-filter:blur(18px)';d.textContent=msg||'已复制';document.body.appendChild(d);setTimeout(function(){d.remove()},1500)}
-  function detailRoot(portal){var blocks=[].slice.call(portal.querySelectorAll('div')).filter(function(el){return /←\s*返回列表/.test(el.textContent||'')});return blocks.sort(function(a,b){return a.getBoundingClientRect().height-b.getBoundingClientRect().height}).pop()||null}
-  function readDetail(root){var cat='',title='',prompt='',img='';var nodes=[].slice.call(root.querySelectorAll('*')).filter(function(el){var r=el.getBoundingClientRect();return r.width>80&&r.height>12});var catEl=nodes.find(function(el){return /^\d{2}_/.test((el.textContent||'').trim())});var titleEl=nodes.find(function(el){return /font-bold|text-lg/.test(String(el.className))&&!(el.textContent||'').includes('返回列表')})||nodes.find(function(el){return el.tagName==='H4'});var pEl=nodes.find(function(el){return /whitespace-pre-wrap|leading-relaxed/.test(String(el.className))})||nodes.filter(function(el){return (el.textContent||'').length>120}).pop();cat=catEl?catEl.textContent.trim():'';title=titleEl?titleEl.textContent.trim():'';prompt=pEl?pEl.textContent.trim():'';img=imgSrcFromDetail(root);return{cat:cat,title:title,prompt:prompt,img:img}}
-  function render(portal, data){
-    var panel=[].slice.call(portal.children).find(function(el){return /提示词仓库/.test(el.textContent||'')&&el.getBoundingClientRect().width>300});
-    if(!panel||panel.dataset.detailParity==='1')return;
-    panel.dataset.detailParity='1';
-    panel.style.display='grid';panel.style.gridTemplateColumns='minmax(360px,1.15fr) minmax(350px,.85fr)';panel.style.overflow='hidden';
-    panel.innerHTML='<div class="prompt-detail-media">'+(data.img?'<img class="prompt-detail-img" src="'+esc(data.img)+'" referrerpolicy="no-referrer" alt="">':'<div class="prompt-detail-empty" style="display:block">此提示词暂无预览图</div>')+'</div><div class="prompt-detail-side"><div class="prompt-detail-head"><div><div class="prompt-detail-cat">'+esc(data.cat||'未分类')+'</div><div class="prompt-detail-title">'+esc(data.title||'未命名提示词')+'</div></div><button type="button" class="prompt-detail-close" aria-label="关闭">×</button></div><div class="prompt-detail-body"><div class="prompt-detail-p">'+esc(data.prompt||'')+'</div></div><div class="prompt-detail-actions"><button type="button" class="prompt-detail-copy">📋 复制提示词</button><button type="button" class="prompt-detail-use">✨ 使用此提示词</button></div></div>';
-    var close=panel.querySelector('.prompt-detail-close'); if(close)close.onclick=function(){portal.remove()};
-    var copy=panel.querySelector('.prompt-detail-copy'); if(copy)copy.onclick=function(){copyText(data.prompt).then(function(){toast('✅ 已复制')})};
-    var use=panel.querySelector('.prompt-detail-use'); if(use)use.onclick=function(){usePromptText(data.prompt)};
-    var img=panel.querySelector('.prompt-detail-img'); if(img)img.onclick=function(){var v=document.createElement('div');v.className='prompt-detail-viewer';v.innerHTML='<img src="'+esc(data.img)+'" referrerpolicy="no-referrer" alt="">';v.onclick=function(){v.remove()};portal.appendChild(v)};
-  }
-  function maybePatch(portal){if(!isPromptPortal(portal))return;setTimeout(function(){if(!portal.isConnected)return;var root=detailRoot(portal);if(!root||portal.querySelector('.prompt-detail-side'))return;var txt=root.textContent||'';if(!/←\s*返回列表/.test(txt)||!/使用此提示词/.test(txt))return;render(portal,readDetail(root))},60)}
-  new MutationObserver(function(ms){ms.forEach(function(m){[].slice.call(m.addedNodes).forEach(function(n){if(n.nodeType!==1)return;if(isPromptPortal(n))maybePatch(n);var p=n.querySelector&&n.querySelector('body>div.fixed.inset-0');if(p)maybePatch(p)})})}).observe(document.body,{childList:true,subtree:true});
-  document.addEventListener('click',function(){setTimeout(function(){[].slice.call(document.querySelectorAll('body>div.fixed.inset-0')).forEach(maybePatch)},80)},true);
-})();
+  document.write('<body style="background:#111827;color:#cbd5e1;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;text-align:center;font-family:sans-serif"><div><h2 style="color:#60a5fa;margin-bottom:8px">&#27983;&#35272;&#22120;&#19981;&#20860;&#23481;</h2><p>&#35831;&#20351;&#29992;&#26368;&#26032;&#29256; Chrome&#12289;Edge &#25110; Safari</p></div></body>');
+}
 </script>
 </body>');
 }
@@ -1913,7 +1890,7 @@ function applyPendingPrompt(st, pendingPrompt){
     var script=document.createElement('script');
     script.type='module';
     script.crossOrigin='anonymous';
-    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=macos-b29-20260623';
+    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=macos-b31-20260623';
     var settled=false;
     script.onload=function(){settled=true;setLoadingStage('\u4e3b\u7a0b\u5e8f\u811a\u672c\u5df2\u52a0\u8f7d\uff0c\u7b49\u5f85\u754c\u9762\u6302\u8f7d...');waitForAppReady();};
     script.onerror=function(){settled=true;showLoadError('\u4e3b\u7a0b\u5e8f\u811a\u672c\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u6e05\u7a7a\u7f13\u5b58\u540e\u91cd\u8bd5\u3002');};
@@ -2010,7 +1987,7 @@ function applyPendingPrompt(st, pendingPrompt){
   });
 })();
 </script>
-<link rel="stylesheet" href="/assets/macos-design.css?v=macos-b29-20260623"><link rel="stylesheet" href="/assets/shell-ui.css?v=shell-b29-20260623"></head>
+<link rel="stylesheet" href="/assets/macos-design.css?v=macos-b31-20260623"><link rel="stylesheet" href="/assets/shell-ui.css?v=shell-b31-20260623"></head>
 <body>
 <div id="loading-screen" class="loading-screen">
   <div class="spinner"></div>
@@ -2043,30 +2020,31 @@ function applyPendingPrompt(st, pendingPrompt){
 <div id="root"></div>
 
 <script>window.__applyTheme();</script>
+
 <script>
-(function installWorkbenchPromptDetailParity(){
+(function installWorkbenchPromptDetailLayer(){
   function esc(s){return String(s||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
   function isPromptPortal(portal){return portal&&portal.matches&&portal.matches('body>div.fixed.inset-0')&&/提示词仓库/.test(portal.textContent||'')}
+  function findPromptPortal(el){var p=el&&el.closest&&el.closest('body>div.fixed.inset-0');return isPromptPortal(p)?p:null}
+  function findPanel(portal){return [].slice.call(portal.children).find(function(el){return /提示词仓库/.test(el.textContent||'')&&el.getBoundingClientRect().width>300})||portal}
+  function isListCard(el,portal){var card=el&&el.closest&&el.closest('body>div.fixed.inset-0 .grid > div');if(!card||card.closest('.prompt-detail-layer'))return null;var r=card.getBoundingClientRect();return r.width>120&&r.height>100?card:null}
+  function detailRoot(portal){var blocks=[].slice.call(portal.querySelectorAll('div')).filter(function(el){return /←\s*返回列表/.test(el.textContent||'')&&/使用此提示词/.test(el.textContent||'')});return blocks.sort(function(a,b){return a.getBoundingClientRect().height-b.getBoundingClientRect().height}).pop()||null}
   function imgSrcFromDetail(root){var img=root.querySelector('img[src]');return img?img.getAttribute('src')||'':''}
+  function readDetail(root){var nodes=[].slice.call(root.querySelectorAll('*')).filter(function(el){var r=el.getBoundingClientRect();return r.width>60&&r.height>10});var catEl=nodes.find(function(el){return /^\d{2}_/.test((el.textContent||'').trim())});var titleEl=nodes.find(function(el){return el.tagName==='H4'&&!/提示词仓库|返回列表/.test(el.textContent||'')})||nodes.find(function(el){return /font-bold|text-lg/.test(String(el.className))&&!/提示词仓库|返回列表/.test(el.textContent||'')});var pEl=nodes.find(function(el){return /whitespace-pre-wrap|leading-relaxed/.test(String(el.className))})||nodes.filter(function(el){return (el.textContent||'').length>120}).pop();return{cat:catEl?catEl.textContent.trim():'未分类',title:titleEl?titleEl.textContent.trim():'未命名提示词',prompt:pEl?pEl.textContent.trim():'',img:imgSrcFromDetail(root)}}
   function usePromptText(text){try{sessionStorage.setItem('prompt_to_use',text||'');localStorage.setItem('gpt-image2-pending-prompt',text||'')}catch(e){} location.href='/'}
   function copyText(text){if(navigator.clipboard&&navigator.clipboard.writeText)return navigator.clipboard.writeText(text);var ta=document.createElement('textarea');ta.value=text||'';ta.style.position='fixed';ta.style.left='-9999px';document.body.appendChild(ta);ta.focus();ta.select();try{document.execCommand('copy')}finally{ta.remove()}return Promise.resolve()}
   function toast(msg){var d=document.createElement('div');d.className='ts';d.style.cssText='position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:280;padding:9px 16px;border-radius:999px;background:rgba(16,185,129,.12);color:#10b981;border:1px solid rgba(16,185,129,.28);font:800 13px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;backdrop-filter:blur(18px)';d.textContent=msg||'已复制';document.body.appendChild(d);setTimeout(function(){d.remove()},1500)}
-  function detailRoot(portal){var blocks=[].slice.call(portal.querySelectorAll('div')).filter(function(el){return /←\s*返回列表/.test(el.textContent||'')});return blocks.sort(function(a,b){return a.getBoundingClientRect().height-b.getBoundingClientRect().height}).pop()||null}
-  function readDetail(root){var cat='',title='',prompt='',img='';var nodes=[].slice.call(root.querySelectorAll('*')).filter(function(el){var r=el.getBoundingClientRect();return r.width>80&&r.height>12});var catEl=nodes.find(function(el){return /^\d{2}_/.test((el.textContent||'').trim())});var titleEl=nodes.find(function(el){return /font-bold|text-lg/.test(String(el.className))&&!(el.textContent||'').includes('返回列表')})||nodes.find(function(el){return el.tagName==='H4'});var pEl=nodes.find(function(el){return /whitespace-pre-wrap|leading-relaxed/.test(String(el.className))})||nodes.filter(function(el){return (el.textContent||'').length>120}).pop();cat=catEl?catEl.textContent.trim():'';title=titleEl?titleEl.textContent.trim():'';prompt=pEl?pEl.textContent.trim():'';img=imgSrcFromDetail(root);return{cat:cat,title:title,prompt:prompt,img:img}}
-  function render(portal, data){
-    var panel=[].slice.call(portal.children).find(function(el){return /提示词仓库/.test(el.textContent||'')&&el.getBoundingClientRect().width>300});
-    if(!panel||panel.dataset.detailParity==='1')return;
-    panel.dataset.detailParity='1';
-    panel.style.display='grid';panel.style.gridTemplateColumns='minmax(360px,1.15fr) minmax(350px,.85fr)';panel.style.overflow='hidden';
-    panel.innerHTML='<div class="prompt-detail-media">'+(data.img?'<img class="prompt-detail-img" src="'+esc(data.img)+'" referrerpolicy="no-referrer" alt="">':'<div class="prompt-detail-empty" style="display:block">此提示词暂无预览图</div>')+'</div><div class="prompt-detail-side"><div class="prompt-detail-head"><div><div class="prompt-detail-cat">'+esc(data.cat||'未分类')+'</div><div class="prompt-detail-title">'+esc(data.title||'未命名提示词')+'</div></div><button type="button" class="prompt-detail-close" aria-label="关闭">×</button></div><div class="prompt-detail-body"><div class="prompt-detail-p">'+esc(data.prompt||'')+'</div></div><div class="prompt-detail-actions"><button type="button" class="prompt-detail-copy">📋 复制提示词</button><button type="button" class="prompt-detail-use">✨ 使用此提示词</button></div></div>';
-    var close=panel.querySelector('.prompt-detail-close'); if(close)close.onclick=function(){portal.remove()};
-    var copy=panel.querySelector('.prompt-detail-copy'); if(copy)copy.onclick=function(){copyText(data.prompt).then(function(){toast('✅ 已复制')})};
-    var use=panel.querySelector('.prompt-detail-use'); if(use)use.onclick=function(){usePromptText(data.prompt)};
-    var img=panel.querySelector('.prompt-detail-img'); if(img)img.onclick=function(){var v=document.createElement('div');v.className='prompt-detail-viewer';v.innerHTML='<img src="'+esc(data.img)+'" referrerpolicy="no-referrer" alt="">';v.onclick=function(){v.remove()};portal.appendChild(v)};
+  function closeLayer(portal){var old=portal.querySelector('.prompt-detail-layer');if(old)old.remove()}
+  function renderLayer(portal,data){closeLayer(portal);var layer=document.createElement('div');layer.className='prompt-detail-layer';layer.innerHTML='<div class="prompt-detail-modal2"><div class="prompt-detail-media">'+(data.img?'<img class="prompt-detail-img" src="'+esc(data.img)+'" referrerpolicy="no-referrer" alt="">':'<div class="prompt-detail-empty" style="display:block">此提示词暂无预览图</div>')+'</div><div class="prompt-detail-side"><div class="prompt-detail-head"><div><div class="prompt-detail-cat">'+esc(data.cat||'未分类')+'</div><div class="prompt-detail-title">'+esc(data.title||'未命名提示词')+'</div></div><button type="button" class="prompt-detail-close" aria-label="返回仓库">×</button></div><div class="prompt-detail-body"><div class="prompt-detail-p">'+esc(data.prompt||'')+'</div></div><div class="prompt-detail-actions"><button type="button" class="prompt-detail-copy">📋 复制提示词</button><button type="button" class="prompt-detail-use">✨ 使用此提示词</button></div></div></div>';
+    layer.addEventListener('click',function(e){if(e.target===layer)closeLayer(portal)});
+    layer.querySelector('.prompt-detail-close').onclick=function(){closeLayer(portal)};
+    layer.querySelector('.prompt-detail-copy').onclick=function(){copyText(data.prompt).then(function(){toast('✅ 已复制')})};
+    layer.querySelector('.prompt-detail-use').onclick=function(){usePromptText(data.prompt)};
+    var img=layer.querySelector('.prompt-detail-img');if(img)img.onclick=function(){var v=document.createElement('div');v.className='prompt-detail-viewer';v.innerHTML='<img src="'+esc(data.img)+'" referrerpolicy="no-referrer" alt="">';v.onclick=function(){v.remove()};layer.appendChild(v)};
+    portal.appendChild(layer);
   }
-  function maybePatch(portal){if(!isPromptPortal(portal))return;setTimeout(function(){if(!portal.isConnected)return;var root=detailRoot(portal);if(!root||portal.querySelector('.prompt-detail-side'))return;var txt=root.textContent||'';if(!/←\s*返回列表/.test(txt)||!/使用此提示词/.test(txt))return;render(portal,readDetail(root))},60)}
-  new MutationObserver(function(ms){ms.forEach(function(m){[].slice.call(m.addedNodes).forEach(function(n){if(n.nodeType!==1)return;if(isPromptPortal(n))maybePatch(n);var p=n.querySelector&&n.querySelector('body>div.fixed.inset-0');if(p)maybePatch(p)})})}).observe(document.body,{childList:true,subtree:true});
-  document.addEventListener('click',function(){setTimeout(function(){[].slice.call(document.querySelectorAll('body>div.fixed.inset-0')).forEach(maybePatch)},80)},true);
+  function returnToList(portal){var btn=[].slice.call(portal.querySelectorAll('button,a')).find(function(el){return /返回列表/.test(el.textContent||'')});if(btn)btn.click()}
+  document.addEventListener('click',function(e){var portal=findPromptPortal(e.target);if(!portal||e.target.closest('.prompt-detail-layer'))return;var card=isListCard(e.target,portal);if(!card)return;var panel=findPanel(portal),scrollTop=panel.scrollTop;setTimeout(function(){var root=detailRoot(portal);if(!root)return;var data=readDetail(root);returnToList(portal);setTimeout(function(){try{panel.scrollTop=scrollTop}catch(_){} renderLayer(portal,data)},80)},120)},true);
 })();
 </script>
 </body>
