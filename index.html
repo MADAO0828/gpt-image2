@@ -14,9 +14,9 @@
 <link rel="apple-touch-icon" href="./pwa-icon.svg" />
 <link rel="icon" href="./pwa-icon.svg" type="image/svg+xml" />
 <title>AI 工作台</title>
-<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=macos-b18-20260623" crossorigin="anonymous">
-<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=macos-b18-20260623" as="style" crossorigin="anonymous">
-<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=macos-b18-20260623">
+<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=macos-b19-20260623" crossorigin="anonymous">
+<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=macos-b19-20260623" as="style" crossorigin="anonymous">
+<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=macos-b19-20260623">
 <style>
 *{box-sizing:border-box}
 
@@ -144,7 +144,7 @@ html.dark #fast-workbench-skeleton{background:#000;color:#fff}html.dark #fast-wo
 </style>
 <script>
 (function(){
-  var shellVersion='gpt2-shell-20260623-macos-b18';
+  var shellVersion='gpt2-shell-20260623-macos-b19';
   try{
     var last=localStorage.getItem('gpt-image2-shell-version');
     if(last!==shellVersion){
@@ -166,7 +166,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
   var storeOwnerKey = 'gpt-image-playground:owner';
   var storeUserPrefix = 'gpt-image-playground:user:';
   var themeKey = 'gpt-image2-theme';
-  var assetVersion = 'gpt2-shell-20260623-macos-b18';
+  var assetVersion = 'gpt2-shell-20260623-macos-b19';
   function installDomOwnershipGuard(){
     try{
       if(window.__gptImageDomOwnershipGuardInstalled||!window.Node||!Node.prototype)return;
@@ -1266,6 +1266,122 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       streamPartialImages:num(p.streamPartialImages!==undefined&&p.streamPartialImages!==null?p.streamPartialImages:fallback.streamPartialImages,1)
     };
   }
+  function compactProfileName(p){
+    try{return String((p&&(p.name||p.id))||'API').trim()||'API';}catch(e){return 'API';}
+  }
+  function compactProfileModel(p){
+    try{return String((p&&(p.model||p.defaultModel))||'').trim();}catch(e){return '';}
+  }
+  function ensureProfilePickerShell(sel){
+    try{
+      if(!sel)return null;
+      var wrap=sel.closest&&sel.closest('.profile-switch-wrap');
+      if(!wrap)return null;
+      wrap.classList.add('profile-picker-wrap');
+      sel.classList.add('profile-switch-native');
+      var btn=document.getElementById('profilePickerButton');
+      if(!btn){
+        btn=document.createElement('button');
+        btn.type='button';
+        btn.id='profilePickerButton';
+        btn.className='profile-picker-button';
+        btn.setAttribute('aria-haspopup','listbox');
+        btn.setAttribute('aria-expanded','false');
+        btn.innerHTML='<span class="profile-picker-dot"></span><span class="profile-picker-copy"><span class="profile-picker-name">API</span><span class="profile-picker-model"></span></span><span class="profile-picker-chevron">&#9662;</span>';
+        wrap.insertBefore(btn,sel);
+        btn.addEventListener('click',function(ev){ev.preventDefault();ev.stopPropagation();toggleProfilePicker();},true);
+      }
+      var panel=document.getElementById('profilePickerPanel');
+      if(!panel){
+        panel=document.createElement('div');
+        panel.id='profilePickerPanel';
+        panel.className='profile-picker-panel';
+        panel.setAttribute('role','listbox');
+        panel.setAttribute('aria-label','API profiles');
+        panel.style.display='none';
+        document.body.appendChild(panel);
+      }
+      if(!window.__profilePickerGlobalBound){
+        window.__profilePickerGlobalBound=true;
+        document.addEventListener('click',function(ev){
+          var p=document.getElementById('profilePickerPanel'), b=document.getElementById('profilePickerButton');
+          if(!p||!b)return;
+          if((p.contains&&p.contains(ev.target))||(b.contains&&b.contains(ev.target)))return;
+          closeProfilePicker();
+        },true);
+        document.addEventListener('keydown',function(ev){if(ev.key==='Escape')closeProfilePicker();},true);
+        window.addEventListener('resize',function(){if(isProfilePickerOpen())positionProfilePickerPanel();},{passive:true});
+        window.addEventListener('scroll',function(){if(isProfilePickerOpen())positionProfilePickerPanel();},{passive:true});
+      }
+      return {wrap:wrap,button:btn,panel:panel};
+    }catch(e){return null;}
+  }
+  function isProfilePickerOpen(){var p=document.getElementById('profilePickerPanel');return !!(p&&p.style.display!=='none');}
+  function positionProfilePickerPanel(){
+    try{
+      var btn=document.getElementById('profilePickerButton'), panel=document.getElementById('profilePickerPanel');
+      if(!btn||!panel)return;
+      var r=btn.getBoundingClientRect(), vw=Math.max(document.documentElement.clientWidth||0,window.innerWidth||0);
+      var w=Math.min(360,Math.max(292,r.width||292));
+      var left=Math.min(Math.max(10,r.right-w),vw-w-10);
+      panel.style.width=w+'px';
+      panel.style.left=left+'px';
+      panel.style.top=Math.max(10,Math.round(r.bottom+10))+'px';
+    }catch(e){}
+  }
+  function closeProfilePicker(){
+    try{
+      var p=document.getElementById('profilePickerPanel'), b=document.getElementById('profilePickerButton');
+      if(p)p.style.display='none';
+      if(b)b.setAttribute('aria-expanded','false');
+    }catch(e){}
+  }
+  function toggleProfilePicker(){
+    try{
+      var p=document.getElementById('profilePickerPanel'), b=document.getElementById('profilePickerButton');
+      if(!p||!b)return;
+      if(p.style.display==='none'){
+        renderProfilePickerFromSelect();
+        p.style.display='block';
+        b.setAttribute('aria-expanded','true');
+        positionProfilePickerPanel();
+      }else closeProfilePicker();
+    }catch(e){}
+  }
+  function renderProfilePickerFromSelect(){
+    try{
+      var cfg=window.__gptImageRuntimeConfig||{}, st=readStore(), settings=(st&&st.state&&st.state.settings)||{};
+      var profiles=Array.isArray(cfg.profiles)&&cfg.profiles.length?cfg.profiles:(Array.isArray(settings.profiles)?settings.profiles:[]);
+      var sel=document.getElementById('profileSwitch'), panel=document.getElementById('profilePickerPanel');
+      if(!sel||!panel)return;
+      var active=sel.value||cfg.activeProfileId||settings.activeProfileId||'';
+      panel.innerHTML=profiles.map(function(p){
+        var id=profileIdOf(p), current=id===active;
+        var name=compactProfileName(p), model=compactProfileModel(p), provider=String((p&&p.provider)||'openai');
+        var mode=String((p&&p.apiMode)||'images');
+        return '<button type="button" class="profile-picker-option '+(current?'active':'')+'" data-profile-id="'+escHtml(id)+'" role="option" aria-selected="'+(current?'true':'false')+'"><span class="profile-option-check">'+(current?'&#10003;':'')+'</span><span class="profile-option-main"><span class="profile-option-name">'+escHtml(name)+'</span><span class="profile-option-meta">'+escHtml(provider+' / '+(model||'model')+' / '+mode)+'</span></span></button>';
+      }).join('') || '<div class="profile-picker-empty">No profiles</div>';
+      Array.prototype.forEach.call(panel.querySelectorAll('[data-profile-id]'),function(btn){
+        btn.addEventListener('click',function(ev){ev.preventDefault();ev.stopPropagation();var id=btn.getAttribute('data-profile-id');closeProfilePicker();switchActiveProfile(id);},true);
+      });
+    }catch(e){}
+  }
+  function updateProfilePickerButton(profiles, active){
+    try{
+      var sel=document.getElementById('profileSwitch');
+      var shell=ensureProfilePickerShell(sel); if(!shell)return;
+      var p=(profiles||[]).find(function(x){return profileIdOf(x)===active;}) || (profiles||[])[0] || null;
+      var name=compactProfileName(p), model=compactProfileModel(p);
+      var b=shell.button;
+      var n=b.querySelector('.profile-picker-name'), m=b.querySelector('.profile-picker-model');
+      if(n)n.textContent=name;
+      if(m)m.textContent=model||'API profile';
+      b.title='API \u914d\u7f6e\uff1a'+name+(model?' / '+model:'');
+      b.setAttribute('data-active-profile',active||'');
+      renderProfilePickerFromSelect();
+    }catch(e){}
+  }
+
   function renderProfileSwitcher(cfg, activeOverride){
     try{
       var sel=document.getElementById('profileSwitch');
@@ -1274,7 +1390,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       var st=readStore();
       var settings=(st&&st.state&&st.state.settings)||{};
       var profiles=Array.isArray(cfg.profiles)&&cfg.profiles.length?cfg.profiles:(Array.isArray(settings.profiles)?settings.profiles:[]);
-      if(!profiles.length){sel.innerHTML='<option value="">API</option>';sel.disabled=true;return;}
+      if(!profiles.length){sel.innerHTML='<option value="">API</option>';sel.disabled=true;updateProfilePickerButton([], '');return;}
       var active=activeOverride||cfg.activeProfileId||settings.activeProfileId||profileIdOf(profiles[0]);
       var sig=profiles.map(function(p){return profileIdOf(p)+'|'+profileLabelOf(p);}).join(';;');
       if(sel.getAttribute('data-profile-sig')!==sig){
@@ -1285,6 +1401,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       sel.value=profiles.some(function(p){return profileIdOf(p)===active})?active:profileIdOf(profiles[0]);
       sel.disabled=false;
       sel.title='\u5207\u6362 API \u914d\u7f6e\uff1a'+(sel.options[sel.selectedIndex]?sel.options[sel.selectedIndex].text:'');
+      updateProfilePickerButton(profiles, sel.value);
       if(!sel.__boundProfileSwitch){
         sel.__boundProfileSwitch=true;
         sel.addEventListener('change',function(){switchActiveProfile(sel.value);});
@@ -1300,6 +1417,8 @@ function setProfileSwitchState(state){
       var sel=document.getElementById('profileSwitch'); if(!sel)return;
       sel.classList.remove('saving','error');
       if(state)sel.classList.add(state);
+      var btn=document.getElementById('profilePickerButton');
+      if(btn){btn.classList.remove('saving','error');if(state)btn.classList.add(state);}
     }catch(e){}
   }
   function switchActiveProfile(id){
@@ -1318,6 +1437,7 @@ function setProfileSwitchState(state){
       window.__gptImageRuntimeConfig=cfg;
       applyRuntimeToLiveStore(next,'');
       renderProfileSwitcher(cfg,id);
+      closeProfilePicker();
       setProfileSwitchState('saving');
       fetch('/api/settings/save',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',cache:'no-store',body:JSON.stringify({settings:{activeProfileId:id,baseUrl:profile.baseUrl||'',apiKey:profile.apiKey||'cloudflare-proxy',model:profile.model||'gpt-image-2',timeout:num(profile.timeout,600),apiMode:profile.apiMode||'images',codexCli:!!profile.codexCli,apiProxy:profile.apiProxy!==false,responseFormatB64Json:!!profile.responseFormatB64Json,streamImages:!!profile.streamImages,streamPartialImages:num(profile.streamPartialImages,1),profiles:profiles}})})
         .then(function(r){return r.ok?r.json():r.json().then(function(d){throw new Error(d&&d.error||'save failed')});})
@@ -1650,7 +1770,7 @@ function applyPendingPrompt(st, pendingPrompt){
     var script=document.createElement('script');
     script.type='module';
     script.crossOrigin='anonymous';
-    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=macos-b18-20260623';
+    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=macos-b19-20260623';
     var settled=false;
     script.onload=function(){settled=true;setLoadingStage('\u4e3b\u7a0b\u5e8f\u811a\u672c\u5df2\u52a0\u8f7d\uff0c\u7b49\u5f85\u754c\u9762\u6302\u8f7d...');waitForAppReady();};
     script.onerror=function(){settled=true;showLoadError('\u4e3b\u7a0b\u5e8f\u811a\u672c\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u6e05\u7a7a\u7f13\u5b58\u540e\u91cd\u8bd5\u3002');};
@@ -1747,7 +1867,7 @@ function applyPendingPrompt(st, pendingPrompt){
   });
 })();
 </script>
-<link rel="stylesheet" href="/assets/macos-design.css?v=macos-b18-20260623"><link rel="stylesheet" href="/assets/shell-ui.css?v=shell-b18-20260623"></head>
+<link rel="stylesheet" href="/assets/macos-design.css?v=macos-b19-20260623"><link rel="stylesheet" href="/assets/shell-ui.css?v=shell-b19-20260623"></head>
 <body>
 <div id="loading-screen" class="loading-screen">
   <div class="spinner"></div>

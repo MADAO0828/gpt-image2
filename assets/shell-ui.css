@@ -1,4 +1,4 @@
-/* GPT Image2 unified shell layer - b18 20260623
+/* GPT Image2 unified shell layer - b19 20260623
    Keep this file as the final visual contract for cross-page navigation.
    It intentionally overrides legacy .nav / .nav-actions / .site-nav differences
    without changing auth, routing, or React-owned DOM ownership. */
@@ -221,5 +221,223 @@ body > #workbenchSiteNav.site-nav .account-chip {
   .shell-account .account-name,
   .account-chip .account-name {
     max-width: 128px !important;
+  }
+}
+
+/* Workbench API profile picker - b19 */
+body > #workbenchSiteNav.site-nav .profile-picker-wrap {
+  position: relative !important;
+  flex: 0 0 196px !important;
+  min-width: 172px !important;
+  max-width: 220px !important;
+}
+
+body > #workbenchSiteNav.site-nav .profile-switch-native {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+.profile-picker-button {
+  width: 100% !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  padding: 0 10px !important;
+  border-radius: 17px !important;
+  border: 1px solid color-mix(in srgb, var(--shell-blue) 18%, transparent) !important;
+  background: color-mix(in srgb, var(--shell-blue) 9%, var(--shell-surface)) !important;
+  color: var(--shell-text) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .38) !important;
+  cursor: pointer !important;
+  transition: transform .16s cubic-bezier(.2, .8, .2, 1), background .16s ease, border-color .16s ease !important;
+}
+
+.profile-picker-button:hover,
+.profile-picker-button[aria-expanded="true"] {
+  transform: translateY(-1px) !important;
+  border-color: color-mix(in srgb, var(--shell-blue) 32%, transparent) !important;
+  background: color-mix(in srgb, var(--shell-blue) 15%, var(--shell-surface)) !important;
+}
+
+.profile-picker-button.saving .profile-picker-dot {
+  background: var(--shell-warn) !important;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--shell-warn) 16%, transparent) !important;
+}
+
+.profile-picker-button.error .profile-picker-dot {
+  background: #ff453a !important;
+  box-shadow: 0 0 0 4px rgba(255, 69, 58, .16) !important;
+}
+
+.profile-picker-dot {
+  width: 9px !important;
+  height: 9px !important;
+  border-radius: 999px !important;
+  background: #34c759 !important;
+  flex: 0 0 auto !important;
+  box-shadow: 0 0 0 4px rgba(52, 199, 89, .14) !important;
+}
+
+.profile-picker-copy {
+  min-width: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: flex-start !important;
+  line-height: 1.05 !important;
+  flex: 1 1 auto !important;
+}
+
+.profile-picker-name {
+  width: 100% !important;
+  display: block !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  font-size: 13px !important;
+  font-weight: 950 !important;
+}
+
+.profile-picker-model {
+  width: 100% !important;
+  display: block !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  font-size: 11px !important;
+  font-weight: 750 !important;
+  color: var(--shell-muted) !important;
+  margin-top: 2px !important;
+}
+
+.profile-picker-chevron {
+  font-size: 15px !important;
+  color: var(--shell-muted) !important;
+  flex: 0 0 auto !important;
+}
+
+.profile-picker-panel {
+  position: fixed !important;
+  z-index: 188 !important;
+  padding: 8px !important;
+  border-radius: 22px !important;
+  border: 1px solid var(--shell-border) !important;
+  background: color-mix(in srgb, var(--shell-surface) 92%, transparent) !important;
+  box-shadow: 0 24px 72px rgba(15, 23, 42, .18), inset 0 1px 0 rgba(255, 255, 255, .48) !important;
+  backdrop-filter: saturate(180%) blur(28px) !important;
+  -webkit-backdrop-filter: saturate(180%) blur(28px) !important;
+  max-height: min(420px, calc(100vh - 96px)) !important;
+  overflow: auto !important;
+}
+
+html.dark .profile-picker-panel {
+  box-shadow: 0 26px 82px rgba(0, 0, 0, .58), inset 0 1px 0 rgba(255, 255, 255, .08) !important;
+}
+
+.profile-picker-option {
+  width: 100% !important;
+  min-height: 58px !important;
+  display: grid !important;
+  grid-template-columns: 26px minmax(0, 1fr) !important;
+  align-items: center !important;
+  gap: 8px !important;
+  padding: 9px 10px !important;
+  border: 1px solid transparent !important;
+  border-radius: 16px !important;
+  background: transparent !important;
+  color: var(--shell-text) !important;
+  text-align: left !important;
+  cursor: pointer !important;
+}
+
+.profile-picker-option:hover {
+  background: color-mix(in srgb, var(--shell-blue) 10%, transparent) !important;
+  border-color: color-mix(in srgb, var(--shell-blue) 16%, transparent) !important;
+}
+
+.profile-picker-option.active {
+  background: color-mix(in srgb, var(--shell-blue) 14%, var(--shell-surface)) !important;
+  border-color: color-mix(in srgb, var(--shell-blue) 26%, transparent) !important;
+}
+
+.profile-option-check {
+  width: 24px !important;
+  height: 24px !important;
+  display: grid !important;
+  place-items: center !important;
+  border-radius: 999px !important;
+  color: #fff !important;
+  background: linear-gradient(135deg, var(--shell-blue), var(--shell-indigo)) !important;
+  font-size: 13px !important;
+  font-weight: 950 !important;
+  opacity: .22 !important;
+}
+
+.profile-picker-option.active .profile-option-check {
+  opacity: 1 !important;
+}
+
+.profile-option-main {
+  min-width: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 4px !important;
+}
+
+.profile-option-name {
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  font-size: 14px !important;
+  font-weight: 950 !important;
+}
+
+.profile-option-meta {
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  font-size: 12px !important;
+  color: var(--shell-muted) !important;
+  font-weight: 700 !important;
+}
+
+.profile-picker-empty {
+  padding: 18px !important;
+  color: var(--shell-muted) !important;
+  font-size: 13px !important;
+}
+
+html:has(body > div.fixed.inset-0) .profile-picker-panel,
+html.gpt-modal-open .profile-picker-panel {
+  display: none !important;
+}
+
+@media (max-width: 1280px) {
+  body > #workbenchSiteNav.site-nav .profile-picker-wrap {
+    flex-basis: 156px !important;
+    min-width: 136px !important;
+  }
+  .profile-picker-model {
+    display: none !important;
+  }
+}
+
+@media (max-width: 920px) {
+  body > #workbenchSiteNav.site-nav .profile-picker-wrap {
+    flex-basis: 122px !important;
+    min-width: 112px !important;
+  }
+  .profile-picker-name {
+    font-size: 12px !important;
   }
 }
