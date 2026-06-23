@@ -503,3 +503,12 @@ body > #workbenchSiteNav.site-nav .profile-picker-name{font-size:11px!important;
 body > #workbenchSiteNav.site-nav .profile-picker-model{display:none!important;}
 body > #workbenchSiteNav.site-nav a.nav-primary,body > #workbenchSiteNav.site-nav a.nav-soft{width:29px!important;min-width:29px!important;height:28px!important;min-height:28px!important;border-radius:14px!important;padding:0!important;}
 body > #workbenchSiteNav.site-nav .nav-ico{font-size:13px!important;}
+
+@media (max-width: 430px) {
+  .shell-nav { gap: 8px; flex-wrap: wrap; }
+  .shell-nav a, .shell-nav button { min-height: 36px; padding: 8px 10px; }
+  #promptAccountInfo, #accountInfo, #workbenchAccountInfo { max-width: 100%; }
+  .account-chip { max-width: 100%; }
+  .account-name { max-width: 12rem; overflow: hidden; text-overflow: ellipsis; }
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+}

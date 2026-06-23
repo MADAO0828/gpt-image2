@@ -42,6 +42,7 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 .card-p{font-size:11px;color:var(--text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .lm{text-align:center;padding:16px}.lm button{padding:8px 24px;border-radius:8px;border:none;font-size:13px;cursor:pointer;background:rgba(99,102,241,0.12);color:var(--accent);transition:all .2s;font-family:inherit}
 .lm button:hover{background:rgba(99,102,241,0.2);transform:translateY(-1px)}
+.lm button+button{margin-left:8px}.lm button:disabled{opacity:.42;cursor:not-allowed;transform:none}
 .ld{text-align:center;padding:60px 20px;color:var(--text3);font-size:13px}
 .overlay{display:none;position:fixed;inset:0;background:var(--overlay);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);z-index:100;align-items:center;justify-content:center;padding:22px}
 .overlay.show{display:flex}
@@ -138,7 +139,7 @@ html.dark .prompt-detail-media{background:radial-gradient(circle at 26% 20%,rgba
   });
 })();
 </script>
-<link rel="stylesheet" href="/assets/macos-design.css?v=macos-b34-20260623"><link rel="stylesheet" href="/assets/shell-ui.css?v=shell-b34-20260623"><script src="/assets/shell-ui.js?v=shell-b34-20260623" defer></script></head><body>
+<link rel="stylesheet" href="/assets/macos-design.css?v=macos-b35-20260623"><link rel="stylesheet" href="/assets/shell-ui.css?v=shell-b35-20260623"><script src="/assets/shell-ui.js?v=shell-b35-20260623" defer></script></head><body>
 <header class="h prompts-unified"><span class="hl">📚 提示词仓库</span><div class="srch top-srch"><input id="s" placeholder="🔍 搜索提示词..." /></div><div class="nav-actions"><span class="acct" id="promptAccountInfo">&#39564;&#35777;&#20013;...</span>
   <button onclick="toggleTheme()" id="theme-toggle" class="b" title="&#20999;&#25442;&#20027;&#39064;"><span class="nav-ico">&#128187;</span><span class="nav-text">&#20027;&#39064;</span></button>
   <a href="/admin" class="b" title="&#21518;&#21488;"><span class="nav-ico">&#9881;</span><span class="nav-text">&#21518;&#21488;</span></a>
@@ -150,7 +151,7 @@ html.dark .prompt-detail-media{background:radial-gradient(circle at 26% 20%,rgba
 <div class="cats" id="cats"><div class="ld">加载分类...</div></div>
 <div class="info"><span id="info"></span><span id="pi"></span></div>
 <div class="grid" id="grid"></div>
-<div class="lm" id="lm" style="display:none"><button id="lb">加载更多</button></div>
+<div class="lm" id="lm" style="display:none"><button id="pb" type="button">上一页</button><button id="lb" type="button">下一页</button></div>
 </div>
 <div class="overlay" id="modal"><div class="modal prompt-detail-modal" role="dialog" aria-modal="true" aria-labelledby="mt">
   <div class="prompt-detail-media">
@@ -230,10 +231,10 @@ function loadPage(page, reset){
       var rows=(d.prompts||[]).map(norm);
       totalItems=d.total||rows.length;
       currentPage=d.page||page;
-      filteredData=filteredData.concat(rows);
-      renderItems(rows, filteredData.length-rows.length);
+      filteredData=rows;
+      renderItems(rows,0);
       updateInfo();
-      document.getElementById("lm").style.display=filteredData.length<totalItems?"block":"none";
+      updatePager();
       isPageLoading=false;
     }).catch(function(){isPageLoading=false;fetchStaticFallback()});
   }else{
@@ -261,13 +262,14 @@ function renderStaticPage(page, reset){
   var start=(page-1)*ITEMS_PER_PAGE,end=Math.min(start+ITEMS_PER_PAGE,matched.length);
   var rows=matched.slice(start,end);
   currentPage=page;
-  filteredData=filteredData.concat(rows);
-  renderItems(rows, start);
+  filteredData=rows;
+  renderItems(rows, 0);
   updateInfo();
-  document.getElementById("lm").style.display=filteredData.length<totalItems?"block":"none";
+  updatePager();
 }
 function renderItems(rows, startIdx){
   var grid=document.getElementById("grid");
+  grid.innerHTML="";
   for(var i=0;i<rows.length;i++){
     var p=rows[i],idx=startIdx+i,card=document.createElement("div");
     card.className="card";card.style.animationDelay=Math.min(i*12,240)+'ms';card.setAttribute("data-idx",idx);
@@ -278,16 +280,25 @@ function renderItems(rows, startIdx){
     card.innerHTML=html;grid.appendChild(card);observePromptImages(card);
   }
   var sentinel=document.getElementById('loadSentinel');if(!sentinel){sentinel=document.createElement('div');sentinel.id='loadSentinel';sentinel.style.height='1px';grid.appendChild(sentinel)}else{grid.appendChild(sentinel)}
-  try{if(typeof sentinelObserver!=='undefined'&&sentinelObserver)sentinelObserver.observe(sentinel)}catch(e){}
 }
 
 function updateInfo(){
   document.getElementById("info").textContent="📦 "+totalItems+" 个提示词";
-  document.getElementById("pi").textContent=filteredData.length+"/"+totalItems;
+  var start=totalItems?((currentPage-1)*ITEMS_PER_PAGE+1):0,end=Math.min(currentPage*ITEMS_PER_PAGE,totalItems);
+  document.getElementById("pi").textContent=start+"-"+end+"/"+totalItems;
+}
+function updatePager(){
+  var hasPrev=currentPage>1,hasNext=currentPage*ITEMS_PER_PAGE<totalItems;
+  var lm=document.getElementById("lm"),prev=document.getElementById("pb"),btn=document.getElementById("lb");
+  lm.style.display=totalItems>ITEMS_PER_PAGE?"block":"none";
+  prev.disabled=!hasPrev;
+  btn.disabled=!hasNext;
+  btn.textContent=hasNext?"下一页":"已到最后一页";
 }
 function reloadList(){filteredData=[];document.getElementById("grid").innerHTML="";loadPage(1,true)}
+document.getElementById("pb").addEventListener("click",function(){if(currentPage>1)loadPage(currentPage-1,true)});
 document.getElementById("lb").addEventListener("click",function(){loadPage(currentPage+1,false)});
-var sentinelObserver=new IntersectionObserver(function(entries){if(entries[0].isIntersecting&&filteredData.length<totalItems){loadPage(currentPage+1,false)}},{rootMargin:'1400px 0px'});setTimeout(function(){var s=document.getElementById('loadSentinel');if(s)sentinelObserver.observe(s)},600);
+var sentinelObserver=null;
 document.getElementById("cats").addEventListener("click",function(e){var t=e.target;if(!t.classList.contains("cat"))return;currentCat=t.getAttribute("data-c");Array.from(document.querySelectorAll(".cat")).forEach(function(el){el.classList.remove("on")});t.classList.add("on");reloadList()});
 var timer=null;document.getElementById("s").addEventListener("input",function(){clearTimeout(timer);timer=setTimeout(reloadList,250)});
 function openModal(i){if(!filteredData[i])return;currentPrompt=i;var p=filteredData[i];document.getElementById("mc2").textContent=p.c||"\u672a\u5206\u7c7b";document.getElementById("mt").textContent=p.t||"\u672a\u547d\u540d\u63d0\u793a\u8bcd";document.getElementById("mp").textContent=p.p||"";var img=document.getElementById("mi"),empty=document.getElementById("mempty");if(p.i){img.src=imgProxyUrl(p.i);img.setAttribute("data-original-src",p.i);img.style.display="block";if(empty)empty.style.display="none"}else{img.removeAttribute("src");img.style.display="none";if(empty)empty.style.display="block"}document.body.classList.add("modal-open");document.getElementById("modal").classList.add("show")}

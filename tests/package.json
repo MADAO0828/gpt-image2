@@ -1,0 +1,12 @@
+{
+  "private": true,
+  "name": "gpt-image2-quality-tests",
+  "version": "1.0.0",
+  "description": "Playwright smoke tests for GPT Image2 deployment quality gates.",
+  "scripts": {
+    "quality": "node e2e-quality.js"
+  },
+  "dependencies": {
+    "playwright": "^1.56.0"
+  }
+}

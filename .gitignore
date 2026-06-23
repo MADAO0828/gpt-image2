@@ -43,3 +43,8 @@ leaderai-lab-*.css
 pw-*.txt
 pw-*.png
 pw-*.json
+
+# Local backups
+*.bak
+
+.deploy_quality_stage/

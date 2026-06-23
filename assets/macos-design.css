@@ -900,3 +900,20 @@ html.gpt-agent-mode #root .agent-chat-inputbar .grid.grid-cols-6 *,
 html.gpt-agent-mode #root .agent-chat-inputbar [class*="grid-cols-6"] *,
 html.gpt-agent-mode #root .agent-chat-inputbar .collapse-section,
 html.gpt-agent-mode #root .agent-chat-inputbar .collapse-section *{display:none!important;visibility:hidden!important;width:0!important;height:0!important;min-width:0!important;min-height:0!important;overflow:hidden!important;}
+
+@media (max-width: 430px) {
+  :root { --shell-header-h: 56px; }
+  body { -webkit-text-size-adjust: 100%; }
+  .safe-header-inner { padding: 10px 12px; gap: 8px; }
+  .safe-area-x { padding-left: 12px; padding-right: 12px; }
+  header h1, .site-title { font-size: 16px; line-height: 1.15; }
+  header .nav, header .nav-actions, .site-nav { gap: 8px; flex-wrap: wrap; }
+  .nav a, .nav button, .nav-actions a, .nav-actions button { min-height: 36px; padding: 8px 10px; }
+  .table, table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  table th, table td { white-space: nowrap; }
+  .card, .panel, .repo-card, .prompt-card { border-radius: 14px; }
+  .card-grid, .cards-grid, .prompt-grid { grid-template-columns: 1fr; gap: 10px; }
+  .composer, .composer-bar, .bottom-composer { padding: 10px 12px; }
+  .composer textarea, .composer input { min-height: 44px; font-size: 16px; }
+  .prompt-filters, .toolbar, .repo-toolbar { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+}
