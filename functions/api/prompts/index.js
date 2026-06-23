@@ -2,10 +2,14 @@
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'public, max-age=300' } });
 }
+let staticPromptsCache = null;
+let staticPromptsCacheAt = 0;
+let staticCategoryCache = null;
+const STATIC_PROMPTS_TTL = 5 * 60 * 1000;
 function normalizePrompt(row) { return { id: row.id || 0, c: row.category || row.c || '', t: row.title || row.t || '', p: row.prompt || row.p || '', i: row.image_url || row.i || '' }; }
 function filterRows(rows, cat, search) { const q = String(search || '').toLowerCase(); return rows.filter(row => { const p = normalizePrompt(row); if (cat && cat !== 'all' && p.c !== cat) return false; if (q && p.t.toLowerCase().indexOf(q) < 0 && p.p.toLowerCase().indexOf(q) < 0) return false; return true; }); }
-async function loadStaticPrompts(ctx) { const res = await ctx.env.ASSETS.fetch(new URL('/prompts_data.json', ctx.request.url)); if (!res.ok) return []; const data = await res.json(); return Array.isArray(data) ? data : []; }
-function categoryPayload(rows) { const seen = { all: true }; const categories = ['all']; rows.forEach(row => { const cat = normalizePrompt(row).c; if (cat && !seen[cat]) { seen[cat] = true; categories.push(cat); } }); return { categories, total: rows.length }; }
+async function loadStaticPrompts(ctx) { const now = Date.now(); if (staticPromptsCache && (now - staticPromptsCacheAt) < STATIC_PROMPTS_TTL) return staticPromptsCache; const res = await ctx.env.ASSETS.fetch(new URL('/prompts_data.json', ctx.request.url)); if (!res.ok) return []; const data = await res.json(); staticPromptsCache = Array.isArray(data) ? data : []; staticPromptsCacheAt = now; staticCategoryCache = null; return staticPromptsCache; }
+function categoryPayload(rows) { if (rows === staticPromptsCache && staticCategoryCache) return staticCategoryCache; const seen = { all: true }; const categories = ['all']; rows.forEach(row => { const cat = normalizePrompt(row).c; if (cat && !seen[cat]) { seen[cat] = true; categories.push(cat); } }); const payload = { categories, total: rows.length }; if (rows === staticPromptsCache) staticCategoryCache = payload; return payload; }
 
 export async function onRequest(ctx) {
   const url = new URL(ctx.request.url);

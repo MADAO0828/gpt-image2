@@ -67,6 +67,11 @@ if (markerMatch) {
     const text = fs.readFileSync(path.join(root, rel), 'utf8');
     ok(text.includes(`index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=${marker}`), `${rel} imports the main bundle with a stale marker.`);
   }
+  for (const rel of ['index.html','admin.html','login.html','prompts.html']) {
+    const html = fs.readFileSync(path.join(root, rel), 'utf8');
+    ok(/macos-design\.css\?v=macos-b\d+-\d+/.test(html), `${rel} is missing a macos-design.css cache marker.`);
+    ok(/shell-ui\.(css|js)\?v=shell-b\d+-\d+/.test(html) || rel === 'index.html', `${rel} is missing a shell-ui asset cache marker.`);
+  }
 }
 
 if (failures.length) {
