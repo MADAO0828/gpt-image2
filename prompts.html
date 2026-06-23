@@ -43,15 +43,25 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 .lm{text-align:center;padding:16px}.lm button{padding:8px 24px;border-radius:8px;border:none;font-size:13px;cursor:pointer;background:rgba(99,102,241,0.12);color:var(--accent);transition:all .2s;font-family:inherit}
 .lm button:hover{background:rgba(99,102,241,0.2);transform:translateY(-1px)}
 .ld{text-align:center;padding:60px 20px;color:var(--text3);font-size:13px}
-.overlay{display:none;position:fixed;inset:0;background:var(--overlay);backdrop-filter:blur(8px);z-index:100;align-items:center;justify-content:center;padding:20px}
+.overlay{display:none;position:fixed;inset:0;background:var(--overlay);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);z-index:100;align-items:center;justify-content:center;padding:22px}
 .overlay.show{display:flex}
-.modal{background:var(--modal-bg);border:1px solid var(--border);border-radius:16px;width:100%;max-width:600px;max-height:85vh;overflow-y:auto;padding:24px;animation:modalIn .25s ease}
-@keyframes modalIn{from{opacity:0;transform:scale(.96) translateY(8px)}to{opacity:1;transform:scale(1) translateY(0)}}
-.modal-img{width:100%;max-height:300px;object-fit:contain;border-radius:10px;background:var(--surface);margin-bottom:14px}
-.modal-cat{font-size:11px;color:var(--accent);background:rgba(99,102,241,0.1);display:inline-block;padding:2px 8px;border-radius:10px;margin-bottom:8px}
-.modal-t{font-size:18px;font-weight:700;margin-bottom:10px}
-.modal-p{font-size:13px;color:var(--text2);line-height:1.7;margin-bottom:16px;white-space:pre-wrap;max-height:400px;overflow-y:auto}
-.modal-acts{display:flex;gap:8px;flex-wrap:wrap}
+.modal{background:linear-gradient(180deg,rgba(255,255,255,.94),rgba(248,250,252,.94));border:1px solid rgba(148,163,184,.22);border-radius:26px;width:min(1120px,calc(100vw - 32px));max-height:min(86vh,860px);overflow:hidden;padding:0;animation:modalIn .22s cubic-bezier(.2,.8,.2,1);box-shadow:0 28px 90px rgba(15,23,42,.26),0 1px 0 rgba(255,255,255,.85) inset;display:grid;grid-template-columns:minmax(360px,1.15fr) minmax(350px,.85fr)}
+html.dark .modal{background:linear-gradient(180deg,rgba(24,24,27,.94),rgba(9,9,11,.94));border-color:rgba(255,255,255,.12);box-shadow:0 28px 90px rgba(0,0,0,.62),0 1px 0 rgba(255,255,255,.08) inset}
+@keyframes modalIn{from{opacity:0;transform:scale(.97) translateY(10px)}to{opacity:1;transform:scale(1) translateY(0)}}
+.prompt-detail-media{position:relative;min-height:520px;background:radial-gradient(circle at 26% 20%,rgba(99,102,241,.14),transparent 36%),linear-gradient(135deg,rgba(15,23,42,.04),rgba(99,102,241,.08));display:flex;align-items:center;justify-content:center;padding:28px;border-right:1px solid var(--border)}
+html.dark .prompt-detail-media{background:radial-gradient(circle at 26% 20%,rgba(129,140,248,.18),transparent 36%),linear-gradient(135deg,rgba(255,255,255,.06),rgba(99,102,241,.10))}
+.prompt-detail-media::after{content:'\70B9\51FB\56FE\7247\67E5\770B\5927\56FE';position:absolute;left:28px;bottom:24px;font-size:12px;color:var(--text2);padding:7px 11px;border:1px solid var(--border);border-radius:999px;background:rgba(255,255,255,.72);backdrop-filter:blur(12px);opacity:.88}html.dark .prompt-detail-media::after{background:rgba(15,23,42,.72)}
+.modal-img{max-width:100%;max-height:calc(86vh - 92px);width:auto;height:auto;object-fit:contain;border-radius:20px;background:var(--surface);box-shadow:0 18px 70px rgba(15,23,42,.18);cursor:zoom-in;transition:transform .22s cubic-bezier(.2,.8,.2,1),box-shadow .22s}.modal-img:hover{transform:scale(1.012);box-shadow:0 24px 90px rgba(15,23,42,.24)}
+.prompt-detail-empty{display:none;color:var(--text3);font-size:13px;text-align:center;padding:24px;border:1px dashed var(--border);border-radius:18px;background:var(--surface)}
+.prompt-detail-side{display:flex;flex-direction:column;min-width:0;max-height:min(86vh,860px)}
+.prompt-detail-head{padding:22px 22px 14px;border-bottom:1px solid var(--border);display:grid;grid-template-columns:1fr auto;gap:12px;align-items:start;background:rgba(255,255,255,.42);backdrop-filter:blur(14px)}html.dark .prompt-detail-head{background:rgba(9,9,11,.34)}
+.modal-cat{font-size:12px;color:var(--accent);background:rgba(99,102,241,0.11);display:inline-flex;align-items:center;padding:5px 10px;border-radius:999px;margin-bottom:10px;font-weight:800;border:1px solid rgba(99,102,241,.14)}
+.modal-t{font-size:22px;font-weight:900;letter-spacing:-.03em;line-height:1.18;color:var(--text);word-break:break-word}
+.prompt-detail-close{width:34px;height:34px;border-radius:12px;border:1px solid var(--border);background:var(--surface);color:var(--text2);cursor:pointer;font:800 18px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:flex;align-items:center;justify-content:center;transition:transform .14s,background .18s,color .18s,border-color .18s}.prompt-detail-close:hover{transform:translateY(-1px);color:var(--text);border-color:rgba(239,68,68,.28);background:rgba(239,68,68,.08)}.prompt-detail-close:active{transform:scale(.94)}
+.prompt-detail-body{padding:18px 22px;overflow:auto;flex:1;scroll-behavior:smooth;-webkit-overflow-scrolling:touch}.modal-p{font-size:14px;color:var(--text2);line-height:1.78;white-space:pre-wrap;word-break:break-word;margin:0;padding:16px;border-radius:18px;border:1px solid var(--border);background:rgba(255,255,255,.46)}html.dark .modal-p{background:rgba(255,255,255,.04)}
+.modal-acts{display:flex;gap:10px;flex-wrap:wrap;padding:16px 22px 22px;border-top:1px solid var(--border);background:rgba(255,255,255,.38)}html.dark .modal-acts{background:rgba(9,9,11,.28)}.modal-acts .b{height:40px;border-radius:14px;font-weight:800;flex:1;justify-content:center;min-width:132px}
+.img-viewer-img{max-width:96vw;max-height:94vh;object-fit:contain;border-radius:18px;box-shadow:0 24px 90px rgba(0,0,0,.45);background:#111}
+@media(max-width:860px){.overlay{padding:12px}.modal{width:calc(100vw - 16px);max-height:92vh;grid-template-columns:1fr;border-radius:22px}.prompt-detail-media{min-height:260px;max-height:42vh;padding:18px;border-right:0;border-bottom:1px solid var(--border)}.prompt-detail-media::after{display:none}.modal-img{max-height:38vh;border-radius:16px}.prompt-detail-side{max-height:50vh}.prompt-detail-head{padding:16px}.modal-t{font-size:18px}.prompt-detail-body{padding:14px 16px}.modal-p{font-size:13px;padding:14px}.modal-acts{padding:14px 16px 16px}.modal-acts .b{min-width:120px}}
 .ts{position:fixed;left:50%;bottom:calc(18px + env(safe-area-inset-bottom));transform:translateX(-50%);z-index:90;max-width:min(360px,calc(100vw - 28px));padding:8px 16px;border-radius:8px;font-size:12px;background:var(--toast-bg);color:#22c55e;border:1px solid rgba(34,197,94,0.25);animation:toastIn .22s ease;pointer-events:none;text-align:center;box-shadow:0 10px 30px rgba(15,23,42,.12)}
 @keyframes toastIn{from{transform:translate(-50%,10px);opacity:0}to{transform:translate(-50%,0);opacity:1}}
 </style>
@@ -128,7 +138,7 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
   });
 })();
 </script>
-<link rel="stylesheet" href="/assets/macos-design.css?v=macos-b19-20260623"><link rel="stylesheet" href="/assets/shell-ui.css?v=shell-b19-20260623"><script src="/assets/shell-ui.js?v=shell-b19-20260623" defer></script></head><body>
+<link rel="stylesheet" href="/assets/macos-design.css?v=macos-b20-20260623"><link rel="stylesheet" href="/assets/shell-ui.css?v=shell-b20-20260623"><script src="/assets/shell-ui.js?v=shell-b20-20260623" defer></script></head><body>
 <header class="h prompts-unified"><span class="hl">📚 提示词仓库</span><div class="srch top-srch"><input id="s" placeholder="🔍 搜索提示词..." /></div><div class="nav-actions"><span class="acct" id="promptAccountInfo">&#39564;&#35777;&#20013;...</span>
   <button onclick="toggleTheme()" id="theme-toggle" class="b" title="&#20999;&#25442;&#20027;&#39064;"><span class="nav-ico">&#128187;</span><span class="nav-text">&#20027;&#39064;</span></button>
   <a href="/admin" class="b" title="&#21518;&#21488;"><span class="nav-ico">&#9881;</span><span class="nav-text">&#21518;&#21488;</span></a>
@@ -142,16 +152,24 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 <div class="grid" id="grid"></div>
 <div class="lm" id="lm" style="display:none"><button id="lb">加载更多</button></div>
 </div>
-<div class="overlay" id="modal"><div class="modal">
-<img id="mi" class="modal-img" src="" alt="" />
-<div id="mc2" class="modal-cat"></div>
-<div id="mt" class="modal-t"></div>
-<div id="mp" class="modal-p"></div>
-<div class="modal-acts">
-<button class="b" id="mcp" style="background:rgba(99,102,241,0.12);color:var(--accent);border-color:rgba(99,102,241,0.25)">📋 复制</button>
-<button class="b" id="mus" style="background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border:none">✨ 使用此提示词</button>
-</div></div></div>
-<div class="overlay" id="imgViewer" style="cursor:zoom-out"><img id="vi" style="max-width:95%;max-height:95%;object-fit:contain;border-radius:8px" /></div>
+<div class="overlay" id="modal"><div class="modal prompt-detail-modal" role="dialog" aria-modal="true" aria-labelledby="mt">
+  <div class="prompt-detail-media">
+    <img id="mi" class="modal-img" src="" alt="" referrerpolicy="no-referrer" />
+    <div id="mempty" class="prompt-detail-empty">&#27492;&#25552;&#31034;&#35789;&#26242;&#26080;&#39044;&#35272;&#22270;</div>
+  </div>
+  <div class="prompt-detail-side">
+    <div class="prompt-detail-head">
+      <div><div id="mc2" class="modal-cat"></div><div id="mt" class="modal-t"></div></div>
+      <button class="prompt-detail-close" id="mclose" type="button" aria-label="&#20851;&#38381;">&times;</button>
+    </div>
+    <div class="prompt-detail-body"><div id="mp" class="modal-p"></div></div>
+    <div class="modal-acts">
+      <button class="b" id="mcp" style="background:rgba(99,102,241,0.12);color:var(--accent);border-color:rgba(99,102,241,0.25)">&#128203; &#22797;&#21046;&#25552;&#31034;&#35789;</button>
+      <button class="b" id="mus" style="background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border:none">&#10024; &#20351;&#29992;&#27492;&#25552;&#31034;&#35789;</button>
+    </div>
+  </div>
+</div></div>
+<div class="overlay" id="imgViewer" style="cursor:zoom-out"><img id="vi" class="img-viewer-img" /></div>
 <script>
 var ITEMS_PER_PAGE = 60;
 var allData = [], filteredData = [], currentCat = "all", currentPage = 1, totalItems = 0, currentPrompt = -1;
@@ -265,11 +283,13 @@ document.getElementById("lb").addEventListener("click",function(){loadPage(curre
 var sentinelObserver=new IntersectionObserver(function(entries){if(entries[0].isIntersecting&&filteredData.length<totalItems){loadPage(currentPage+1,false)}},{rootMargin:'5200px 0px'});setTimeout(function(){var s=document.getElementById('loadSentinel');if(s)sentinelObserver.observe(s)},1000);
 document.getElementById("cats").addEventListener("click",function(e){var t=e.target;if(!t.classList.contains("cat"))return;currentCat=t.getAttribute("data-c");Array.from(document.querySelectorAll(".cat")).forEach(function(el){el.classList.remove("on")});t.classList.add("on");reloadList()});
 var timer=null;document.getElementById("s").addEventListener("input",function(){clearTimeout(timer);timer=setTimeout(reloadList,250)});
-function openModal(i){if(!filteredData[i])return;currentPrompt=i;var p=filteredData[i];document.getElementById("mc2").textContent=p.c||"";document.getElementById("mt").textContent=p.t||"";document.getElementById("mp").textContent=p.p||"";var img=document.getElementById("mi");if(p.i){img.src=imgProxyUrl(p.i);img.setAttribute("data-original-src",p.i);img.style.display="block"}else{img.style.display="none"}document.getElementById("modal").classList.add("show")}
-function closeModal(){document.getElementById("modal").classList.remove("show")}
+function openModal(i){if(!filteredData[i])return;currentPrompt=i;var p=filteredData[i];document.getElementById("mc2").textContent=p.c||"\u672a\u5206\u7c7b";document.getElementById("mt").textContent=p.t||"\u672a\u547d\u540d\u63d0\u793a\u8bcd";document.getElementById("mp").textContent=p.p||"";var img=document.getElementById("mi"),empty=document.getElementById("mempty");if(p.i){img.src=imgProxyUrl(p.i);img.setAttribute("data-original-src",p.i);img.style.display="block";if(empty)empty.style.display="none"}else{img.removeAttribute("src");img.style.display="none";if(empty)empty.style.display="block"}document.body.classList.add("modal-open");document.getElementById("modal").classList.add("show")}
+function closeModal(){document.getElementById("modal").classList.remove("show");document.body.classList.remove("modal-open")}
+function copyText(text){if(navigator.clipboard&&navigator.clipboard.writeText){return navigator.clipboard.writeText(text)}var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.left="-9999px";document.body.appendChild(ta);ta.focus();ta.select();try{document.execCommand("copy")}finally{ta.remove()}return Promise.resolve()}
 document.getElementById("modal").addEventListener("click",function(e){if(e.target===this)closeModal()});
-document.addEventListener("keydown",function(e){if(e.key==="Escape")closeModal()});
-document.getElementById("mcp").addEventListener("click",function(){if(currentPrompt>=0&&filteredData[currentPrompt]){navigator.clipboard.writeText(filteredData[currentPrompt].p||"");showToast()}});
+document.getElementById("mclose").addEventListener("click",closeModal);
+document.addEventListener("keydown",function(e){if(e.key==="Escape"){closeModal();document.getElementById("imgViewer").classList.remove("show")}});
+document.getElementById("mcp").addEventListener("click",function(){if(currentPrompt>=0&&filteredData[currentPrompt]){copyText(filteredData[currentPrompt].p||"").then(showToast).catch(showToast)}});
 document.getElementById("mus").addEventListener("click",function(){if(currentPrompt>=0&&filteredData[currentPrompt]){var pp=filteredData[currentPrompt].p||"";sessionStorage.setItem("prompt_to_use",pp);try{localStorage.setItem("gpt-image2-pending-prompt",pp)}catch(e){}location.href="/"}});
 function showToast(){var d=document.createElement("div");d.className="ts";d.textContent="✅ 已复制";document.body.appendChild(d);setTimeout(function(){d.remove()},1500)}
 var vi=document.getElementById("vi");
