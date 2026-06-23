@@ -68,7 +68,7 @@ html.dark .prompt-detail-media{background:radial-gradient(circle at 26% 20%,rgba
 </style>
 <script>
 (function(){
-  try{if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(regs){regs.forEach(function(reg){reg.unregister()})})}if(window.caches&&caches.keys){caches.keys().then(function(keys){keys.forEach(function(key){caches.delete(key)})}).catch(function(){})}}catch(e){}
+  try{var ck='gpt-image2-cache-cleaned-mobile-b36';var wx=/MicroMessenger|WeChat|MQQBrowser|TBS|XWEB/i.test(navigator.userAgent||'');if(localStorage.getItem(ck)!=='1'){localStorage.setItem(ck,'1');if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(regs){regs.forEach(function(reg){reg.unregister()})}).catch(function(){})}if(!wx&&window.caches&&caches.keys){caches.keys().then(function(keys){keys.forEach(function(key){caches.delete(key)})}).catch(function(){})}}}catch(e){}
   window.__themeState={themeKey:'gpt-image2-theme'};
   function isWeChatBrowser(){try{return /MicroMessenger|WeChat|MQQBrowser|TBS|XWEB/i.test(navigator.userAgent||'')}catch(e){return false}}
   function consumeTokenFromHash(){try{var m=(location.hash||'').match(/(?:^#|[&#])gi2token=([^&]+)/);if(m&&m[1]){sessionStorage.setItem('gpt-image2-session-token',decodeURIComponent(m[1]));history.replaceState(null,document.title,location.pathname+location.search)}}catch(e){}}
@@ -139,7 +139,7 @@ html.dark .prompt-detail-media{background:radial-gradient(circle at 26% 20%,rgba
   });
 })();
 </script>
-<link rel="stylesheet" href="/assets/macos-design.css?v=macos-b35-20260623"><link rel="stylesheet" href="/assets/shell-ui.css?v=shell-b35-20260623"><script src="/assets/shell-ui.js?v=shell-b35-20260623" defer></script></head><body>
+<link rel="stylesheet" href="/assets/macos-design.css?v=macos-b36-20260623"><link rel="stylesheet" href="/assets/shell-ui.css?v=shell-b36-20260623"><script src="/assets/shell-ui.js?v=shell-b36-20260623" defer></script></head><body>
 <header class="h prompts-unified"><span class="hl">📚 提示词仓库</span><div class="srch top-srch"><input id="s" placeholder="🔍 搜索提示词..." /></div><div class="nav-actions"><span class="acct" id="promptAccountInfo">&#39564;&#35777;&#20013;...</span>
   <button onclick="toggleTheme()" id="theme-toggle" class="b" title="&#20999;&#25442;&#20027;&#39064;"><span class="nav-ico">&#128187;</span><span class="nav-text">&#20027;&#39064;</span></button>
   <a href="/admin" class="b" title="&#21518;&#21488;"><span class="nav-ico">&#9881;</span><span class="nav-text">&#21518;&#21488;</span></a>

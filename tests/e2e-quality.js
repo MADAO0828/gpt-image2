@@ -212,18 +212,116 @@ async function smokeMobileLayout(browser) {
   assert(overflow <= 24, `mobile workbench should not horizontally overflow; overflow=${overflow}px`);
   const mobileControls = await page.locator('button, a, textarea, [contenteditable="true"]').count();
   assert(mobileControls >= 3, `mobile workbench should expose controls; got ${mobileControls}`);
+  const workbenchMobile = await page.evaluate(() => {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const nav = document.querySelector('#workbenchSiteNav');
+    const navRect = nav ? nav.getBoundingClientRect() : null;
+    const account = document.querySelector('#workbenchSiteNav .account-chip');
+    const accountRect = account ? account.getBoundingClientRect() : null;
+    const navButtons = Array.from(document.querySelectorAll('#workbenchSiteNav a, #workbenchSiteNav button, #workbenchSiteNav select'))
+      .filter((el) => {
+        const r = el.getBoundingClientRect();
+        return r.width > 1 && r.height > 1;
+      })
+      .map((el) => {
+        const r = el.getBoundingClientRect();
+        return { text: (el.textContent || el.getAttribute('aria-label') || el.id || el.className || '').trim(), w: r.width, h: r.height, left: r.left, right: r.right };
+      });
+    const composer = Array.from(document.querySelectorAll('#root > div.fixed.bottom-4, #root > div.fixed.sm\\:bottom-6'))
+      .map((el) => el.getBoundingClientRect())
+      .filter((r) => r.width > 120 && r.height > 40)
+      .sort((a, b) => b.height - a.height)[0] || null;
+    const upstreamTitleVisible = Array.from(document.querySelectorAll('#root header h1, #root header [class*="font-bold"]'))
+      .some((el) => {
+        const text = (el.textContent || '').trim();
+        if (!/Image Playground|GPT Image/i.test(text)) return false;
+        const r = el.getBoundingClientRect();
+        const cs = getComputedStyle(el);
+        return r.width > 8 && r.height > 8 && cs.visibility !== 'hidden' && cs.opacity !== '0';
+      });
+    return { vw, vh, navRect, accountRect, navButtons, composer: composer ? { x: composer.x, y: composer.y, w: composer.width, h: composer.height } : null, upstreamTitleVisible };
+  });
+  assert(workbenchMobile.navRect && workbenchMobile.navRect.left >= -1 && workbenchMobile.navRect.right <= workbenchMobile.vw + 1, `mobile workbench nav should fit viewport: ${JSON.stringify(workbenchMobile.navRect)}`);
+  assert(!workbenchMobile.accountRect || workbenchMobile.accountRect.right <= workbenchMobile.vw + 1, `mobile account chip should not overflow: ${JSON.stringify(workbenchMobile.accountRect)}`);
+  const tooSmallNav = workbenchMobile.navButtons.filter((b) => b.w < 34 || b.h < 34);
+  assert(tooSmallNav.length === 0, `mobile workbench nav controls too small: ${JSON.stringify(tooSmallNav)}`);
+  assert(!workbenchMobile.composer || workbenchMobile.composer.h <= Math.max(340, workbenchMobile.vh * 0.43), `mobile gallery composer too tall: ${JSON.stringify(workbenchMobile.composer)}`);
+  assert(!workbenchMobile.upstreamTitleVisible, 'mobile workbench should not show upstream Image Playground title');
+  await clickMode(page, ['Agent']);
+  await assertNoRuntimeRecovery(page);
+  const agentMobile = await page.evaluate(() => {
+    const session = document.querySelector('#agentCurrentSessionBox');
+    const actions = document.querySelector('#agentHeaderActions');
+    const sr = session ? session.getBoundingClientRect() : null;
+    const ar = actions ? actions.getBoundingClientRect() : null;
+    const hitTargets = Array.from(document.querySelectorAll('#agentShellHost button, #agentShellHost a'))
+      .filter((el) => {
+        const r = el.getBoundingClientRect();
+        return r.width > 1 && r.height > 1;
+      })
+      .map((el) => {
+        const r = el.getBoundingClientRect();
+        return { text: (el.textContent || el.getAttribute('aria-label') || el.id || '').trim(), w: r.width, h: r.height };
+      });
+    return {
+      session: sr ? { left: sr.left, right: sr.right, top: sr.top, bottom: sr.bottom, w: sr.width, h: sr.height } : null,
+      actions: ar ? { left: ar.left, right: ar.right, top: ar.top, bottom: ar.bottom, w: ar.width, h: ar.height } : null,
+      hitTargets,
+    };
+  });
+  if (agentMobile.session && agentMobile.actions) {
+    assert(agentMobile.session.right <= agentMobile.actions.left + 4 || agentMobile.session.bottom <= agentMobile.actions.top || agentMobile.session.top >= agentMobile.actions.bottom, `mobile agent session/actions should not overlap: ${JSON.stringify(agentMobile)}`);
+  }
+  const tooSmallAgent = agentMobile.hitTargets.filter((b) => b.w < 32 || b.h < 32);
+  assert(tooSmallAgent.length === 0, `mobile agent controls too small: ${JSON.stringify(tooSmallAgent)}`);
 
   await page.goto(absolutePath('/prompts'), { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
   await waitForSettled(page);
   const promptsOverflow = await page.evaluate(() => Math.max(0, document.documentElement.scrollWidth - window.innerWidth));
   assert(promptsOverflow <= 24, `mobile prompts should not horizontally overflow; overflow=${promptsOverflow}px`);
   assert(await page.locator('#s').isVisible(), 'mobile prompts search input should be visible');
+  const promptsMobile = await page.evaluate(() => {
+    const header = document.querySelector('.prompts-unified.h');
+    const cats = document.querySelector('#cats');
+    const chips = Array.from(document.querySelectorAll('#cats .cat')).slice(0, 12).map((el) => {
+      const r = el.getBoundingClientRect();
+      return { text: (el.textContent || '').trim(), w: r.width, h: r.height };
+    });
+    const hr = header ? header.getBoundingClientRect() : null;
+    const cr = cats ? cats.getBoundingClientRect() : null;
+    return {
+      header: hr ? { h: hr.height, right: hr.right } : null,
+      cats: cr ? { h: cr.height, right: cr.right, scrollWidth: cats.scrollWidth, clientWidth: cats.clientWidth } : null,
+      chips,
+    };
+  });
+  assert(!promptsMobile.header || promptsMobile.header.h <= 132, `mobile prompts header too tall: ${JSON.stringify(promptsMobile.header)}`);
+  assert(!promptsMobile.cats || promptsMobile.cats.h <= 54, `mobile prompts categories should be a compact rail: ${JSON.stringify(promptsMobile.cats)}`);
+  const tooSmallPromptChips = promptsMobile.chips.filter((c) => c.h < 32);
+  assert(tooSmallPromptChips.length === 0, `mobile prompt category chips too small: ${JSON.stringify(tooSmallPromptChips)}`);
 
   await page.goto(absolutePath('/admin'), { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
   await waitForSettled(page);
   const adminOverflow = await page.evaluate(() => Math.max(0, document.documentElement.scrollWidth - window.innerWidth));
   assert(adminOverflow <= 32, `mobile admin should not horizontally overflow; overflow=${adminOverflow}px`);
   await expectVisibleByText(page, ['后台', 'API', 'Agent', '设置'], { timeout: 10000 });
+  const adminMobile = await page.evaluate(() => {
+    const tabs = document.querySelector('.tabs');
+    const addUser = document.querySelector('#addUserBtn');
+    const firstRows = Array.from(document.querySelectorAll('#userTable .tbl tbody tr')).slice(0, 3);
+    const tabRect = tabs ? tabs.getBoundingClientRect() : null;
+    const addRect = addUser ? addUser.getBoundingClientRect() : null;
+    return {
+      tabs: tabs ? { h: tabRect.height, right: tabRect.right, scrollWidth: tabs.scrollWidth, clientWidth: tabs.clientWidth } : null,
+      addUser: addUser ? { w: addRect.width, h: addRect.height } : null,
+      rowDisplays: firstRows.map((row) => getComputedStyle(row).display),
+      rows: firstRows.length,
+    };
+  });
+  assert(!adminMobile.tabs || adminMobile.tabs.h <= 58, `mobile admin tabs too tall: ${JSON.stringify(adminMobile.tabs)}`);
+  assert(!adminMobile.addUser || adminMobile.addUser.h >= 36, `mobile add-user button too small: ${JSON.stringify(adminMobile.addUser)}`);
+  assert(adminMobile.rows === 0 || adminMobile.rowDisplays.every((d) => d === 'block'), `mobile admin user table should render as cards: ${JSON.stringify(adminMobile.rowDisplays)}`);
 
   assert(errors.length === 0, `unexpected browser errors on mobile layout: ${errors.join(' | ')}`);
   await context.close();
