@@ -480,3 +480,26 @@ body > #workbenchSiteNav.site-nav .profile-picker-model{display:none!important;}
 body > #workbenchSiteNav.site-nav a.nav-primary,body > #workbenchSiteNav.site-nav a.nav-soft{width:38px!important;min-width:38px!important;height:34px!important;min-height:34px!important;padding:0!important;border-radius:16px!important;justify-content:center!important;}
 body > #workbenchSiteNav.site-nav a .nav-text,body > #workbenchSiteNav.site-nav .divider,body > #workbenchSiteNav.site-nav .profile-switch-wrap:before{display:none!important;}
 body > #workbenchSiteNav.site-nav .nav-ico{font-size:15px!important;}
+
+/* B27 nav override loaded last */
+body > #workbenchSiteNav.site-nav{width:auto!important;min-width:0!important;max-width:368px!important;height:36px!important;min-height:36px!important;padding:2px 4px!important;gap:4px!important;border-radius:20px!important;}
+body > #workbenchSiteNav.site-nav .account-chip{height:30px!important;min-height:30px!important;min-width:126px!important;max-width:150px!important;border-radius:15px!important;padding:0 9px!important;gap:7px!important;}
+body > #workbenchSiteNav.site-nav .account-role{width:9px!important;height:9px!important;min-width:9px!important;min-height:9px!important;padding:0!important;font-size:0!important;line-height:0!important;}
+body > #workbenchSiteNav.site-nav .account-name{font-size:12px!important;max-width:116px!important;}
+body > #workbenchSiteNav.site-nav .profile-picker-wrap{min-width:118px!important;flex:0 0 118px!important;max-width:128px!important;}
+body > #workbenchSiteNav.site-nav .profile-picker-button,body > #workbenchSiteNav.site-nav .profile-switch{height:30px!important;min-height:30px!important;border-radius:15px!important;}
+body > #workbenchSiteNav.site-nav .profile-picker-name{font-size:11px!important;max-width:78px!important;}
+body > #workbenchSiteNav.site-nav .profile-picker-model{display:none!important;}
+body > #workbenchSiteNav.site-nav a.nav-primary,body > #workbenchSiteNav.site-nav a.nav-soft{width:32px!important;min-width:32px!important;height:30px!important;min-height:30px!important;border-radius:15px!important;padding:0!important;}
+
+/* B28 final compact shell nav override loaded last. */
+body > #workbenchSiteNav.site-nav{max-width:336px!important;height:34px!important;min-height:34px!important;padding:2px 3px!important;gap:3px!important;border-radius:18px!important;}
+body > #workbenchSiteNav.site-nav .account-chip{height:28px!important;min-height:28px!important;min-width:112px!important;max-width:132px!important;border-radius:14px!important;padding:0 8px!important;gap:6px!important;}
+body > #workbenchSiteNav.site-nav .account-role{width:8px!important;height:8px!important;min-width:8px!important;min-height:8px!important;padding:0!important;font-size:0!important;line-height:0!important;}
+body > #workbenchSiteNav.site-nav .account-name{font-size:12px!important;max-width:102px!important;}
+body > #workbenchSiteNav.site-nav .profile-picker-wrap{min-width:104px!important;flex:0 0 104px!important;max-width:112px!important;}
+body > #workbenchSiteNav.site-nav .profile-picker-button,body > #workbenchSiteNav.site-nav .profile-switch{height:28px!important;min-height:28px!important;border-radius:14px!important;padding:0 7px!important;}
+body > #workbenchSiteNav.site-nav .profile-picker-name{font-size:11px!important;max-width:68px!important;}
+body > #workbenchSiteNav.site-nav .profile-picker-model{display:none!important;}
+body > #workbenchSiteNav.site-nav a.nav-primary,body > #workbenchSiteNav.site-nav a.nav-soft{width:29px!important;min-width:29px!important;height:28px!important;min-height:28px!important;border-radius:14px!important;padding:0!important;}
+body > #workbenchSiteNav.site-nav .nav-ico{font-size:13px!important;}

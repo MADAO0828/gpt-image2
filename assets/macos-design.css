@@ -641,3 +641,102 @@ html:not(.gpt-agent-mode) #root [role="menu"]{max-height:min(360px,calc(100vh - 
 /* B25.1 keep dropdown options compact and fully visible inside composer. */
 html:not(.gpt-agent-mode) #root .mt-3 [class*="overflow-y-auto"][class*="absolute"][class*="z-50"]{max-height:none!important;overflow:visible!important;border-radius:18px!important;padding:4px!important;}
 html:not(.gpt-agent-mode) #root .mt-3 [class*="overflow-y-auto"][class*="absolute"][class*="z-50"] [class*="cursor-pointer"]{height:42px!important;min-height:42px!important;padding-top:0!important;padding-bottom:0!important;display:flex!important;align-items:center!important;}
+
+/* B27 final UI tightening: smaller nav, portal-like dropdowns, non-collapsed Agent composer, macOS prompt popup. */
+body>#workbenchSiteNav.site-nav{width:auto!important;min-width:0!important;max-width:368px!important;height:36px!important;min-height:36px!important;padding:2px 4px!important;gap:4px!important;border-radius:20px!important;box-shadow:0 6px 18px rgba(0,0,0,.16),inset 0 1px 0 rgba(255,255,255,.08)!important;}
+body>#workbenchSiteNav.site-nav .account-chip{height:30px!important;min-height:30px!important;min-width:126px!important;max-width:150px!important;border-radius:15px!important;padding:0 9px!important;gap:7px!important;}
+body>#workbenchSiteNav.site-nav .account-role{width:9px!important;height:9px!important;min-width:9px!important;min-height:9px!important;padding:0!important;font-size:0!important;}
+body>#workbenchSiteNav.site-nav .account-name{font-size:12px!important;max-width:116px!important;}
+body>#workbenchSiteNav.site-nav .profile-picker-wrap{min-width:118px!important;flex:0 0 118px!important;max-width:128px!important;}
+body>#workbenchSiteNav.site-nav .profile-picker-button,body>#workbenchSiteNav.site-nav .profile-switch{height:30px!important;min-height:30px!important;border-radius:15px!important;padding:0 8px!important;}
+body>#workbenchSiteNav.site-nav .profile-picker-name{font-size:11px!important;max-width:78px!important;}
+body>#workbenchSiteNav.site-nav .profile-picker-dot{width:9px!important;height:9px!important;min-width:9px!important;}
+body>#workbenchSiteNav.site-nav a.nav-primary,body>#workbenchSiteNav.site-nav a.nav-soft{width:32px!important;min-width:32px!important;height:30px!important;min-height:30px!important;border-radius:15px!important;padding:0!important;}
+body>#workbenchSiteNav.site-nav .nav-ico{font-size:14px!important;}
+html.gpt-agent-mode .agent-chat-inputbar,html.gpt-agent-mode #root>div.fixed.bottom-4,html.gpt-agent-mode #root>div.fixed.sm\:bottom-6{width:min(1280px,calc(100vw - 56px))!important;max-width:min(1280px,calc(100vw - 56px))!important;bottom:calc(18px + env(safe-area-inset-bottom))!important;}
+html.gpt-agent-mode .agent-chat-inputbar>div,html.gpt-agent-mode #root>div.fixed.bottom-4>div,html.gpt-agent-mode #root>div.fixed.sm\:bottom-6>div{padding:14px!important;border-radius:26px!important;min-height:142px!important;overflow:visible!important;}
+html.gpt-agent-mode .agent-chat-inputbar [contenteditable="true"],html.gpt-agent-mode #root>div.fixed.bottom-4 [contenteditable="true"],html.gpt-agent-mode #root>div.fixed.sm\:bottom-6 [contenteditable="true"]{height:68px!important;min-height:68px!important;max-height:168px!important;padding:16px 18px!important;border-radius:22px!important;}
+html.gpt-agent-mode .agent-chat-inputbar .mt-3,html.gpt-agent-mode #root>div.fixed.bottom-4 .mt-3,html.gpt-agent-mode #root>div.fixed.sm\:bottom-6 .mt-3{display:block!important;visibility:visible!important;margin-top:10px!important;padding-top:10px!important;border-top:1px solid var(--composer-line)!important;}
+html.gpt-agent-mode .composer-expand-toggle{display:none!important;}
+html.gpt-agent-mode #agentShellHost .agent-current-session-box:focus,html.gpt-agent-mode #agentShellHost .agent-current-session-box:focus-visible{outline:none!important;box-shadow:0 0 0 1px color-mix(in srgb,var(--mac-blue) 22%,transparent),0 8px 22px rgba(0,0,0,.12)!important;border-color:color-mix(in srgb,var(--mac-blue) 28%,var(--mac-border))!important;}
+html.gpt-agent-mode #agentShellHost .agent-current-session-box[data-editing="1"]{background:color-mix(in srgb,var(--mac-blue) 7%,var(--mac-bg-elevated))!important;border-color:color-mix(in srgb,var(--mac-blue) 24%,var(--mac-border))!important;box-shadow:0 8px 22px rgba(0,0,0,.14)!important;}
+html.gpt-agent-mode #agentShellHost .agent-current-session-box input{outline:none!important;box-shadow:none!important;border:0!important;}
+html:not(.gpt-agent-mode) #root>div.fixed.bottom-4>div,html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6>div{overflow:visible!important;}
+html:not(.gpt-agent-mode) #root .mt-3 [class*="overflow-y-auto"][class*="absolute"][class*="z-50"]{z-index:260!important;max-height:none!important;overflow:visible!important;clip-path:none!important;transform:translateY(-8px)!important;}
+html:not(.gpt-agent-mode) #root .mt-3 [class*="overflow-y-auto"][class*="absolute"][class*="z-50"] [class*="cursor-pointer"]{height:38px!important;min-height:38px!important;padding-top:0!important;padding-bottom:0!important;}
+html:has(#root .fixed.inset-0) #root .fixed.inset-0:has(.prompt-repo-card),html:has(#root .fixed.inset-0) #root .fixed.inset-0:has([data-prompt-repo]){backdrop-filter:blur(24px)!important;-webkit-backdrop-filter:blur(24px)!important;}
+#root .fixed.inset-0 [class*="提示词仓库"],#root .fixed.inset-0 h2,#root .fixed.inset-0 h3{letter-spacing:-.03em!important;}
+#root .fixed.inset-0 div:has(> input[placeholder*="搜索提示词"]){position:sticky!important;top:0!important;z-index:5!important;background:linear-gradient(180deg,color-mix(in srgb,var(--mac-bg-elevated) 96%,transparent),color-mix(in srgb,var(--mac-bg-elevated) 80%,transparent))!important;backdrop-filter:var(--mac-vibrancy)!important;}
+#root .fixed.inset-0 input[placeholder*="搜索提示词"]{height:48px!important;border-radius:18px!important;background:var(--mac-surface)!important;border:1px solid var(--mac-border)!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.08)!important;}
+#root .fixed.inset-0 button,#root .fixed.inset-0 a{border-radius:999px!important;}
+#root .fixed.inset-0 img{border-radius:22px!important;}
+#root .fixed.inset-0 [class*="overflow-y-auto"]{scrollbar-gutter:stable!important;}
+@media(max-width:900px){body>#workbenchSiteNav.site-nav{max-width:calc(100vw - 16px)!important}body>#workbenchSiteNav.site-nav .account-chip{min-width:112px!important;max-width:132px!important}body>#workbenchSiteNav.site-nav .profile-picker-wrap{min-width:106px!important;flex-basis:106px!important}}
+
+/* B28 focused fixes: compact nav, true modal-grade prompt repository popup, uncollapsed Agent composer, unclipped composer menus. */
+body>#workbenchSiteNav.site-nav{max-width:336px!important;height:34px!important;min-height:34px!important;padding:2px 3px!important;gap:3px!important;border-radius:18px!important;box-shadow:0 5px 14px rgba(15,23,42,.13),inset 0 1px 0 rgba(255,255,255,.42)!important;}
+body>#workbenchSiteNav.site-nav .account-chip{height:28px!important;min-height:28px!important;min-width:112px!important;max-width:132px!important;border-radius:14px!important;padding:0 8px!important;gap:6px!important;}
+body>#workbenchSiteNav.site-nav .account-role{width:8px!important;height:8px!important;min-width:8px!important;min-height:8px!important;font-size:0!important;padding:0!important;}
+body>#workbenchSiteNav.site-nav .account-name{font-size:12px!important;max-width:102px!important;letter-spacing:-.01em!important;}
+body>#workbenchSiteNav.site-nav .profile-picker-wrap{min-width:104px!important;flex:0 0 104px!important;max-width:112px!important;}
+body>#workbenchSiteNav.site-nav .profile-picker-button,body>#workbenchSiteNav.site-nav .profile-switch{height:28px!important;min-height:28px!important;border-radius:14px!important;padding:0 7px!important;}
+body>#workbenchSiteNav.site-nav .profile-picker-name{font-size:11px!important;max-width:68px!important;}
+body>#workbenchSiteNav.site-nav .profile-picker-dot{width:8px!important;height:8px!important;min-width:8px!important;}
+body>#workbenchSiteNav.site-nav a.nav-primary,body>#workbenchSiteNav.site-nav a.nav-soft{width:29px!important;min-width:29px!important;height:28px!important;min-height:28px!important;border-radius:14px!important;padding:0!important;}
+body>#workbenchSiteNav.site-nav .nav-ico{font-size:13px!important;}
+
+html.gpt-agent-mode .composer-expand-toggle{display:none!important;visibility:hidden!important;pointer-events:none!important;}
+html.gpt-agent-mode .agent-chat-inputbar,html.gpt-agent-mode #root>div.fixed.bottom-4,html.gpt-agent-mode #root>div.fixed.sm\:bottom-6{width:min(1280px,calc(100vw - 56px))!important;max-width:min(1280px,calc(100vw - 56px))!important;bottom:calc(18px + env(safe-area-inset-bottom))!important;}
+html.gpt-agent-mode .agent-chat-inputbar>div,html.gpt-agent-mode #root>div.fixed.bottom-4>div,html.gpt-agent-mode #root>div.fixed.sm\:bottom-6>div{min-height:136px!important;padding:14px!important;border-radius:26px!important;overflow:visible!important;}
+html.gpt-agent-mode .agent-chat-inputbar [contenteditable="true"],html.gpt-agent-mode #root>div.fixed.bottom-4 [contenteditable="true"],html.gpt-agent-mode #root>div.fixed.sm\:bottom-6 [contenteditable="true"]{height:68px!important;min-height:68px!important;max-height:168px!important;padding:15px 18px!important;border-radius:22px!important;}
+html.gpt-agent-mode .agent-chat-inputbar .mt-3,html.gpt-agent-mode #root>div.fixed.bottom-4 .mt-3,html.gpt-agent-mode #root>div.fixed.sm\:bottom-6 .mt-3{display:flex!important;visibility:visible!important;opacity:1!important;margin-top:10px!important;padding-top:10px!important;overflow:visible!important;}
+html.gpt-agent-mode #agentShellHost .agent-current-session-box:focus,html.gpt-agent-mode #agentShellHost .agent-current-session-box:focus-visible{outline:none!important;border-color:color-mix(in srgb,var(--mac-border) 75%,var(--mac-text))!important;background:color-mix(in srgb,var(--mac-bg-elevated) 92%,var(--mac-text) 4%)!important;box-shadow:0 8px 22px rgba(15,23,42,.10),inset 0 1px 0 rgba(255,255,255,.34)!important;}
+html.gpt-agent-mode #agentShellHost .agent-current-session-box[data-editing="1"]{outline:none!important;border-color:color-mix(in srgb,var(--mac-border) 72%,var(--mac-text))!important;background:color-mix(in srgb,var(--mac-bg-elevated) 94%,var(--mac-text) 3%)!important;box-shadow:0 10px 26px rgba(15,23,42,.12),inset 0 1px 0 rgba(255,255,255,.36)!important;}
+html.gpt-agent-mode #agentShellHost .agent-current-session-box input{outline:none!important;box-shadow:none!important;border:0!important;background:transparent!important;}
+
+/* Composer dropdowns must escape the bottom composer visual boundary. */
+html:not(.gpt-agent-mode) #root>div.fixed.bottom-4,html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6,html:not(.gpt-agent-mode) #root>div.fixed.bottom-4>div,html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6>div,html:not(.gpt-agent-mode) #root>div.fixed.bottom-4 .mt-3,html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6 .mt-3,html:not(.gpt-agent-mode) #root>div.fixed.bottom-4 label,html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6 label{overflow:visible!important;contain:none!important;}
+html:not(.gpt-agent-mode) #root .mt-3 [class*="absolute"][class*="z-50"],html:not(.gpt-agent-mode) #root .mt-3 [role="listbox"],html:not(.gpt-agent-mode) #root .mt-3 [role="menu"]{z-index:320!important;max-height:none!important;overflow:visible!important;clip-path:none!important;transform:translateY(-10px)!important;border-radius:18px!important;box-shadow:0 18px 50px rgba(15,23,42,.20),inset 0 1px 0 rgba(255,255,255,.48)!important;background:color-mix(in srgb,var(--mac-bg-elevated) 96%,transparent)!important;backdrop-filter:var(--mac-vibrancy)!important;-webkit-backdrop-filter:var(--mac-vibrancy)!important;}
+
+/* In-workbench prompt repository modal: target the body-level React portal, not /prompts page. */
+body>div.fixed.inset-0.z-\[80\]{z-index:210!important;padding:22px!important;}
+body>div.fixed.inset-0.z-\[80\]>div:first-child{background:rgba(8,13,23,.42)!important;backdrop-filter:saturate(150%) blur(26px)!important;-webkit-backdrop-filter:saturate(150%) blur(26px)!important;}
+body>div.fixed.inset-0.z-\[80\]>div.relative.z-10{max-width:min(1120px,calc(100vw - 44px))!important;max-height:min(86vh,820px)!important;border-radius:30px!important;border:1px solid color-mix(in srgb,var(--mac-border) 72%,transparent)!important;background:color-mix(in srgb,var(--mac-bg-elevated) 94%,transparent)!important;box-shadow:0 34px 110px rgba(0,0,0,.30),inset 0 1px 0 rgba(255,255,255,.46)!important;backdrop-filter:saturate(180%) blur(34px)!important;-webkit-backdrop-filter:saturate(180%) blur(34px)!important;overflow:hidden!important;}
+body>div.fixed.inset-0.z-\[80\]>div.relative.z-10>div.sticky{height:64px!important;padding:0 20px!important;border-bottom:1px solid var(--mac-border)!important;background:linear-gradient(180deg,color-mix(in srgb,var(--mac-bg-elevated) 96%,transparent),color-mix(in srgb,var(--mac-bg-elevated) 82%,transparent))!important;backdrop-filter:var(--mac-vibrancy)!important;-webkit-backdrop-filter:var(--mac-vibrancy)!important;}
+body>div.fixed.inset-0.z-\[80\] h3{font-size:20px!important;font-weight:900!important;letter-spacing:-.035em!important;color:var(--mac-text)!important;}
+body>div.fixed.inset-0.z-\[80\] button{border-radius:999px!important;transition:transform .16s ease,background .16s ease,box-shadow .16s ease!important;}
+body>div.fixed.inset-0.z-\[80\] button:hover{transform:translateY(-1px)!important;}
+body>div.fixed.inset-0.z-\[80\] input[placeholder*="搜索"]{height:48px!important;border-radius:18px!important;border:1px solid var(--mac-border)!important;background:var(--mac-surface)!important;padding-inline:16px!important;font-weight:750!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.26)!important;}
+body>div.fixed.inset-0.z-\[80\] input[placeholder*="搜索"]:focus{outline:none!important;border-color:color-mix(in srgb,var(--mac-blue) 42%,var(--mac-border))!important;box-shadow:0 0 0 4px color-mix(in srgb,var(--mac-blue) 12%,transparent),inset 0 1px 0 rgba(255,255,255,.30)!important;}
+body>div.fixed.inset-0.z-\[80\]>div.relative.z-10>div:nth-child(3){padding:16px 20px 10px!important;background:color-mix(in srgb,var(--mac-bg-elevated) 88%,transparent)!important;border-bottom:1px solid color-mix(in srgb,var(--mac-border) 74%,transparent)!important;}
+body>div.fixed.inset-0.z-\[80\]>div.relative.z-10>div:last-child{padding:18px 20px 22px!important;background:var(--mac-bg)!important;}
+body>div.fixed.inset-0.z-\[80\] img{border-radius:20px!important;box-shadow:0 12px 28px rgba(15,23,42,.13)!important;}
+body>div.fixed.inset-0.z-\[80\] [class*="grid"]>button,body>div.fixed.inset-0.z-\[80\] [class*="grid"]>div{border-radius:24px!important;border:1px solid var(--mac-border)!important;background:var(--mac-bg-elevated)!important;box-shadow:0 10px 28px rgba(15,23,42,.08)!important;overflow:hidden!important;}
+@media(max-width:900px){body>#workbenchSiteNav.site-nav{max-width:calc(100vw - 16px)!important}body>#workbenchSiteNav.site-nav .account-chip{min-width:104px!important;max-width:124px!important}body>#workbenchSiteNav.site-nav .profile-picker-wrap{min-width:96px!important;flex-basis:96px!important}body>div.fixed.inset-0.z-\[80\]{padding:10px!important}body>div.fixed.inset-0.z-\[80\]>div.relative.z-10{border-radius:24px!important;max-width:calc(100vw - 20px)!important;max-height:calc(100vh - 20px)!important}}
+
+/* B28.1: size modal should not leave the app chrome hidden after Escape/close. */
+html.gpt-modal-open body>#workbenchSiteNav.site-nav,
+html.gpt-modal-open #agentShellHost{opacity:1!important;visibility:visible!important;pointer-events:auto!important;}
+html.gpt-modal-open body>div.fixed.inset-0 body>#workbenchSiteNav.site-nav{opacity:0!important;}
+
+/* B28.2: modal portal wins over stale gpt-modal-open recovery. */
+html.gpt-modal-open:not(:has(body > div.fixed.inset-0)) body>#workbenchSiteNav.site-nav,
+html.gpt-modal-open:not(:has(body > div.fixed.inset-0)) #agentShellHost{opacity:1!important;visibility:visible!important;pointer-events:auto!important;}
+html:has(body > div.fixed.inset-0) body>#workbenchSiteNav.site-nav,
+html:has(body > div.fixed.inset-0) #agentShellHost,
+html:has(body > div.fixed.inset-0) #root header.safe-area-top,
+html:has(body > div.fixed.inset-0) #root>div.fixed.bottom-4,
+html:has(body > div.fixed.inset-0) #root>div.fixed.sm\:bottom-6{opacity:0!important;visibility:hidden!important;pointer-events:none!important;z-index:1!important;}
+
+/* B28.3: Agent input bar itself keeps full composer height; controls are not considered folded. */
+html.gpt-agent-mode .agent-chat-inputbar,
+html.gpt-agent-mode #root>div.fixed.bottom-4,
+html.gpt-agent-mode #root>div.fixed.sm\:bottom-6{min-height:136px!important;height:auto!important;}
+html.gpt-agent-mode #root>div.fixed.bottom-4>div,
+html.gpt-agent-mode #root>div.fixed.sm\:bottom-6>div,
+html.gpt-agent-mode .agent-chat-inputbar>div{min-height:136px!important;}
+
+/* B28.4: ensure the visible Agent composer controls stay inside the full-height panel. */
+html.gpt-agent-mode .agent-chat-inputbar>div,html.gpt-agent-mode #root>div.fixed.bottom-4>div,html.gpt-agent-mode #root>div.fixed.sm\:bottom-6>div{min-height:112px!important;display:flex!important;flex-direction:column!important;justify-content:space-between!important;gap:10px!important;}
+html.gpt-agent-mode .agent-chat-inputbar [contenteditable="true"],html.gpt-agent-mode #root>div.fixed.bottom-4 [contenteditable="true"],html.gpt-agent-mode #root>div.fixed.sm\:bottom-6 [contenteditable="true"]{height:54px!important;min-height:54px!important;padding:13px 16px!important;}
+html.gpt-agent-mode .agent-chat-inputbar .mt-3,html.gpt-agent-mode #root>div.fixed.bottom-4 .mt-3,html.gpt-agent-mode #root>div.fixed.sm\:bottom-6 .mt-3{position:static!important;transform:none!important;margin:0!important;padding:0!important;border-top:0!important;align-items:center!important;}

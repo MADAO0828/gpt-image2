@@ -138,7 +138,7 @@ html.dark .prompt-detail-media{background:radial-gradient(circle at 26% 20%,rgba
   });
 })();
 </script>
-<link rel="stylesheet" href="/assets/macos-design.css?v=macos-b26-20260623"><link rel="stylesheet" href="/assets/shell-ui.css?v=shell-b26-20260623"><script src="/assets/shell-ui.js?v=shell-b26-20260623" defer></script></head><body>
+<link rel="stylesheet" href="/assets/macos-design.css?v=macos-b28-20260623"><link rel="stylesheet" href="/assets/shell-ui.css?v=shell-b28-20260623"><script src="/assets/shell-ui.js?v=shell-b28-20260623" defer></script></head><body>
 <header class="h prompts-unified"><span class="hl">📚 提示词仓库</span><div class="srch top-srch"><input id="s" placeholder="🔍 搜索提示词..." /></div><div class="nav-actions"><span class="acct" id="promptAccountInfo">&#39564;&#35777;&#20013;...</span>
   <button onclick="toggleTheme()" id="theme-toggle" class="b" title="&#20999;&#25442;&#20027;&#39064;"><span class="nav-ico">&#128187;</span><span class="nav-text">&#20027;&#39064;</span></button>
   <a href="/admin" class="b" title="&#21518;&#21488;"><span class="nav-ico">&#9881;</span><span class="nav-text">&#21518;&#21488;</span></a>
@@ -311,4 +311,3 @@ document.getElementById("imgViewer").addEventListener("click",function(){this.cl
 fetch('/api/auth/me',{cache:'no-store',credentials:'same-origin'}).then(function(r){if(!r.ok){authFailed();return null}return r.json()}).then(function(u){var el=document.getElementById('promptAccountInfo');if(el&&u){if(window.GptShell)window.GptShell.setAccount(el,u,u.role);else{el.textContent=(u.role==='admin'?'\u7ba1\u7406\u5458 ':'\u7528\u6237 ')+u.username;el.title=el.textContent}}}).catch(function(){authFailed()});
 loadCategories();
 </script></body></html>
-
