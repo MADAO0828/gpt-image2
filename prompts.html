@@ -172,7 +172,7 @@ html.dark .prompt-detail-media{background:radial-gradient(circle at 26% 20%,rgba
 <div class="overlay" id="imgViewer" style="cursor:zoom-out"><img id="vi" class="img-viewer-img" /></div>
 <script>
 var ITEMS_PER_PAGE = 60;
-var allData = [], filteredData = [], currentCat = "all", currentPage = 1, totalItems = 0, currentPrompt = -1;
+var allData = [], filteredData = [], currentCat = "all", currentPage = 1, totalItems = 0, currentPrompt = -1, isPageLoading = false;
 var useServerMode = true;
 function escHtml(s){if(!s)return"";return(""+s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}
 function escAttr(s){if(!s)return"";return(""+s).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
@@ -218,7 +218,9 @@ function renderCats(cats){
   document.getElementById("cats").innerHTML=h;
 }
 function loadPage(page, reset){
-  if(reset){currentPage=1;filteredData=[];document.getElementById("grid").innerHTML="";document.getElementById("lm").style.display="none";}
+  if(isPageLoading&&!reset)return;
+  if(reset){isPageLoading=false;currentPage=1;filteredData=[];document.getElementById("grid").innerHTML="";document.getElementById("lm").style.display="none";}
+  isPageLoading=true;
   if(useServerMode){
     fetch(apiUrl(page)).then(function(r){return r.json()}).then(function(d){
       if (d && d.total === 0 && d.source !== 'static' && useServerMode) {
@@ -232,14 +234,17 @@ function loadPage(page, reset){
       renderItems(rows, filteredData.length-rows.length);
       updateInfo();
       document.getElementById("lm").style.display=filteredData.length<totalItems?"block":"none";
-    }).catch(function(){fetchStaticFallback()});
+      isPageLoading=false;
+    }).catch(function(){isPageLoading=false;fetchStaticFallback()});
   }else{
     renderStaticPage(page, reset);
+    isPageLoading=false;
   }
 }
 function fetchStaticFallback(){
   useServerMode=false;
   setLoading("加载本地数据...");
+  isPageLoading=true;
   fetch("/prompts_data.json").then(function(r){return r.json()}).then(function(d){
     allData=(Array.isArray(d)?d:[]).map(norm);
     var cats=["all"],map={all:1};
@@ -268,12 +273,14 @@ function renderItems(rows, startIdx){
     card.className="card";card.style.animationDelay=Math.min(i*12,240)+'ms';card.setAttribute("data-idx",idx);
     card.onclick=function(){openModal(parseInt(this.getAttribute("data-idx")))};
     var html="";
-    if(p.i){var src=escAttr(imgProxyUrl(p.i));var eager=idx<24;html+='<div class="card-img"><img '+(eager?'src="'+src+'"':'data-src="'+src+'"')+' referrerpolicy="no-referrer" alt="" loading="'+(eager?'eager':'lazy')+'" decoding="async" fetchpriority="'+(eager?'high':'low')+'" onerror="this.style.display=\'none\'"></div>';}
+    if(p.i){var src=escAttr(imgProxyUrl(p.i));var eager=idx<72;html+='<div class="card-img"><img '+(eager?'src="'+src+'"':'data-src="'+src+'"')+' referrerpolicy="no-referrer" alt="" loading="'+(eager?'eager':'lazy')+'" decoding="async" fetchpriority="'+(eager?'high':'low')+'" onerror="this.style.display=\'none\'"></div>';}
     html+='<div class="card-body"><div class="card-cat">'+escHtml(p.c)+'</div><div class="card-t">'+escHtml(p.t)+'</div><div class="card-p">'+escHtml(trunc(p.p,60))+'</div></div>';
     card.innerHTML=html;grid.appendChild(card);observePromptImages(card);
   }
   var sentinel=document.getElementById('loadSentinel');if(!sentinel){sentinel=document.createElement('div');sentinel.id='loadSentinel';sentinel.style.height='1px';grid.appendChild(sentinel)}else{grid.appendChild(sentinel)}
+  try{if(typeof sentinelObserver!=='undefined'&&sentinelObserver)sentinelObserver.observe(sentinel)}catch(e){}
 }
+
 function updateInfo(){
   document.getElementById("info").textContent="📦 "+totalItems+" 个提示词";
   document.getElementById("pi").textContent=filteredData.length+"/"+totalItems;
@@ -304,3 +311,4 @@ document.getElementById("imgViewer").addEventListener("click",function(){this.cl
 fetch('/api/auth/me',{cache:'no-store',credentials:'same-origin'}).then(function(r){if(!r.ok){authFailed();return null}return r.json()}).then(function(u){var el=document.getElementById('promptAccountInfo');if(el&&u){if(window.GptShell)window.GptShell.setAccount(el,u,u.role);else{el.textContent=(u.role==='admin'?'\u7ba1\u7406\u5458 ':'\u7528\u6237 ')+u.username;el.title=el.textContent}}}).catch(function(){authFailed()});
 loadCategories();
 </script></body></html>
+
