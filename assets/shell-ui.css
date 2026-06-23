@@ -466,3 +466,17 @@ body > #workbenchSiteNav.site-nav .profile-picker-button,
 body > #workbenchSiteNav.site-nav .profile-switch { height: 34px !important; min-height: 34px !important; border-radius: 15px !important; }
 body > #workbenchSiteNav.site-nav a.nav-primary,
 body > #workbenchSiteNav.site-nav a.nav-soft { height: 34px !important; min-height: 34px !important; min-width: 42px !important; border-radius: 15px !important; padding: 0 10px !important; }
+
+/* B25 compact workbench navigation: role is a color dot, action labels are icon-only. */
+body > #workbenchSiteNav.site-nav{height:42px!important;min-height:42px!important;padding:3px 5px!important;gap:5px!important;border-radius:21px!important;}
+body > #workbenchSiteNav.site-nav .account-chip{height:34px!important;min-height:34px!important;min-width:154px!important;max-width:190px!important;padding:0 10px!important;gap:8px!important;}
+body > #workbenchSiteNav.site-nav .account-role{width:10px!important;height:10px!important;min-width:10px!important;min-height:10px!important;padding:0!important;border-radius:999px!important;font-size:0!important;line-height:0!important;box-shadow:0 0 0 4px color-mix(in srgb,var(--shell-admin) 14%,transparent),0 0 16px color-mix(in srgb,var(--shell-admin) 34%,transparent)!important;}
+body > #workbenchSiteNav.site-nav .account-chip:not([data-role="admin"]) .account-role{background:var(--shell-blue)!important;box-shadow:0 0 0 4px color-mix(in srgb,var(--shell-blue) 14%,transparent),0 0 16px color-mix(in srgb,var(--shell-blue) 28%,transparent)!important;}
+body > #workbenchSiteNav.site-nav .account-name{font-size:12px!important;max-width:150px!important;}
+body > #workbenchSiteNav.site-nav .profile-picker-wrap{min-width:142px!important;flex:0 0 142px!important;max-width:158px!important;}
+body > #workbenchSiteNav.site-nav .profile-picker-button,body > #workbenchSiteNav.site-nav .profile-switch{height:34px!important;min-height:34px!important;border-radius:16px!important;}
+body > #workbenchSiteNav.site-nav .profile-picker-name{font-size:12px!important;max-width:106px!important;}
+body > #workbenchSiteNav.site-nav .profile-picker-model{display:none!important;}
+body > #workbenchSiteNav.site-nav a.nav-primary,body > #workbenchSiteNav.site-nav a.nav-soft{width:38px!important;min-width:38px!important;height:34px!important;min-height:34px!important;padding:0!important;border-radius:16px!important;justify-content:center!important;}
+body > #workbenchSiteNav.site-nav a .nav-text,body > #workbenchSiteNav.site-nav .divider,body > #workbenchSiteNav.site-nav .profile-switch-wrap:before{display:none!important;}
+body > #workbenchSiteNav.site-nav .nav-ico{font-size:15px!important;}

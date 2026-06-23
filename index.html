@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8" />
@@ -14,9 +14,9 @@
 <link rel="apple-touch-icon" href="./pwa-icon.svg" />
 <link rel="icon" href="./pwa-icon.svg" type="image/svg+xml" />
 <title>AI 工作台</title>
-<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=macos-b24-20260623" crossorigin="anonymous">
-<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=macos-b24-20260623" as="style" crossorigin="anonymous">
-<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=macos-b24-20260623">
+<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=macos-b26-20260623" crossorigin="anonymous">
+<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=macos-b26-20260623" as="style" crossorigin="anonymous">
+<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=macos-b26-20260623">
 <style>
 *{box-sizing:border-box}
 
@@ -590,7 +590,8 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       el.textContent='';
       var r=document.createElement('span');
       r.className='account-role';
-      r.textContent=prefix;
+      r.setAttribute('aria-hidden','true');
+      r.textContent='';
       var n=document.createElement('span');
       n.className='account-name';
       n.textContent=display;
@@ -798,6 +799,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       var root=document.getElementById('root')||document.documentElement;
       var queued=false;function queueUpdate(){if(queued)return;queued=true;requestAnimationFrame(function(){queued=false;updateAgentCurrentSessionBox();});}
       try{new MutationObserver(queueUpdate).observe(root,{childList:true,subtree:false});}catch(e){}
+      try{document.addEventListener('click',function(){setTimeout(positionAgentHistoryPanel,60);setTimeout(positionAgentHistoryPanel,260);},true);}catch(e){}
       var store=window.__gptImageStore;
       if(store&&store.subscribe){try{store.subscribe(queueUpdate);}catch(e){}}
     }catch(e){}
@@ -1115,7 +1117,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
         nav.style.top=Math.max(6,top)+'px';
         nav.style.right=right+'px';
         nav.style.left='auto';
-        var navDesired=compact?Math.min(500,available):Math.min(568,available);
+        var navDesired=compact?Math.min(430,available):Math.min(486,available);
         var navW=Math.max(180,Math.min(available,navDesired,vw-16));
         nav.style.setProperty('width',navW+'px','important');
         nav.style.setProperty('min-width',Math.min(navW,610)+'px','important');
@@ -1143,6 +1145,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
           }
         }
       }
+      positionAgentHistoryPanel();
       var controls=document.getElementById('agentExtraControls');
       if(controls){
         var bar=document.querySelector('#root .agent-chat-inputbar')||((document.querySelector('#root [contenteditable="true"]')||{}).closest&&document.querySelector('#root [contenteditable="true"]').closest('div.fixed.bottom-4,div.fixed.sm\\:bottom-6'));
@@ -1167,6 +1170,47 @@ if(!('noModule' in HTMLScriptElement.prototype)){
           controls.style.maxWidth=Math.max(140,Math.min(cr.width||260,rr.width-120))+'px'; controls.style.zIndex='70';
         }
       }
+    }catch(e){}
+  }
+
+  function positionAgentHistoryPanel(){
+    try{
+      var store=window.__gptImageStore, st=store&&store.getState&&store.getState();
+      if(!st||st.appMode!=='agent')return;
+      var actions=document.getElementById('agentHeaderActions');
+      var ar=actions&&actions.getBoundingClientRect&&actions.getBoundingClientRect();
+      if(!ar||!ar.width)return;
+      var panel=null, bestArea=Infinity;
+      Array.prototype.forEach.call(document.querySelectorAll('#root div, body>div'),function(el){
+        try{
+          if(el.id==='agentShellHost'||el.id==='workbenchSiteNav')return;
+          var txt=String(el.textContent||''), cls=String(el.className||'');
+          var looksHistory=(txt.indexOf('\u641c\u7d22\u804a\u5929')>=0)||(txt.indexOf('\u4eca\u5929')>=0&&txt.indexOf('\u65b0\u5bf9\u8bdd')>=0&&cls.indexOf('top-12')>=0);
+          if(!looksHistory)return;
+          var r=el.getBoundingClientRect();
+          if(r.width<280||r.width>560||r.height<100||r.height>560)return;
+          var area=r.width*r.height;
+          if(area<bestArea){bestArea=area;panel=el;}
+        }catch(e){}
+      });
+      if(!panel)return;
+      var parentRect=panel.parentElement&&panel.parentElement.getBoundingClientRect&&panel.parentElement.getBoundingClientRect();
+      var xOffset=parentRect?parentRect.left:0;
+      var yOffset=parentRect?parentRect.top:0;
+      var top=Math.max(62,Math.round(ar.bottom+10));
+      var left=Math.max(16,Math.round(ar.left));
+      var vw=Math.max(document.documentElement.clientWidth||0,window.innerWidth||0);
+      var width=Math.min(420,Math.max(320,panel.getBoundingClientRect().width||384));
+      if(left+width>vw-16)left=Math.max(16,vw-width-16);
+      panel.style.setProperty('position','absolute','important');
+      panel.style.setProperty('left',Math.round(left-xOffset)+'px','important');
+      panel.style.setProperty('top',Math.round(top-yOffset)+'px','important');
+      panel.style.setProperty('right','auto','important');
+      panel.style.setProperty('bottom','auto','important');
+      panel.style.setProperty('width',width+'px','important');
+      panel.style.setProperty('max-width','calc(100vw - 32px)','important');
+      panel.style.setProperty('transform','none','important');
+      panel.style.setProperty('z-index','95','important');
     }catch(e){}
   }
 
@@ -1249,14 +1293,19 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       document.documentElement.classList.toggle('composer-has-text',has);
       if(c.bar)c.bar.classList.toggle('composer-has-text',has);
       var btn=document.getElementById('composerExpandToggle');
+      var isAgent=document.documentElement.classList.contains('gpt-agent-mode');
+      if(isAgent){
+        if(btn)btn.style.display='none';
+        return;
+      }
       if(btn&&c.bar){
         var r=c.bar.getBoundingClientRect();
         btn.style.display='flex';
         btn.style.left=Math.max(8,Math.round(r.right-54))+'px';
         btn.style.top=Math.max(8,Math.round(r.top+12))+'px';
         btn.setAttribute('aria-pressed',document.documentElement.classList.contains('composer-expanded')?'true':'false');
-        btn.title=document.documentElement.classList.contains('composer-expanded')?'收起输入栏':'展开输入栏';
-        btn.innerHTML=document.documentElement.classList.contains('composer-expanded')?'&#8964;':'&#8963;';
+        btn.title=document.documentElement.classList.contains('composer-expanded')?'还原输入区域高度':'扩大输入区域';
+        btn.innerHTML=document.documentElement.classList.contains('composer-expanded')?'&#8964;':'&#9974;';
       }else if(btn){btn.style.display='none';}
     }catch(e){}
   }
@@ -1838,7 +1887,7 @@ function applyPendingPrompt(st, pendingPrompt){
     var script=document.createElement('script');
     script.type='module';
     script.crossOrigin='anonymous';
-    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=macos-b24-20260623';
+    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=macos-b26-20260623';
     var settled=false;
     script.onload=function(){settled=true;setLoadingStage('\u4e3b\u7a0b\u5e8f\u811a\u672c\u5df2\u52a0\u8f7d\uff0c\u7b49\u5f85\u754c\u9762\u6302\u8f7d...');waitForAppReady();};
     script.onerror=function(){settled=true;showLoadError('\u4e3b\u7a0b\u5e8f\u811a\u672c\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u6e05\u7a7a\u7f13\u5b58\u540e\u91cd\u8bd5\u3002');};
@@ -1935,7 +1984,7 @@ function applyPendingPrompt(st, pendingPrompt){
   });
 })();
 </script>
-<link rel="stylesheet" href="/assets/macos-design.css?v=macos-b24-20260623"><link rel="stylesheet" href="/assets/shell-ui.css?v=shell-b24-20260623"></head>
+<link rel="stylesheet" href="/assets/macos-design.css?v=macos-b26-20260623"><link rel="stylesheet" href="/assets/shell-ui.css?v=shell-b26-20260623"></head>
 <body>
 <div id="loading-screen" class="loading-screen">
   <div class="spinner"></div>
