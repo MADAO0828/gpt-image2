@@ -563,3 +563,32 @@ html.gpt-agent-mode .agent-chat-inputbar button{height:44px!important;min-height
 html.gpt-agent-mode #agentShellHost .agent-extra-controls{height:44px!important;align-items:center!important;}
 html.gpt-agent-mode #agentShellHost .agent-tool-btn{height:40px!important;border-radius:16px!important;}
 @media(max-width:760px){html:not(.gpt-agent-mode) #root>div.fixed.bottom-4,html:not(.gpt-agent-mode) #root>div.fixed.sm\:bottom-6,html.gpt-agent-mode #root>div.fixed.bottom-4,html.gpt-agent-mode #root>div.fixed.sm\:bottom-6,html.gpt-agent-mode .agent-chat-inputbar{width:calc(100vw - 20px)!important;max-width:calc(100vw - 20px)!important;}}
+
+/* B24 compact composer + tighter nav + Agent left actions */
+.composer-expand-toggle{position:fixed;z-index:74;width:34px;height:34px;border-radius:14px;border:1px solid var(--pd-line);background:color-mix(in srgb,var(--pd-panel-solid) 82%,transparent);color:var(--pd-sub);box-shadow:0 8px 20px rgba(15,23,42,.10),inset 0 1px 0 rgba(255,255,255,.42);backdrop-filter:saturate(180%) blur(22px);-webkit-backdrop-filter:saturate(180%) blur(22px);display:none;align-items:center;justify-content:center;font-size:18px;font-weight:900;line-height:1;cursor:pointer;transition:transform .14s ease,background .16s ease,color .16s ease,border-color .16s ease}.composer-expand-toggle:hover{transform:translateY(-1px);background:color-mix(in srgb,var(--pd-blue) 12%,var(--pd-panel-solid));color:var(--pd-blue);border-color:color-mix(in srgb,var(--pd-blue) 30%,transparent)}.composer-expand-toggle:active{transform:scale(.95)}
+html:not(.composer-expanded):not(.composer-has-text) #root>div.fixed.bottom-4,
+html:not(.composer-expanded):not(.composer-has-text) #root>div.fixed.sm\:bottom-6,
+html.gpt-agent-mode:not(.composer-expanded):not(.composer-has-text) .agent-chat-inputbar{width:min(1120px,calc(100vw - 44px))!important;max-width:min(1120px,calc(100vw - 44px))!important;bottom:calc(14px + env(safe-area-inset-bottom))!important;}
+html:not(.composer-expanded):not(.composer-has-text) #root>div.fixed.bottom-4>div,
+html:not(.composer-expanded):not(.composer-has-text) #root>div.fixed.sm\:bottom-6>div,
+html.gpt-agent-mode:not(.composer-expanded):not(.composer-has-text) .agent-chat-inputbar>div{padding:10px 14px!important;border-radius:24px!important;min-height:0!important;}
+html:not(.composer-expanded):not(.composer-has-text) #root>div.fixed.bottom-4 .mt-3,
+html:not(.composer-expanded):not(.composer-has-text) #root>div.fixed.sm\:bottom-6 .mt-3,
+html.gpt-agent-mode:not(.composer-expanded):not(.composer-has-text) .agent-chat-inputbar .mt-3{display:none!important;}
+html:not(.composer-expanded):not(.composer-has-text) #root>div.fixed.bottom-4 textarea,
+html:not(.composer-expanded):not(.composer-has-text) #root>div.fixed.sm\:bottom-6 textarea,
+html:not(.composer-expanded):not(.composer-has-text) #root>div.fixed.bottom-4 [contenteditable="true"],
+html:not(.composer-expanded):not(.composer-has-text) #root>div.fixed.sm\:bottom-6 [contenteditable="true"],
+html.gpt-agent-mode:not(.composer-expanded):not(.composer-has-text) .agent-chat-inputbar [contenteditable="true"]{height:48px!important;min-height:48px!important;max-height:96px!important;border-radius:18px!important;padding:11px 46px 11px 16px!important;font-size:16px!important;}
+body>#workbenchSiteNav.site-nav{height:42px!important;min-height:42px!important;padding:3px!important;gap:4px!important;border-radius:21px!important;box-shadow:0 8px 20px rgba(15,23,42,.08),inset 0 1px 0 rgba(255,255,255,.45)!important;}
+body>#workbenchSiteNav.site-nav .account-chip{height:34px!important;min-height:34px!important;min-width:196px!important;max-width:270px!important;border-radius:15px!important;padding:0 9px!important;gap:6px!important;}
+body>#workbenchSiteNav.site-nav .account-role{height:20px!important;padding:0 7px!important;font-size:11px!important;}
+body>#workbenchSiteNav.site-nav .account-name{font-size:12px!important;max-width:170px!important;}
+body>#workbenchSiteNav.site-nav .profile-switch-wrap{min-width:150px!important;flex-basis:150px!important;}
+body>#workbenchSiteNav.site-nav .profile-picker-button,body>#workbenchSiteNav.site-nav .profile-switch{height:34px!important;min-height:34px!important;border-radius:15px!important;}
+body>#workbenchSiteNav.site-nav .profile-picker-name{font-size:12px!important;}body>#workbenchSiteNav.site-nav .profile-picker-model{font-size:10px!important;}
+body>#workbenchSiteNav.site-nav a.nav-primary,body>#workbenchSiteNav.site-nav a.nav-soft{height:34px!important;min-height:34px!important;min-width:42px!important;border-radius:15px!important;padding:0 10px!important;}
+body>#workbenchSiteNav.site-nav .nav-ico{font-size:14px!important;}body>#workbenchSiteNav.site-nav .nav-text{font-size:12px!important;}
+html.gpt-agent-mode #agentShellHost .agent-header-actions{display:flex!important;z-index:72!important;height:38px!important;}
+html.gpt-agent-mode #agentShellHost .agent-current-session-box{z-index:72!important;}
+@media(max-width:760px){.composer-expand-toggle{width:32px;height:32px;border-radius:13px}html:not(.composer-expanded):not(.composer-has-text) #root>div.fixed.bottom-4,html:not(.composer-expanded):not(.composer-has-text) #root>div.fixed.sm\:bottom-6,html.gpt-agent-mode:not(.composer-expanded):not(.composer-has-text) .agent-chat-inputbar{width:calc(100vw - 20px)!important;max-width:calc(100vw - 20px)!important}body>#workbenchSiteNav.site-nav .account-chip{min-width:160px!important}.site-nav .nav-text{display:none!important}}

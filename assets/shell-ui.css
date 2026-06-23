@@ -441,3 +441,28 @@ html.gpt-modal-open .profile-picker-panel {
     font-size: 12px !important;
   }
 }
+
+/* B24 compact workbench navigation override loaded after macos-design.css */
+body > #workbenchSiteNav.site-nav {
+  height: 42px !important;
+  min-height: 42px !important;
+  padding: 3px !important;
+  gap: 4px !important;
+  border-radius: 21px !important;
+}
+body > #workbenchSiteNav.site-nav .account-chip {
+  height: 34px !important;
+  min-height: 34px !important;
+  min-width: 196px !important;
+  max-width: 270px !important;
+  border-radius: 15px !important;
+  padding: 0 9px !important;
+  gap: 6px !important;
+}
+body > #workbenchSiteNav.site-nav .account-role { height: 20px !important; padding: 0 7px !important; font-size: 11px !important; }
+body > #workbenchSiteNav.site-nav .account-name { font-size: 12px !important; max-width: 170px !important; }
+body > #workbenchSiteNav.site-nav .profile-picker-wrap { min-width: 150px !important; flex-basis: 150px !important; }
+body > #workbenchSiteNav.site-nav .profile-picker-button,
+body > #workbenchSiteNav.site-nav .profile-switch { height: 34px !important; min-height: 34px !important; border-radius: 15px !important; }
+body > #workbenchSiteNav.site-nav a.nav-primary,
+body > #workbenchSiteNav.site-nav a.nav-soft { height: 34px !important; min-height: 34px !important; min-width: 42px !important; border-radius: 15px !important; padding: 0 10px !important; }

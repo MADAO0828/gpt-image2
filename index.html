@@ -14,9 +14,9 @@
 <link rel="apple-touch-icon" href="./pwa-icon.svg" />
 <link rel="icon" href="./pwa-icon.svg" type="image/svg+xml" />
 <title>AI 工作台</title>
-<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=macos-b19-20260623" crossorigin="anonymous">
-<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=macos-b19-20260623" as="style" crossorigin="anonymous">
-<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=macos-b19-20260623">
+<link rel="modulepreload" href="./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=macos-b24-20260623" crossorigin="anonymous">
+<link rel="preload" href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=macos-b24-20260623" as="style" crossorigin="anonymous">
+<link rel="stylesheet" crossorigin href="./assets/index-BR6pbS6i-gpt2-20260620.css?v=macos-b24-20260623">
 <style>
 *{box-sizing:border-box}
 
@@ -470,7 +470,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
         clearInterval(timer);
         hideLoading();
         hideFastBootSkeleton();
-        setTimeout(function(){watchWorkbenchSettings();watchSiteNavDock();installPromptRepoWheel();installModalChromeGuard();installAgentGuard();installAgentNavConflictFix();installAgentCurrentSessionBox();installAgentInputModePolish();installRunningTaskNavigationGuard();removeUpstreamBrandingAndUpdates();},300);
+        setTimeout(function(){watchWorkbenchSettings();watchSiteNavDock();installPromptRepoWheel();installModalChromeGuard();installAgentGuard();installAgentNavConflictFix();installAgentCurrentSessionBox();installAgentInputModePolish();installComposerCollapsePolish();installRunningTaskNavigationGuard();removeUpstreamBrandingAndUpdates();},300);
       } else if(!mounted&&Date.now()-started>60000){
         clearInterval(timer);
         showLoadError('\u4e3b\u7a0b\u5e8f\u542f\u52a8\u8d85\u65f6\uff1a\u4e3b\u811a\u672c\u5df2\u8bf7\u6c42\uff0c\u4f46\u9875\u9762\u6839\u8282\u70b9\u6ca1\u6709\u6210\u529f\u6302\u8f7d\u3002\u8bf7\u5237\u65b0\u91cd\u8bd5\uff0c\u6216\u8fdb\u5165\u540e\u53f0\u68c0\u67e5\u5f53\u524d\u7528\u6237\u914d\u7f6e\u3002');
@@ -977,7 +977,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       var box=document.getElementById('agentCurrentSessionBox');
       var boxW=0;
       if(box&&box.getAttribute('data-visible')==='1')boxW=Math.max(176,Math.min(260,box.getBoundingClientRect().width||240));
-      var left=18+(boxW?boxW+12:0);
+      var left=18;
       var top=Math.max(6,Math.round(hr.top+(hr.height-38)/2));
       var modeLeft=(mode.rect&&mode.rect.left)||((window.innerWidth||0)/2-80);
       var modeRight=(mode.rect&&mode.rect.right)||((window.innerWidth||0)/2+80);
@@ -986,14 +986,19 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       Array.prototype.forEach.call(document.querySelectorAll('#root header button,#root header a,#root button,#root a'),function(el){
         if(el.closest&&el.closest('#workbenchSiteNav,#agentShellHost'))return;
         if(isInsideModeGroup(el))return;
+        var preset=el.getAttribute('data-agent-left-control')==='1';
         var txt=String(el.textContent||'').replace(/\s+/g,'').trim();
         if(txt==='Agent'||txt==='Gallery'||txt==='\u753b\u5eca'||txt==='\u56fe\u5e93')return;
-        var r=visibleRect(el); if(!r)return;
-        if(r.width<22||r.width>58||r.height<22||r.height>58)return;
-        if(r.top>Math.max(120,hr.bottom+52)||r.bottom<hr.top-12)return;
-        if(r.left<modeLeft-180||r.left>modeRight+260)return;
         var title=String(el.getAttribute('title')||el.getAttribute('aria-label')||'').trim();
-        if(title&&title.indexOf('\u5386\u53f2')<0&&title.indexOf('\u65b0')<0&&title.indexOf('\u5bf9\u8bdd')<0)return;
+        var labelText=String(el.textContent||'').replace(/\s+/g,'').trim();
+        if(!preset){
+          var r=visibleRect(el); if(!r)return;
+          if(r.width<22||r.width>58||r.height<22||r.height>58)return;
+          if(r.top>Math.max(120,hr.bottom+52)||r.bottom<hr.top-12)return;
+          if(r.left>modeRight+260)return;
+          if(title&&title.indexOf('\u5386\u53f2')<0&&title.indexOf('\u65b0')<0&&title.indexOf('\u5bf9\u8bdd')<0)return;
+          if(!title&&labelText.indexOf('\u5386\u53f2')<0&&labelText.indexOf('\u65b0')<0&&labelText.indexOf('\u5bf9\u8bdd')<0&&moved.length>=2)return;
+        }
         if(moved.indexOf(el)<0)moved.push(el);
       });
       moved=moved.slice(0,2);
@@ -1110,7 +1115,8 @@ if(!('noModule' in HTMLScriptElement.prototype)){
         nav.style.top=Math.max(6,top)+'px';
         nav.style.right=right+'px';
         nav.style.left='auto';
-        var navW=Math.max(180,Math.min(available,vw-16));
+        var navDesired=compact?Math.min(500,available):Math.min(568,available);
+        var navW=Math.max(180,Math.min(available,navDesired,vw-16));
         nav.style.setProperty('width',navW+'px','important');
         nav.style.setProperty('min-width',Math.min(navW,610)+'px','important');
         nav.style.setProperty('max-width',navW+'px','important');
@@ -1120,7 +1126,7 @@ if(!('noModule' in HTMLScriptElement.prototype)){
         if(!isAgent||!mode){box.style.display='none';}
         else{
           var rightLimit=Math.max(0,(modeLeftOverride||mode.rect.left)-16);
-          var leftBase=18;
+          var leftBase=Math.max(18,(leftAgentCluster&&leftAgentCluster.count?leftAgentCluster.right+12:18));
           var room=rightLimit-leftBase;
           if(room<170){
             box.style.display='none';
@@ -1129,11 +1135,11 @@ if(!('noModule' in HTMLScriptElement.prototype)){
             var br=box.getBoundingClientRect();
             var btop=Math.round(mode.rect.top+(mode.rect.height-(br.height||42))/2);
             var bw=Math.max(176,Math.min(260,room,br.width||230));
-            box.style.top=Math.max(6,btop)+'px';
-            box.style.left=leftBase+'px';
-            box.style.right='auto';
-            box.style.maxWidth=Math.round(bw)+'px';
-            box.style.width=Math.round(bw)+'px';
+            box.style.setProperty('top',Math.max(6,btop)+'px','important');
+            box.style.setProperty('left',leftBase+'px','important');
+            box.style.setProperty('right','auto','important');
+            box.style.setProperty('max-width',Math.round(bw)+'px','important');
+            box.style.setProperty('width',Math.round(bw)+'px','important');
           }
         }
       }
@@ -1224,6 +1230,59 @@ if(!('noModule' in HTMLScriptElement.prototype)){
       }
       updateAgentCurrentSessionBox();
       positionShellChrome();
+    }catch(e){}
+  }
+
+  function activeWorkbenchComposer(){
+    try{
+      var editable=document.querySelector('#root [contenteditable="true"],#root textarea');
+      var bar=editable&&editable.closest&&editable.closest('div.fixed.bottom-4,div.fixed.sm\\:bottom-6');
+      return {bar:bar,editable:editable};
+    }catch(e){return {bar:null,editable:null};}
+  }
+  function composerTextValue(editable){
+    try{return String(editable&&(editable.value||editable.innerText||editable.textContent)||'').replace(/[\r\n]+/g,' ').trim();}catch(e){return '';}
+  }
+  function updateComposerCollapseState(){
+    try{
+      var c=activeWorkbenchComposer(), has=!!composerTextValue(c.editable);
+      document.documentElement.classList.toggle('composer-has-text',has);
+      if(c.bar)c.bar.classList.toggle('composer-has-text',has);
+      var btn=document.getElementById('composerExpandToggle');
+      if(btn&&c.bar){
+        var r=c.bar.getBoundingClientRect();
+        btn.style.display='flex';
+        btn.style.left=Math.max(8,Math.round(r.right-54))+'px';
+        btn.style.top=Math.max(8,Math.round(r.top+12))+'px';
+        btn.setAttribute('aria-pressed',document.documentElement.classList.contains('composer-expanded')?'true':'false');
+        btn.title=document.documentElement.classList.contains('composer-expanded')?'收起输入栏':'展开输入栏';
+        btn.innerHTML=document.documentElement.classList.contains('composer-expanded')?'&#8964;':'&#8963;';
+      }else if(btn){btn.style.display='none';}
+    }catch(e){}
+  }
+  function installComposerCollapsePolish(){
+    try{
+      if(window.__gptImageComposerCollapseInstalled)return;
+      window.__gptImageComposerCollapseInstalled=true;
+      var btn=document.getElementById('composerExpandToggle');
+      if(!btn){
+        btn=document.createElement('button');
+        btn.type='button';
+        btn.id='composerExpandToggle';
+        btn.className='composer-expand-toggle';
+        btn.setAttribute('aria-label','展开或收起输入栏');
+        document.body.appendChild(btn);
+      }
+      btn.addEventListener('click',function(ev){
+        ev.preventDefault();ev.stopPropagation();
+        document.documentElement.classList.toggle('composer-expanded');
+        updateComposerCollapseState();
+      },true);
+      var queued=false;function queue(){if(queued)return;queued=true;requestAnimationFrame(function(){queued=false;updateComposerCollapseState();});}
+      try{document.addEventListener('input',queue,true);document.addEventListener('focusin',queue,true);document.addEventListener('click',queue,true);window.addEventListener('resize',queue,{passive:true});}catch(e){}
+      try{new MutationObserver(queue).observe(document.getElementById('root')||document.documentElement,{childList:true,subtree:true});}catch(e){}
+      var store=window.__gptImageStore;if(store&&store.subscribe){try{store.subscribe(queue);}catch(e){}}
+      queue();
     }catch(e){}
   }
   function installAgentInputModePolish(){
@@ -1779,7 +1838,7 @@ function applyPendingPrompt(st, pendingPrompt){
     var script=document.createElement('script');
     script.type='module';
     script.crossOrigin='anonymous';
-    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=macos-b19-20260623';
+    script.src='./assets/index-CZHhOunP-gpt2-20260621-agent-prompts-2.js?v=macos-b24-20260623';
     var settled=false;
     script.onload=function(){settled=true;setLoadingStage('\u4e3b\u7a0b\u5e8f\u811a\u672c\u5df2\u52a0\u8f7d\uff0c\u7b49\u5f85\u754c\u9762\u6302\u8f7d...');waitForAppReady();};
     script.onerror=function(){settled=true;showLoadError('\u4e3b\u7a0b\u5e8f\u811a\u672c\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u6e05\u7a7a\u7f13\u5b58\u540e\u91cd\u8bd5\u3002');};
@@ -1876,7 +1935,7 @@ function applyPendingPrompt(st, pendingPrompt){
   });
 })();
 </script>
-<link rel="stylesheet" href="/assets/macos-design.css?v=macos-b19-20260623"><link rel="stylesheet" href="/assets/shell-ui.css?v=shell-b19-20260623"></head>
+<link rel="stylesheet" href="/assets/macos-design.css?v=macos-b24-20260623"><link rel="stylesheet" href="/assets/shell-ui.css?v=shell-b24-20260623"></head>
 <body>
 <div id="loading-screen" class="loading-screen">
   <div class="spinner"></div>
