@@ -1,6 +1,10 @@
 const JWT_FALLBACK = 'gpt-image2-jwt-secret-key-2026-secure';
 
-function secret(env) { return env && env.JWT_SECRET ? env.JWT_SECRET : JWT_FALLBACK; }
+function secret(env) {
+  if (env && env.JWT_SECRET) return env.JWT_SECRET;
+  if (env && env.ALLOW_INSECURE_JWT_FALLBACK === 'true') return JWT_FALLBACK;
+  throw new Error('JWT_SECRET is required');
+}
 function b64url(bytes) { return btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
 function b64urlDecode(str) { str = str.replace(/-/g, '+').replace(/_/g, '/'); while (str.length % 4) str += '='; return Uint8Array.from(atob(str), c => c.charCodeAt(0)); }
 function getCookie(header, name) { const m = (header || '').match(new RegExp('(?:^|;\\s*)' + name + '=([^;]*)')); return m ? decodeURIComponent(m[1]) : null; }
@@ -27,7 +31,7 @@ async function loadSettings(db, userId) {
 }
 
 function isSecretField(name) {
-  return /^(apiKey|api_key|api-key|authorization|bearerToken|accessToken|refreshToken)$/i.test(String(name || ''));
+  return /^(apiKey|nativeApiKey|googleNativeApiKey|api_key|api-key|authorization|bearerToken|accessToken|refreshToken)$/i.test(String(name || ''));
 }
 
 function isUnsafeSecretPlaceholder(value) {
@@ -65,6 +69,11 @@ function preserveProfileSecrets(incomingProfiles, existingProfiles) {
       const old = oldMap.get(profileKey(next));
       if (old && old.apiKey && !isUnsafeSecretPlaceholder(old.apiKey)) next.apiKey = old.apiKey;
       else delete next.apiKey;
+    }
+    if (isUnsafeSecretPlaceholder(next.nativeApiKey)) {
+      const old = oldMap.get(profileKey(next));
+      if (old && old.nativeApiKey && !isUnsafeSecretPlaceholder(old.nativeApiKey)) next.nativeApiKey = old.nativeApiKey;
+      else delete next.nativeApiKey;
     }
     return next;
   });

@@ -1,40 +1,65 @@
-﻿const fs = require('fs');
+const fs = require('fs');
 const path = require('path');
-const bundle = fs.readFileSync(path.join(__dirname, '..', 'assets', 'index-CZHhOunP-gpt2-20260621-agent-prompts-2.js'), 'utf8');
+
+const home = fs.readFileSync(path.join(__dirname, '..', 'assets', 'homepage-v3.js'), 'utf8');
+const proxy = fs.readFileSync(path.join(__dirname, '..', 'functions', 'api-proxy', '[[path]].js'), 'utf8');
+let failed = false;
 
 function assertContains(name, needle) {
-  if (!bundle.includes(needle)) {
+  if (!home.includes(needle)) {
     console.error(`FAIL ${name}: missing ${needle}`);
-    process.exitCode = 1;
+    failed = true;
   } else {
     console.log(`OK   ${name}`);
   }
 }
 
-// Gallery image generation JSON body must include toolbar params.
-assertContains('generation sends size/output_format/moderation', 'const k={model:r.model,prompt:u,size:s.size,output_format:s.output_format,moderation:s.moderation}');
-assertContains('generation sends quality unless codexCli', 'r.codexCli||(k.quality=s.quality)');
-assertContains('generation sends jpeg/webp compression only', 's.output_format!=="png"&&s.output_compression!=null&&(k.output_compression=s.output_compression)');
-assertContains('generation sends n only when >1', 's.n>1&&(k.n=s.n)');
-assertContains('generation sends stream flags from profile', 'r.streamImages&&(k.stream=!0,k.partial_images=Ph(r))');
+function assertPattern(name, pattern) {
+  if (!pattern.test(home)) {
+    console.error(`FAIL ${name}: missing pattern ${pattern}`);
+    failed = true;
+  } else {
+    console.log(`OK   ${name}`);
+  }
+}
+function assertProxyContains(name, needle) {
+  if (!proxy.includes(needle)) {
+    console.error(`FAIL ${name}: missing ${needle}`);
+    failed = true;
+  } else {
+    console.log(`OK   ${name}`);
+  }
+}
 
-// Edit / image-to-image FormData branch must include the same toolbar params.
-assertContains('edit sends quality unless codexCli', 'r.codexCli||k.append("quality",s.quality)');
-assertContains('edit sends jpeg/webp compression only', 's.output_format!=="png"&&s.output_compression!=null&&k.append("output_compression",String(s.output_compression))');
-assertContains('edit sends n only when >1', 's.n>1&&k.append("n",String(s.n))');
+// JSON and multipart image requests must share the same visible composer params.
+assertContains('JSON sends image output params', 'appendImageOutputParams(body, requestParams)');
+assertContains('multipart sends image output params', 'appendImageOutputParams(fd, requestParams)');
+assertContains('OpenAI edits use image field', "const imageFieldName = provider === 'google' ? 'image[]' : 'image'");
+assertContains('JSON sends provider payload', 'Object.assign(body, providerPayload(provider, requestParams))');
+assertContains('multipart sends provider payload', 'appendProviderParams(fd, provider, requestParams)');
+assertPattern('output params include quality', /quality:\s*firstDefined\(/);
+assertContains('output params include format', 'output_format: format');
+assertContains('non-png sends compression', "out.output_compression = Number(firstDefined");
+assertContains('png sends transparent background', 'out.transparent_background = !!firstDefined');
+assertContains('generation n respects Google split', "n: provider === 'google' ? 1");
+assertContains('edit n respects Google split', "fd.append('n', String(provider === 'google' ? 1");
 
-// Parameter normalization must not silently keep compression for PNG, and codexCli should disable quality.
-assertContains('png disables output_compression', 'u.output_format==="png"&&(u.output_compression=oa.output_compression)');
-assertContains('codexCli resets quality to auto', 's.provider==="openai"&&s.codexCli&&(u.quality=oa.quality)');
+// Per-entry advanced profile fields must affect the active request path.
+assertContains('advanced b64 is read', 'responseFormatB64Json');
+assertContains('JSON b64 guarded by provider', "advanced.responseFormatB64Json && provider !== 'google' && provider !== 'xai'");
+assertContains('multipart b64 guarded by provider', "form.append('response_format', 'b64_json')");
+assertContains('JSON stream flags injected', 'body.stream = true');
+assertContains('multipart stream flags injected', "form.append('stream', 'true')");
+assertContains('partial images injected', 'partial_images');
+assertContains('advanced timeout header injected', 'X-GPT-Image-Timeout-Seconds');
 
+// Google/Nano must use the official 4K size table and the SkyAPI-compatible imageConfig shape.
+assertContains('Google 4K 3:2 maps to official Gemini dimensions', "'3:2': '5056x3392'");
+assertContains('Google request uses string response_format', "response_format: 'url'");
+assertContains('Google request sends image tier as size', 'size: imageSize');
+assertContains('Google request includes Gemini imageConfig', 'imageConfig: {');
+assertContains('Google request includes Gemini imageConfig aspect ratio', 'aspectRatio,');
+assertContains('Google request includes target_size', 'target_size: officialSize');
+assertProxyContains('proxy streams successful image JSON', 'X-GPT-Image-Proxy-Streamed');
 
-// Admin/runtime profile plumbing must preserve b64_json preference.
-assertContains('settings normalization preserves active profile b64_json', 'responseFormatB64Json:m.responseFormatB64Json');
-assertContains('runtime profile inherits root b64_json override', 'responseFormatB64Json:typeof r.responseFormatB64Json==="boolean"?r.responseFormatB64Json:s.responseFormatB64Json');
-assertContains('generation sends b64_json when enabled', 'r.responseFormatB64Json&&(k.response_format="b64_json")');
-assertContains('edit sends b64_json when enabled', 'r.responseFormatB64Json&&k.append("response_format","b64_json")');
-
-// 4K mapping currently used by the toolbar.
-assertContains('4K 16:9 maps to 3840x2160', '"16:9":"3840x2160"');
-
-if (process.exitCode) process.exit(process.exitCode);
+if (failed) process.exit(1);

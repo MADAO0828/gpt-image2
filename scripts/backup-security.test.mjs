@@ -69,15 +69,15 @@ test('backup export masks current user API secrets and includes no plaintext key
     users: [{ id: 7, username: 'alice', role: 'user' }],
     settings: { 7: [
       { key: 'apiKey', value: JSON.stringify('sk-real-secret'), updated_at: '2026-06-23 01:00:00' },
-      { key: 'profiles', value: JSON.stringify([{ id: 'p1', apiKey: 'sk-profile-secret', baseUrl: 'https://api.example/v1' }]), updated_at: '2026-06-23 01:00:00' }
+      { key: 'profiles', value: JSON.stringify([{ id: 'p1', apiKey: 'sk-profile-secret', nativeApiKey: 'gemini-profile-secret', baseUrl: 'https://api.example/v1' }]), updated_at: '2026-06-23 01:00:00' }
     ] }
   });
   const token = await signToken({ userId: 7, exp: Math.floor(Date.now() / 1000) + 60 });
-  const res = await mod.onRequestGet({ request: new Request('https://local/api/settings/backup', { headers: { 'X-GPT-Image-Session': token } }), env: { gpt_image2_db: db } });
+  const res = await mod.onRequestGet({ request: new Request('https://local/api/settings/backup', { headers: { 'X-GPT-Image-Session': token } }), env: { gpt_image2_db: db, ALLOW_INSECURE_JWT_FALLBACK: 'true' } });
   assert.equal(res.status, 200);
   const text = await res.text();
   assert.match(text, /\*\*\*MASKED\*\*\*/);
-  assert.doesNotMatch(text, /sk-real-secret|sk-profile-secret/);
+  assert.doesNotMatch(text, /sk-real-secret|sk-profile-secret|gemini-profile-secret/);
 });
 
 test('admin backup export can include user summary but no password hashes or API keys', async () => {
@@ -87,7 +87,7 @@ test('admin backup export can include user summary but no password hashes or API
     { id: 2, username: 'bob', role: 'user', password_hash: 'hash2' }
   ], settings: { 1: [{ key: 'apiKey', value: JSON.stringify('sk-admin'), updated_at: 'x' }] } });
   const token = await signToken({ userId: 1, exp: Math.floor(Date.now() / 1000) + 60 });
-  const res = await mod.onRequestGet({ request: new Request('https://local/api/settings/backup?scope=users', { headers: { 'X-GPT-Image-Session': token } }), env: { gpt_image2_db: db } });
+  const res = await mod.onRequestGet({ request: new Request('https://local/api/settings/backup?scope=users', { headers: { 'X-GPT-Image-Session': token } }), env: { gpt_image2_db: db, ALLOW_INSECURE_JWT_FALLBACK: 'true' } });
   assert.equal(res.status, 200);
   const text = await res.text();
   assert.match(text, /"users"/);
@@ -98,7 +98,7 @@ test('backup import rejects masked API keys instead of storing placeholders as s
   const mod = await importWorkerModule('functions/api/settings/backup.js', ['onRequestPost']);
   const db = makeDb({ users: [{ id: 7, username: 'alice', role: 'user' }], settings: { 7: [] } });
   const token = await signToken({ userId: 7, exp: Math.floor(Date.now() / 1000) + 60 });
-  const res = await mod.onRequestPost({ request: new Request('https://local/api/settings/backup', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-GPT-Image-Session': token }, body: JSON.stringify({ settings: { apiKey: '***MASKED***', model: 'gpt-image-2' } }) }), env: { gpt_image2_db: db } });
+  const res = await mod.onRequestPost({ request: new Request('https://local/api/settings/backup', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-GPT-Image-Session': token }, body: JSON.stringify({ settings: { apiKey: '***MASKED***', model: 'gpt-image-2' } }) }), env: { gpt_image2_db: db, ALLOW_INSECURE_JWT_FALLBACK: 'true' } });
   assert.equal(res.status, 200);
   assert.equal(db.writes.some(w => w.bound.includes('apiKey')), false);
 });
@@ -109,14 +109,15 @@ test('settings save preserves existing secrets when placeholder strings are post
     users: [{ id: 3, username: 'user', role: 'user' }],
     settings: { 3: [
       { key: 'apiKey', value: JSON.stringify('sk-existing'), updated_at: 'x' },
-      { key: 'profiles', value: JSON.stringify([{ id: 'main', apiKey: 'sk-profile-existing' }]), updated_at: 'x' }
+      { key: 'profiles', value: JSON.stringify([{ id: 'main', apiKey: 'sk-profile-existing', nativeApiKey: 'gemini-existing' }]), updated_at: 'x' }
     ] }
   });
-  const res = await mod.onRequestPost({ request: await authedRequest(3, { settings: { apiKey: 'placeholder', profiles: [{ id: 'main', apiKey: '***MASKED***' }] } }), env: { gpt_image2_db: db } });
+  const res = await mod.onRequestPost({ request: await authedRequest(3, { settings: { apiKey: 'placeholder', profiles: [{ id: 'main', apiKey: '***MASKED***', nativeApiKey: '***MASKED***' }] } }), env: { gpt_image2_db: db, ALLOW_INSECURE_JWT_FALLBACK: 'true' } });
   assert.equal(res.status, 200);
   const apiWrite = db.writes.find(w => w.bound[1] === 'apiKey');
   const profilesWrite = db.writes.find(w => w.bound[1] === 'profiles');
   assert.equal(apiWrite.bound[2], 'sk-existing');
   assert.equal(JSON.parse(profilesWrite.bound[2])[0].apiKey, 'sk-profile-existing');
+  assert.equal(JSON.parse(profilesWrite.bound[2])[0].nativeApiKey, 'gemini-existing');
 });
 

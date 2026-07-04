@@ -20,7 +20,7 @@ function wechatCompatPage(request) {
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta http-equiv="Cache-Control" content="no-store">
   <title>\u8bf7\u4f7f\u7528\u5916\u90e8\u6d4f\u89c8\u5668\u6253\u5f00</title>
   <style>
@@ -40,18 +40,36 @@ function wechatCompatPage(request) {
     <h1>\u5fae\u4fe1\u5185\u7f6e\u6d4f\u89c8\u5668\u517c\u5bb9\u6027\u53d7\u9650</h1>
     <p>\u5f53\u524d AI \u5de5\u4f5c\u53f0\u5728\u5fae\u4fe1\u5185\u7f6e\u6d4f\u89c8\u5668\u4e2d\u5bb9\u6613\u89e6\u53d1\u767b\u5f55\u72b6\u6001\u4e22\u5931\u6216\u5185\u90e8\u91cd\u5b9a\u5411\u5faa\u73af\u3002\u4e3a\u907f\u514d\u7ee7\u7eed\u51fa\u73b0 ERR_TOO_MANY_REDIRECTS\uff0c\u8bf7\u590d\u5236\u94fe\u63a5\u5230 Chrome\u3001Edge\u3001Safari \u6216\u624b\u673a\u7cfb\u7edf\u6d4f\u89c8\u5668\u6253\u5f00\u3002</p>
     <div class="url" id="u">${escapeHtml(target)}</div>
+    <div class="url" id="copy-fallback" style="display:none">
+      <div style="font-weight:700;margin-bottom:8px">\u8bf7\u624b\u52a8\u590d\u5236\u4e0b\u65b9\u94fe\u63a5</div>
+      <textarea id="copy-value" readonly style="width:100%;min-height:96px;border:0;resize:none;background:transparent;color:inherit;font:inherit">${escapeHtml(target)}</textarea>
+    </div>
     <div class="actions">
       <button class="primary" onclick="copyLink()">\u590d\u5236\u94fe\u63a5</button>
       <button class="secondary" onclick="copyLink()">\u590d\u5236\u540e\u5230\u5916\u90e8\u6d4f\u89c8\u5668\u6253\u5f00</button>
     </div>
   </div>
   <script>
+    function showCopyFallback(message){
+      var box=document.getElementById('copy-fallback');
+      var input=document.getElementById('copy-value');
+      if(box)box.style.display='block';
+      if(input){input.focus();input.select();}
+      if(message){
+        var note=document.createElement('div');
+        note.textContent=message;
+        note.style.marginTop='10px';
+        note.style.color='#4b5563';
+        var card=document.querySelector('.card');
+        if(card&&!document.getElementById('copy-note')){note.id='copy-note';card.appendChild(note)}
+      }
+    }
     function copyLink(){
       var u=document.getElementById('u').textContent;
       if(navigator.clipboard&&navigator.clipboard.writeText){
-        navigator.clipboard.writeText(u).then(function(){alert('\u94fe\u63a5\u5df2\u590d\u5236')}).catch(function(){prompt('\u590d\u5236\u94fe\u63a5\uff1a',u)});
+        navigator.clipboard.writeText(u).then(function(){showCopyFallback('\u94fe\u63a5\u5df2\u590d\u5236');}).catch(function(){showCopyFallback('\u590d\u5236\u5931\u8d25\uff0c\u8bf7\u624b\u52a8\u590d\u5236');});
       } else {
-        prompt('\u590d\u5236\u94fe\u63a5\uff1a',u);
+        showCopyFallback('\u5f53\u524d\u6d4f\u89c8\u5668\u4e0d\u652f\u6301\u81ea\u52a8\u590d\u5236\uff0c\u8bf7\u624b\u52a8\u590d\u5236');
       }
     }
   </script>
@@ -72,8 +90,21 @@ function wechatCompatPage(request) {
 export async function onRequest(context) {
   const url = new URL(context.request.url);
   const path = url.pathname.replace(/\/+$/, '') || '/';
+  if (/^\/(?:scripts|tests|docs)(?:\/|$)/i.test(path) || /^\/(?:init_db\.sql|README\.md)$/i.test(path)) {
+    return new Response('Not found', {
+      status: 404,
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+        'X-Robots-Tag': 'noindex, nofollow'
+      }
+    });
+  }
+  if (path === '/user' || path === '/user.html') {
+    return Response.redirect(`${url.origin}/admin`, 302);
+  }
   if (isWeChat(context.request)) {
-    const wechatBlockedPaths = new Set(['/', '/login', '/login.html', '/admin', '/admin.html', '/prompts', '/prompts.html', '/user', '/user.html']);
+    const wechatBlockedPaths = new Set(['/', '/login', '/login.html', '/admin', '/admin.html', '/prompts', '/prompts.html']);
     if (wechatBlockedPaths.has(path)) return wechatCompatPage(context.request);
   }
   return context.next();

@@ -1,5 +1,5 @@
 /*
- * GPT Image2 end-to-end quality smoke tests.
+ * NexGen end-to-end quality smoke tests.
  * Run with:
  *   $env:BASE_URL='https://gpt-image2-bg5.pages.dev'; $env:TEST_USER='a691466166'; $env:TEST_PASS='<hidden>'
  *   npx --yes --package playwright node tests/e2e-quality.js
@@ -75,6 +75,10 @@ function attachPageDiagnostics(page) {
     if (/\b401\b/.test(text) && /api\/auth\/me|img-runtime-config/.test(text)) return;
     errors.push(`console error: ${text}`);
   });
+  page.on('dialog', async (dialog) => {
+    errors.push(`native dialog opened: ${dialog.type()} ${dialog.message()}`);
+    await dialog.dismiss().catch(() => {});
+  });
   return errors;
 }
 
@@ -112,8 +116,8 @@ async function expectVisibleByText(page, candidates, options = {}) {
 async function assertNoRuntimeRecovery(page) {
   const recoveryVisible = await page.locator('#runtime-recovery-panel').isVisible().catch(() => false);
   assert(!recoveryVisible, 'runtime recovery panel should not be visible');
-  const rootEmpty = await page.locator('#root').evaluate((el) => !el || !el.textContent.trim()).catch(() => false);
-  assert(!rootEmpty, 'React root should not be empty');
+  const homeVisible = await page.locator('.home-v3 .workspace').isVisible().catch(() => false);
+  assert(homeVisible, 'homepage v3 workspace should be visible');
 }
 
 async function clickMode(page, labels) {
@@ -157,17 +161,94 @@ async function smokeGalleryAndAgent(browser) {
   await page.goto(absolutePath('/'), { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
   await waitForSettled(page);
   await assertNoRuntimeRecovery(page);
+  const homeAudit = await page.evaluate(() => {
+    const sidebarText = document.querySelector('.sidebar')?.textContent || '';
+    const visibleText = document.body.innerText || '';
+    const directGlobalEntries = Array.from(document.querySelectorAll('.sidebar > .sidebar-section button'))
+      .map((button) => (button.textContent || '').trim())
+      .filter(Boolean);
+    return {
+      title: document.title,
+      sidebarText,
+      visibleText,
+      directGlobalEntries,
+      hasAccountMenuButton: !!document.querySelector('.account-menu-button'),
+      brand: document.querySelector('.brand-title')?.textContent || '',
+      subtitle: document.querySelector('.brand-subtitle')?.textContent || '',
+    };
+  });
+  assert(homeAudit.brand === 'NexGen' && homeAudit.subtitle === 'Nexus Generation', `homepage brand should be NexGen / Nexus Generation: ${JSON.stringify(homeAudit)}`);
+  assert(!/GPT Image2|Mac Studio Workspace|Profile|Navigation|图片仅保存在当前浏览器本地/.test(homeAudit.visibleText), `homepage should not show legacy visible copy: ${JSON.stringify(homeAudit)}`);
+  assert(homeAudit.hasAccountMenuButton, 'account menu button should exist');
+  for (const hiddenGlobal of ['仓库', '后台', '主题', '登录']) {
+    assert(!homeAudit.directGlobalEntries.includes(hiddenGlobal), `${hiddenGlobal} should be inside account menu, not direct sidebar navigation`);
+  }
 
   await expectVisibleByText(page, ['画廊', 'Gallery'], { timeout: 15000 });
   await clickMode(page, ['画廊', 'Gallery']);
   await assertNoRuntimeRecovery(page);
   assert(await page.locator('textarea, [contenteditable="true"], input').first().isVisible().catch(() => false), 'gallery should expose a prompt/input surface');
+  await page.locator('.account-menu-button').click();
+  await page.waitForSelector('.account-menu [data-action="leave"][data-url="/prompts"]', { timeout: TIMEOUT });
+  assert(await page.locator('.account-menu [data-action="leave"][data-url="/admin"]').isVisible(), 'admin entry should be inside account menu');
+  await page.keyboard.press('Escape').catch(() => {});
+  await page.locator('.control-model').click();
+  await page.waitForSelector('.model-menu', { timeout: TIMEOUT });
+  const modelMenuAudit = await page.evaluate(() => ({
+    text: document.querySelector('.model-menu')?.innerText || '',
+    buttonCount: document.querySelectorAll('.model-menu button').length,
+    secondarySpans: document.querySelectorAll('.model-menu button span').length,
+  }));
+  assert(modelMenuAudit.buttonCount >= 1, `model menu should show configured image profiles: ${JSON.stringify(modelMenuAudit)}`);
+  assert(modelMenuAudit.secondarySpans === 0, `model menu should only show configured names, not model subtitles: ${JSON.stringify(modelMenuAudit)}`);
+  await page.keyboard.press('Escape').catch(() => {});
+
+  await clickMode(page, ['专业', 'Pro']);
+  await page.waitForSelector('.pro-mode-rail', { timeout: TIMEOUT });
+  const proAudit = await page.evaluate(() => ({
+    modes: Array.from(document.querySelectorAll('.pro-mode-card')).map((el) => (el.textContent || '').trim()),
+    hasBaseUpload: !!document.querySelector('[data-action="pro-pick-file"][data-slot="base"]'),
+    hasAnalyze: !!document.querySelector('[data-action="pro-analyze"]'),
+    hasRender: !!document.querySelector('[data-action="pro-render"]'),
+    hasProfileSelect: !!document.querySelector('select[data-action="entry-profile-select"][data-entry="pro"]'),
+    text: document.querySelector('.pro-stage')?.innerText || '',
+  }));
+  assert(proAudit.modes.length >= 3 && proAudit.modes.some((text) => /AI/.test(text)) && proAudit.modes.some((text) => /风格|迁移|灵感/.test(text)) && proAudit.modes.some((text) => /手动/.test(text)), `Pro workbench should expose AI/style/manual modes: ${JSON.stringify(proAudit)}`);
+  assert(proAudit.hasBaseUpload && proAudit.hasAnalyze && proAudit.hasRender && proAudit.hasProfileSelect, `Pro workbench should expose upload/analyze/render/profile controls: ${JSON.stringify(proAudit)}`);
+  assert(!/积分|leaderai/i.test(proAudit.text), `Pro workbench should not expose copied source-site commercial copy: ${JSON.stringify(proAudit.text.slice(0, 300))}`);
 
   await clickMode(page, ['Agent']);
   await assertNoRuntimeRecovery(page);
   await expectVisibleByText(page, ['Agent'], { timeout: 10000 });
   const agentInputVisible = await page.locator('.agent-chat-inputbar [contenteditable="true"], [contenteditable="true"], textarea').first().isVisible().catch(() => false);
   assert(agentInputVisible, 'Agent should expose an input surface');
+  const agentWorkflowCards = await page.locator('.agent-stage .workflow-card, .agent-stage .workflow-workspace, .agent-stage .workflow-run-card').count();
+  assert(agentWorkflowCards === 0, `Agent conversation page should not mix workflow UI; found ${agentWorkflowCards} workflow nodes`);
+
+  await clickMode(page, ['工作流', 'Workflow']);
+  await page.waitForSelector('.workflow-workspace', { timeout: TIMEOUT });
+  await page.locator('[data-action="new-workflow-draft"]').click();
+  await page.waitForSelector('.workflow-editor', { timeout: TIMEOUT });
+  assert(await page.locator('.workflow-editor-grid .workflow-form-section').count() >= 3, 'Agent workflow draft should render form editor sections');
+  assert(await page.locator('.workflow-table-wrap input[data-action="workflow-row-input"]').count() >= 1, 'Agent workflow draft should expose variable table inputs');
+  await page.locator('[data-action="save-workflow-draft"]').click();
+  await page.waitForSelector('.workflow-card [data-action="invoke-workflow"]', { timeout: TIMEOUT });
+  await page.locator('.workflow-card [data-action="invoke-workflow"]').first().click();
+  await page.waitForSelector('.workflow-invoke-modal', { timeout: TIMEOUT });
+  assert(await page.locator('.workflow-invoke-modal input[data-action="workflow-invoke-number"]').count() >= 4, 'Workflow invoke modal should expose count/concurrency/budget controls');
+  assert(await page.locator('.workflow-invoke-modal [data-action="pick-workflow-ref"]').isVisible(), 'Workflow invoke modal should expose temporary reference image upload');
+  assert(await page.locator('.workflow-invoke-modal [data-action="execute-workflow"]').isVisible(), 'Workflow invoke modal should require confirm execution');
+  await page.locator('.workflow-invoke-modal [data-action="close-workflow-invoke"]').first().click();
+  await page.locator('.workflow-card [data-action="delete-workflow"]').first().click();
+  await page.waitForSelector('.confirm-modal', { timeout: TIMEOUT });
+  const confirmAudit = await page.evaluate(() => ({
+    text: document.querySelector('.confirm-modal')?.innerText || '',
+    hasConfirm: !!document.querySelector('.confirm-modal [data-action="confirm-dialog"]'),
+    hasCancel: !!document.querySelector('.confirm-modal [data-action="cancel-confirm"]'),
+  }));
+  assert(/删除/.test(confirmAudit.text) && confirmAudit.hasConfirm && confirmAudit.hasCancel, `Workflow delete should use in-page confirmation modal: ${JSON.stringify(confirmAudit)}`);
+  await page.locator('.confirm-modal [data-action="confirm-dialog"]').click();
+  await page.waitForTimeout(500);
   assert(errors.length === 0, `unexpected browser errors on Gallery/Agent: ${errors.join(' | ')}`);
   await context.close();
 }
@@ -215,11 +296,11 @@ async function smokeMobileLayout(browser) {
   const workbenchMobile = await page.evaluate(() => {
     const vw = window.innerWidth;
     const vh = window.innerHeight;
-    const nav = document.querySelector('#workbenchSiteNav');
+    const nav = document.querySelector('.sidebar');
     const navRect = nav ? nav.getBoundingClientRect() : null;
-    const account = document.querySelector('#workbenchSiteNav .account-chip');
+    const account = document.querySelector('.sidebar .account-card');
     const accountRect = account ? account.getBoundingClientRect() : null;
-    const navButtons = Array.from(document.querySelectorAll('#workbenchSiteNav a, #workbenchSiteNav button, #workbenchSiteNav select'))
+    const navButtons = Array.from(document.querySelectorAll('.sidebar button, .sidebar select'))
       .filter((el) => {
         const r = el.getBoundingClientRect();
         return r.width > 1 && r.height > 1;
@@ -228,11 +309,11 @@ async function smokeMobileLayout(browser) {
         const r = el.getBoundingClientRect();
         return { text: (el.textContent || el.getAttribute('aria-label') || el.id || el.className || '').trim(), w: r.width, h: r.height, left: r.left, right: r.right };
       });
-    const composer = Array.from(document.querySelectorAll('#root > div.fixed.bottom-4, #root > div.fixed.sm\\:bottom-6'))
+    const composer = Array.from(document.querySelectorAll('.composer'))
       .map((el) => el.getBoundingClientRect())
       .filter((r) => r.width > 120 && r.height > 40)
       .sort((a, b) => b.height - a.height)[0] || null;
-    const upstreamTitleVisible = Array.from(document.querySelectorAll('#root header h1, #root header [class*="font-bold"]'))
+    const upstreamTitleVisible = Array.from(document.querySelectorAll('header h1, header [class*="font-bold"]'))
       .some((el) => {
         const text = (el.textContent || '').trim();
         if (!/Image Playground|GPT Image/i.test(text)) return false;
@@ -251,11 +332,15 @@ async function smokeMobileLayout(browser) {
   await clickMode(page, ['Agent']);
   await assertNoRuntimeRecovery(page);
   const agentMobile = await page.evaluate(() => {
-    const session = document.querySelector('#agentCurrentSessionBox');
-    const actions = document.querySelector('#agentHeaderActions');
+    const session = document.querySelector('.agent-project-card');
+    const actions = document.querySelector('.agent-stage .agent-head');
+    const workflowWorkspace = document.querySelector('.workflow-workspace');
+    const workflowTable = document.querySelector('.workflow-table-wrap');
     const sr = session ? session.getBoundingClientRect() : null;
     const ar = actions ? actions.getBoundingClientRect() : null;
-    const hitTargets = Array.from(document.querySelectorAll('#agentShellHost button, #agentShellHost a'))
+    const wr = workflowWorkspace ? workflowWorkspace.getBoundingClientRect() : null;
+    const tr = workflowTable ? workflowTable.getBoundingClientRect() : null;
+    const hitTargets = Array.from(document.querySelectorAll('.agent-stage button, .agent-composer button, .sidebar button'))
       .filter((el) => {
         const r = el.getBoundingClientRect();
         return r.width > 1 && r.height > 1;
@@ -267,12 +352,17 @@ async function smokeMobileLayout(browser) {
     return {
       session: sr ? { left: sr.left, right: sr.right, top: sr.top, bottom: sr.bottom, w: sr.width, h: sr.height } : null,
       actions: ar ? { left: ar.left, right: ar.right, top: ar.top, bottom: ar.bottom, w: ar.width, h: ar.height } : null,
+      workflowWorkspace: wr ? { left: wr.left, right: wr.right, w: wr.width } : null,
+      workflowTable: tr ? { left: tr.left, right: tr.right, w: tr.width } : null,
+      vw: window.innerWidth,
       hitTargets,
     };
   });
   if (agentMobile.session && agentMobile.actions) {
     assert(agentMobile.session.right <= agentMobile.actions.left + 4 || agentMobile.session.bottom <= agentMobile.actions.top || agentMobile.session.top >= agentMobile.actions.bottom, `mobile agent session/actions should not overlap: ${JSON.stringify(agentMobile)}`);
   }
+  assert(!agentMobile.workflowWorkspace || agentMobile.workflowWorkspace.right <= agentMobile.vw + 2, `mobile workflow workspace should not overflow: ${JSON.stringify(agentMobile)}`);
+  assert(!agentMobile.workflowTable || agentMobile.workflowTable.right <= agentMobile.vw + 24, `mobile workflow table container should not overflow: ${JSON.stringify(agentMobile)}`);
   const tooSmallAgent = agentMobile.hitTargets.filter((b) => b.w < 32 || b.h < 32);
   assert(tooSmallAgent.length === 0, `mobile agent controls too small: ${JSON.stringify(tooSmallAgent)}`);
 
@@ -312,15 +402,17 @@ async function smokeMobileLayout(browser) {
     const firstRows = Array.from(document.querySelectorAll('#userTable .tbl tbody tr')).slice(0, 3);
     const tabRect = tabs ? tabs.getBoundingClientRect() : null;
     const addRect = addUser ? addUser.getBoundingClientRect() : null;
+    const addStyle = addUser ? getComputedStyle(addUser) : null;
+    const addVisible = !!addUser && addRect.width > 1 && addRect.height > 1 && addStyle.display !== 'none' && addStyle.visibility !== 'hidden';
     return {
       tabs: tabs ? { h: tabRect.height, right: tabRect.right, scrollWidth: tabs.scrollWidth, clientWidth: tabs.clientWidth } : null,
-      addUser: addUser ? { w: addRect.width, h: addRect.height } : null,
+      addUser: addUser ? { w: addRect.width, h: addRect.height, visible: addVisible } : null,
       rowDisplays: firstRows.map((row) => getComputedStyle(row).display),
       rows: firstRows.length,
     };
   });
   assert(!adminMobile.tabs || adminMobile.tabs.h <= 58, `mobile admin tabs too tall: ${JSON.stringify(adminMobile.tabs)}`);
-  assert(!adminMobile.addUser || adminMobile.addUser.h >= 36, `mobile add-user button too small: ${JSON.stringify(adminMobile.addUser)}`);
+  assert(!adminMobile.addUser || !adminMobile.addUser.visible || adminMobile.addUser.h >= 36, `mobile add-user button too small: ${JSON.stringify(adminMobile.addUser)}`);
   assert(adminMobile.rows === 0 || adminMobile.rowDisplays.every((d) => d === 'block'), `mobile admin user table should render as cards: ${JSON.stringify(adminMobile.rowDisplays)}`);
 
   assert(errors.length === 0, `unexpected browser errors on mobile layout: ${errors.join(' | ')}`);

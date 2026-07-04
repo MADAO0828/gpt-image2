@@ -1,6 +1,10 @@
 # Dependencies
 node_modules/
+tests/node_modules/
 .wrangler/
+.agents/
+.codex/
+.git
 .terraform/
 
 # IDE
@@ -32,6 +36,8 @@ __pycache__/
 *.pyo
 .deploy/
 .deploy2/
+.deploy_stage/
+.deploy_quality_stage/
 .codegraph/
 .deploy_tmp_*
 .tmp-*

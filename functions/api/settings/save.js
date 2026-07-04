@@ -1,7 +1,11 @@
 const JWT_FALLBACK = 'gpt-image2-jwt-secret-key-2026-secure';
 const PASSWORD_SALT = 'gpt-image2-auth-salt-2026';
 
-function secret(env) { return env && env.JWT_SECRET ? env.JWT_SECRET : JWT_FALLBACK; }
+function secret(env) {
+  if (env && env.JWT_SECRET) return env.JWT_SECRET;
+  if (env && env.ALLOW_INSECURE_JWT_FALLBACK === 'true') return JWT_FALLBACK;
+  throw new Error('JWT_SECRET is required');
+}
 function b64url(bytes) { return btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
 function b64urlDecode(str) { str = str.replace(/-/g, '+').replace(/_/g, '/'); while (str.length % 4) str += '='; return Uint8Array.from(atob(str), c => c.charCodeAt(0)); }
 function getCookie(header, name) { const m = (header || '').match(new RegExp('(?:^|;\\s*)' + name + '=([^;]*)')); return m ? decodeURIComponent(m[1]) : null; }
@@ -58,6 +62,10 @@ function preserveProfileSecrets(incomingProfiles, existingProfiles) {
     if (isProxyPlaceholder(next.apiKey)) {
       const old = oldMap.get(profileKey(next));
       next.apiKey = old && !isProxyPlaceholder(old.apiKey) ? (old.apiKey || '') : '';
+    }
+    if (isProxyPlaceholder(next.nativeApiKey)) {
+      const old = oldMap.get(profileKey(next));
+      next.nativeApiKey = old && !isProxyPlaceholder(old.nativeApiKey) ? (old.nativeApiKey || '') : '';
     }
     return next;
   });

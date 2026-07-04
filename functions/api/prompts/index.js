@@ -21,9 +21,9 @@ export async function onRequest(ctx) {
   const search = url.searchParams.get('q') || '';
   const offset = (page - 1) * limit;
 
-  // LeaderAI 仓库更新后，线上接口必须优先读取随部署发布的 prompts_data.json。
-  // 旧版本曾优先读取 D1 prompts 表，导致即使静态文件已更新，页面仍显示旧仓库。
-  // 只有显式 ?source=d1 时才读 D1，避免历史数据覆盖最新版静态仓库。
+  // The prompt repository is deployed with prompts_data.json as the source of truth.
+  // D1 is only used when explicitly requested with ?source=d1, so archived rows cannot
+  // override the current bundled repository.
   if (source !== 'd1') {
     try {
       const staticRows = await loadStaticPrompts(ctx);

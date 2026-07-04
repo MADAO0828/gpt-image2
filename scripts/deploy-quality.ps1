@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  One-click quality gate and Cloudflare Pages deployment for GPT Image2.
+  One-click quality gate and Cloudflare Pages deployment for NexGen.
 
 .DESCRIPTION
   Runs stability checks, prints a safe git diff summary, deploys a preview,
@@ -18,7 +18,8 @@ param(
   [string]$ProductionBranch = $(if ($env:PRODUCTION_BRANCH) { $env:PRODUCTION_BRANCH } else { 'main' }),
   [switch]$SkipProductionDeploy,
   [switch]$SkipProductionTest,
-  [switch]$InstallBrowsers
+  [switch]$InstallBrowsers,
+  [switch]$AllowDirtyDeploy
 )
 
 $ErrorActionPreference = 'Stop'
@@ -76,15 +77,27 @@ function Ensure-TestDependencies {
 }
 
 function Invoke-StabilityChecks {
-  Write-Step 'Run stability checks'
+  Write-Step 'Run local deliverable quality gates'
+  Invoke-LoggedCommand -FilePath 'node' -Arguments @('--check', 'assets/homepage-v3.js')
+  Invoke-LoggedCommand -FilePath 'node' -Arguments @('--check', 'assets/shell-ui.js')
+  Invoke-LoggedCommand -FilePath 'node' -Arguments @('--check', 'tests/e2e-quality.js')
+  Invoke-LoggedCommand -FilePath 'node' -Arguments @('--check', 'scripts/api-smoke.mjs')
+  Invoke-LoggedCommand -FilePath 'node' -Arguments @('tests/homepage-task-regression.js')
+  Invoke-LoggedCommand -FilePath 'node' -Arguments @('tests/provider-size-branching.js')
   Invoke-LoggedCommand -FilePath 'node' -Arguments @('scripts/stability-checks.js')
-  Invoke-LoggedCommand -FilePath 'node' -Arguments @('scripts/verify-toolbar-params.js')
   Invoke-LoggedCommand -FilePath 'node' -Arguments @('scripts/verify-quality-static.cjs')
+  Invoke-LoggedCommand -FilePath 'node' -Arguments @('scripts/verify-toolbar-params.js')
+  Invoke-LoggedCommand -FilePath 'node' -Arguments @('scripts/final-deliverable-audit.cjs')
+  Invoke-LoggedCommand -FilePath 'node' -Arguments @('scripts/backup-security.test.mjs')
 }
 
 function Invoke-GitDiffCheck {
   Write-Step 'Git diff check (non-destructive)'
-  Invoke-LoggedCommand -FilePath 'git' -Arguments @('status', '--short')
+  $status = & git status --short
+  $status | ForEach-Object { Write-Host $_ }
+  if ($status -and -not $AllowDirtyDeploy) {
+    throw 'Working tree is dirty. Commit/stage an auditable release or pass -AllowDirtyDeploy only for a deliberate preview-only emergency.'
+  }
   $conflicts = & git grep -n -E '^(<<<<<<<|=======|>>>>>>>)' -- . ':!tests/node_modules' ':!prompts_data.json' 2>$null
   if ($LASTEXITCODE -eq 0 -and $conflicts) {
     $conflicts | ForEach-Object { Write-Host $_ -ForegroundColor Red }
@@ -112,8 +125,8 @@ function New-DeployStage {
     Remove-Item -LiteralPath $resolvedStage -Recurse -Force
   }
   New-Item -ItemType Directory -Path $stage | Out-Null
-  $excludeDirs = @('.git', '.codegraph', '.wrangler', '.playwright-cli', '.deploy', '.deploy2', '.deploy_stage', '.deploy_quality_stage', 'node_modules', 'tests\node_modules')
-  $excludeFiles = @('*.log', '*.tmp', '*.bak', '.env', '.env.local', 'prompts_data.latest.tmp.json', 'pw-*.txt', 'pw-*.png', 'pw-*.json')
+  $excludeDirs = @('.git', '.codegraph', '.agents', '.codex', '.wrangler', '.playwright-cli', '.deploy', '.deploy2', '.deploy_stage', '.deploy_quality_stage', 'node_modules', 'tests', 'tests\node_modules', 'scripts', 'docs')
+  $excludeFiles = @('.git', '*.log', '*.tmp', '*.bak', '*.md', '.env', '.env.local', 'README.md', 'init_db.sql', 'prompts_data.latest.tmp.json', 'pw-*.txt', 'pw-*.png', 'pw-*.json')
   $args = @($ProjectDir, $stage, '/E', '/NFL', '/NDL', '/NJH', '/NJS', '/NP') + @('/XD') + $excludeDirs + @('/XF') + $excludeFiles
   & robocopy @args | Out-Null
   if ($LASTEXITCODE -gt 7) { throw "robocopy failed with exit code $LASTEXITCODE" }
@@ -123,7 +136,7 @@ function New-DeployStage {
 function Invoke-PagesDeploy([string]$Branch, [string]$Label) {
   Write-Step "Deploy Cloudflare Pages $Label ($Branch)"
   $stage = New-DeployStage
-  $args = @('--yes', 'wrangler', 'pages', 'deploy', $stage, '--project-name', 'gpt-image2', '--branch', $Branch, '--commit-dirty=true')
+  $args = @('--yes', 'wrangler', 'pages', 'deploy', $stage, '--project-name', 'gpt-image2', '--branch', $Branch, '--commit-dirty=false')
   $output = Invoke-LoggedCommand -FilePath 'npx' -Arguments $args -CaptureOutput
   $url = Get-DeployUrl $output
   if (-not $url) {
@@ -147,6 +160,7 @@ function Invoke-QualityTests([string]$Url, [string]$Label) {
     Write-Host "TEST_USER=$TestUser"
     Write-Host 'TEST_PASS=<hidden>'
     Invoke-LoggedCommand -FilePath 'npm' -Arguments @('--prefix', (Join-Path $ProjectDir 'tests'), 'run', 'quality', '--silent')
+    Invoke-LoggedCommand -FilePath 'node' -Arguments @('scripts/api-smoke.mjs')
   } finally {
     $env:BASE_URL = $oldBase
     $env:TEST_USER = $oldUser

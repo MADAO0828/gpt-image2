@@ -1,10 +1,10 @@
-// GPT Image2 unified shell helpers - b19 20260623
+// NexGen unified shell helpers
 // This file only normalizes shared page chrome. It must not mutate React-owned
 // workbench content except for already body-level shell nodes.
 (function () {
   if (window.GptShell && window.GptShell.version) return;
 
-  var version = 'shell-ui-b19-20260623';
+  var version = 'shell-ui-b37-20260630';
 
   function esc(value) {
     var div = document.createElement('div');

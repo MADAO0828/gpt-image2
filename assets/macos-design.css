@@ -1,4 +1,4 @@
-/* GPT Image2 macOS redesign layer - macos-a1-20260622 */
+/* NexGen macOS design layer */
 :root{
   --mac-bg:#ffffff;
   --mac-bg-elevated:rgba(255,255,255,.86);
@@ -527,7 +527,7 @@ html:not(.gpt-agent-mode) #agentShellHost .agent-header-actions{display:none!imp
 html:has(body > div.fixed.inset-0) #agentShellHost .agent-header-actions{opacity:0!important;visibility:hidden!important;pointer-events:none!important;}
 @media(max-width:920px){#agentShellHost .agent-header-action-text{display:none!important}#agentShellHost .agent-header-action-btn{width:38px!important;padding:0!important;justify-content:center!important}}
 
-/* prompt-detail-b20: keep repository detail modal out of legacy generic modal overrides */
+/* Keep repository detail modal out of generic modal overrides. */
 .overlay .modal.prompt-detail-modal{width:min(1120px,calc(100vw - 32px))!important;max-width:1120px!important;max-height:min(86vh,860px)!important;overflow:hidden!important;padding:0!important;display:grid!important;grid-template-columns:minmax(360px,1.15fr) minmax(350px,.85fr)!important;border-radius:26px!important;background:linear-gradient(180deg,rgba(255,255,255,.94),rgba(248,250,252,.94))!important;box-shadow:0 28px 90px rgba(15,23,42,.26),0 1px 0 rgba(255,255,255,.85) inset!important}
 html.dark .overlay .modal.prompt-detail-modal{background:linear-gradient(180deg,rgba(24,24,27,.94),rgba(9,9,11,.94))!important;box-shadow:0 28px 90px rgba(0,0,0,.62),0 1px 0 rgba(255,255,255,.08) inset!important}
 .overlay .modal.prompt-detail-modal .prompt-detail-media{min-height:520px!important;padding:28px!important;border-right:1px solid var(--mac-border)!important;border-bottom:0!important;display:flex!important;align-items:center!important;justify-content:center!important}
@@ -742,54 +742,6 @@ html.gpt-agent-mode .agent-chat-inputbar [contenteditable="true"],html.gpt-agent
 html.gpt-agent-mode .agent-chat-inputbar .mt-3,html.gpt-agent-mode #root>div.fixed.bottom-4 .mt-3,html.gpt-agent-mode #root>div.fixed.sm\:bottom-6 .mt-3{position:static!important;transform:none!important;margin:0!important;padding:0!important;border-top:0!important;align-items:center!important;}
 
 /* B29: make the in-workbench prompt card detail match /prompts detail dialog. */
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-media{position:relative!important;min-height:520px!important;background:radial-gradient(circle at 26% 20%,rgba(99,102,241,.14),transparent 36%),linear-gradient(135deg,rgba(15,23,42,.04),rgba(99,102,241,.08))!important;display:flex!important;align-items:center!important;justify-content:center!important;padding:28px!important;border-right:1px solid var(--mac-border)!important;border-radius:0!important;overflow:hidden!important;}
-html.dark body>div.fixed.inset-0.z-\[80\] .prompt-detail-media{background:radial-gradient(circle at 26% 20%,rgba(129,140,248,.18),transparent 36%),linear-gradient(135deg,rgba(255,255,255,.06),rgba(99,102,241,.10))!important;}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-media::after{content:'点击图片查看大图';position:absolute;left:28px;bottom:24px;font-size:12px;color:var(--mac-muted);padding:7px 11px;border:1px solid var(--mac-border);border-radius:999px;background:rgba(255,255,255,.72);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);opacity:.88;}
-html.dark body>div.fixed.inset-0.z-\[80\] .prompt-detail-media::after{background:rgba(15,23,42,.72);}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-img{max-width:100%!important;max-height:calc(86vh - 92px)!important;width:auto!important;height:auto!important;object-fit:contain!important;border-radius:20px!important;background:var(--mac-surface)!important;box-shadow:0 18px 70px rgba(15,23,42,.18)!important;cursor:zoom-in!important;transition:transform .22s cubic-bezier(.2,.8,.2,1),box-shadow .22s!important;}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-img:hover{transform:scale(1.012)!important;box-shadow:0 24px 90px rgba(15,23,42,.24)!important;}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-empty{display:none;color:var(--mac-subtle);font-size:13px;text-align:center;padding:24px;border:1px dashed var(--mac-border);border-radius:18px;background:var(--mac-surface);}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-side{display:flex!important;flex-direction:column!important;min-width:0!important;max-height:min(86vh,860px)!important;background:transparent!important;}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-head{padding:22px 22px 14px!important;border-bottom:1px solid var(--mac-border)!important;display:grid!important;grid-template-columns:1fr auto!important;gap:12px!important;align-items:start!important;background:rgba(255,255,255,.42)!important;backdrop-filter:blur(14px)!important;-webkit-backdrop-filter:blur(14px)!important;}
-html.dark body>div.fixed.inset-0.z-\[80\] .prompt-detail-head{background:rgba(9,9,11,.34)!important;}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-cat{font-size:12px!important;color:var(--mac-blue)!important;background:color-mix(in srgb,var(--mac-blue) 11%,transparent)!important;display:inline-flex!important;align-items:center!important;padding:5px 10px!important;border-radius:999px!important;margin-bottom:10px!important;font-weight:800!important;border:1px solid color-mix(in srgb,var(--mac-blue) 14%,transparent)!important;}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-title{font-size:22px!important;font-weight:900!important;letter-spacing:-.03em!important;line-height:1.18!important;color:var(--mac-text)!important;word-break:break-word!important;}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-close{width:34px!important;height:34px!important;border-radius:12px!important;border:1px solid var(--mac-border)!important;background:var(--mac-surface)!important;color:var(--mac-muted)!important;cursor:pointer!important;font:800 18px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif!important;display:flex!important;align-items:center!important;justify-content:center!important;}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-close:hover{transform:translateY(-1px)!important;color:var(--mac-text)!important;border-color:rgba(239,68,68,.28)!important;background:rgba(239,68,68,.08)!important;}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-body{padding:18px 22px!important;overflow:auto!important;flex:1!important;scroll-behavior:smooth!important;-webkit-overflow-scrolling:touch!important;background:transparent!important;}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-p{font-size:14px!important;color:var(--mac-muted)!important;line-height:1.78!important;white-space:pre-wrap!important;word-break:break-word!important;margin:0!important;padding:16px!important;border-radius:18px!important;border:1px solid var(--mac-border)!important;background:rgba(255,255,255,.46)!important;}
-html.dark body>div.fixed.inset-0.z-\[80\] .prompt-detail-p{background:rgba(255,255,255,.04)!important;}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-actions{display:flex!important;gap:10px!important;flex-wrap:wrap!important;padding:16px 22px 22px!important;border-top:1px solid var(--mac-border)!important;background:rgba(255,255,255,.38)!important;}
-html.dark body>div.fixed.inset-0.z-\[80\] .prompt-detail-actions{background:rgba(9,9,11,.28)!important;}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-actions button{height:40px!important;border-radius:14px!important;font-weight:800!important;flex:1!important;justify-content:center!important;min-width:132px!important;}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-copy{background:color-mix(in srgb,var(--mac-blue) 12%,transparent)!important;color:var(--mac-blue)!important;border:1px solid color-mix(in srgb,var(--mac-blue) 25%,transparent)!important;}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-use{background:linear-gradient(135deg,var(--mac-blue),var(--mac-indigo))!important;color:#fff!important;border:none!important;}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-viewer{position:fixed!important;inset:0!important;z-index:260!important;display:flex!important;align-items:center!important;justify-content:center!important;background:rgba(0,0,0,.82)!important;backdrop-filter:blur(10px)!important;-webkit-backdrop-filter:blur(10px)!important;cursor:zoom-out!important;}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-viewer img{max-width:96vw!important;max-height:94vh!important;object-fit:contain!important;border-radius:18px!important;box-shadow:0 24px 90px rgba(0,0,0,.45)!important;background:#111!important;}
-@media(max-width:860px){body>div.fixed.inset-0.z-\[80\] .prompt-detail-media{min-height:260px!important;max-height:42vh!important;padding:18px!important;border-right:0!important;border-bottom:1px solid var(--mac-border)!important}body>div.fixed.inset-0.z-\[80\] .prompt-detail-media::after{display:none!important}body>div.fixed.inset-0.z-\[80\] .prompt-detail-img{max-height:38vh!important;border-radius:16px!important}body>div.fixed.inset-0.z-\[80\] .prompt-detail-side{max-height:50vh!important}body>div.fixed.inset-0.z-\[80\] .prompt-detail-head{padding:16px!important}body>div.fixed.inset-0.z-\[80\] .prompt-detail-title{font-size:18px!important}body>div.fixed.inset-0.z-\[80\] .prompt-detail-body{padding:14px 16px!important}body>div.fixed.inset-0.z-\[80\] .prompt-detail-p{font-size:13px!important;padding:14px!important}body>div.fixed.inset-0.z-\[80\] .prompt-detail-actions{padding:14px 16px 16px!important}body>div.fixed.inset-0.z-\[80\] .prompt-detail-actions button{min-width:120px!important}}
-
-/* B30: prompt detail is a second layer above the workbench prompt repository, preserving list state. */
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-layer{position:absolute!important;inset:0!important;z-index:36!important;display:flex!important;align-items:center!important;justify-content:center!important;background:rgba(8,13,23,.18)!important;backdrop-filter:blur(8px)!important;-webkit-backdrop-filter:blur(8px)!important;padding:0!important;}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-modal2{width:100%!important;height:100%!important;max-width:none!important;max-height:none!important;border-radius:30px!important;overflow:hidden!important;display:grid!important;grid-template-columns:minmax(360px,1.15fr) minmax(350px,.85fr)!important;background:linear-gradient(180deg,rgba(255,255,255,.94),rgba(248,250,252,.94))!important;border:0!important;box-shadow:none!important;animation:modalIn .2s cubic-bezier(.2,.8,.2,1)!important;}
-html.dark body>div.fixed.inset-0.z-\[80\] .prompt-detail-modal2{background:linear-gradient(180deg,rgba(24,24,27,.96),rgba(9,9,11,.96))!important;}
-
-/* B32: second-layer prompt detail is a compact glass sheet (~2/3 of repository modal), not full-screen. */
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-layer{position:absolute!important;inset:0!important;z-index:36!important;display:flex!important;align-items:center!important;justify-content:center!important;padding:24px!important;background:rgba(248,250,252,.18)!important;backdrop-filter:saturate(165%) blur(22px)!important;-webkit-backdrop-filter:saturate(165%) blur(22px)!important;}
-html.dark body>div.fixed.inset-0.z-\[80\] .prompt-detail-layer{background:rgba(2,6,23,.28)!important;}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-modal2{width:min(746px,calc(100% - 48px))!important;height:min(516px,calc(100% - 48px))!important;max-width:66.7%!important;max-height:66.7%!important;border-radius:28px!important;overflow:hidden!important;display:grid!important;grid-template-columns:minmax(250px,1.05fr) minmax(260px,.95fr)!important;background:linear-gradient(180deg,rgba(255,255,255,.88),rgba(248,250,252,.84))!important;border:1px solid rgba(255,255,255,.58)!important;box-shadow:0 30px 90px rgba(15,23,42,.30),inset 0 1px 0 rgba(255,255,255,.72)!important;backdrop-filter:saturate(185%) blur(28px)!important;-webkit-backdrop-filter:saturate(185%) blur(28px)!important;animation:modalIn .2s cubic-bezier(.2,.8,.2,1)!important;}
-html.dark body>div.fixed.inset-0.z-\[80\] .prompt-detail-modal2{background:linear-gradient(180deg,rgba(24,24,27,.88),rgba(9,9,11,.84))!important;border-color:rgba(255,255,255,.12)!important;box-shadow:0 30px 90px rgba(0,0,0,.58),inset 0 1px 0 rgba(255,255,255,.08)!important;}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-modal2 .prompt-detail-media{min-height:0!important;height:100%!important;padding:18px!important;}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-modal2 .prompt-detail-img{max-height:100%!important;border-radius:18px!important;}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-modal2 .prompt-detail-side{display:flex!important;flex-direction:column!important;max-height:100%!important;height:100%!important;min-height:0!important;overflow:hidden!important;}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-modal2 .prompt-detail-head{padding:16px 18px 12px!important;flex:0 0 auto!important;}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-modal2 .prompt-detail-title{font-size:19px!important;}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-modal2 .prompt-detail-body{padding:14px 18px!important;flex:1 1 auto!important;min-height:0!important;overflow:auto!important;overscroll-behavior:contain!important;}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-modal2 .prompt-detail-p{font-size:13px!important;line-height:1.68!important;padding:14px!important;max-height:none!important;}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-modal2 .prompt-detail-actions{padding:12px 18px 16px!important;flex:0 0 auto!important;position:relative!important;z-index:2!important;}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-modal2 .prompt-detail-actions button{height:38px!important;min-width:0!important;}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-modal2 .prompt-detail-media::after{left:18px!important;bottom:16px!important;font-size:11px!important;padding:6px 10px!important;}
-@media(max-width:900px){body>div.fixed.inset-0.z-\[80\] .prompt-detail-layer{padding:12px!important}body>div.fixed.inset-0.z-\[80\] .prompt-detail-modal2{width:calc(100% - 24px)!important;height:min(78%,720px)!important;max-width:calc(100% - 24px)!important;max-height:78%!important;grid-template-columns:1fr!important;grid-template-rows:minmax(180px,42%) minmax(0,58%)!important}body>div.fixed.inset-0.z-\[80\] .prompt-detail-modal2 .prompt-detail-media{height:100%!important;min-height:0!important;border-right:0!important;border-bottom:1px solid var(--mac-border)!important}body>div.fixed.inset-0.z-\[80\] .prompt-detail-modal2 .prompt-detail-side{height:100%!important;max-height:100%!important;min-height:0!important}}
-
 /* B34 macOS commercial polish: final system layer, scoped and loaded after historical patches. */
 :root{
   --mac-nav-h:36px;
@@ -872,13 +824,6 @@ html.gpt-agent-mode #root .agent-chat-inputbar .grid.grid-cols-6,
 html.gpt-agent-mode #root .agent-chat-inputbar [class*="grid-cols-6"],
 html.gpt-agent-mode #root .agent-chat-inputbar label:has(select),
 html.gpt-agent-mode #root .agent-chat-inputbar label:has(input[type="number"]){display:none!important;visibility:hidden!important;}
-
-/* Workbench prompt repo body portal and second-layer details. */
-body>div.fixed.inset-0.z-\[80\]{z-index:var(--mac-modal-z)!important;}
-body>div.fixed.inset-0.z-\[80\]>div.relative.z-10{border-radius:32px!important;}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-modal2{border-radius:26px!important;}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-modal2 .prompt-detail-side{min-height:0!important;overflow:hidden!important;}
-body>div.fixed.inset-0.z-\[80\] .prompt-detail-modal2 .prompt-detail-body{scroll-behavior:auto!important;}
 
 /* Login: avoid mobile keyboard clipping and global .card leakage feel. */
 .login-shell{min-width:0!important;max-width:min(430px,100%)!important;}
@@ -1336,49 +1281,6 @@ html.gpt-agent-mode #root .agent-chat-inputbar .collapse-section *{display:none!
     max-height: min(94dvh, calc(100vh - 24px)) !important;
   }
 
-  /* Workbench prompt repository modal: mobile touch targets and bounded sheet. */
-  body > div.fixed.inset-0.z-\[80\] {
-    padding: 8px !important;
-  }
-  body > div.fixed.inset-0.z-\[80\] > div.relative.z-10 {
-    width: calc(100vw - 16px) !important;
-    max-width: calc(100vw - 16px) !important;
-    max-height: calc(100dvh - 16px) !important;
-    border-radius: 22px !important;
-  }
-  body > div.fixed.inset-0.z-\[80\] > div.relative.z-10 > div.sticky {
-    height: 52px !important;
-    min-height: 52px !important;
-    padding: 0 12px !important;
-  }
-  body > div.fixed.inset-0.z-\[80\] input[placeholder*="搜索"] {
-    height: 42px !important;
-    font-size: 16px !important;
-  }
-  body > div.fixed.inset-0.z-\[80\] button.px-3.py-1,
-  body > div.fixed.inset-0.z-\[80\] button[class*="rounded-full"][class*="text-xs"] {
-    min-height: 36px !important;
-    padding-top: 0 !important;
-    padding-bottom: 0 !important;
-    display: inline-flex !important;
-    align-items: center !important;
-    white-space: nowrap !important;
-  }
-  body > div.fixed.inset-0.z-\[80\] .prompt-detail-layer {
-    padding: 8px !important;
-    align-items: stretch !important;
-  }
-  body > div.fixed.inset-0.z-\[80\] .prompt-detail-modal2 {
-    width: 100% !important;
-    height: min(88dvh, calc(100vh - 24px)) !important;
-    max-width: none !important;
-    max-height: none !important;
-    grid-template-columns: 1fr !important;
-    grid-template-rows: minmax(130px, 34%) minmax(0, 66%) !important;
-  }
-  body > div.fixed.inset-0.z-\[80\] .prompt-detail-modal2 .prompt-detail-actions {
-    padding-bottom: max(14px, env(safe-area-inset-bottom)) !important;
-  }
 }
 
 @media (max-width: 430px) {
@@ -1390,5 +1292,174 @@ html.gpt-agent-mode #root .agent-chat-inputbar .collapse-section *{display:none!
   }
   html.gpt-agent-mode main.pb-48 .safe-area-x.max-w-7xl {
     padding-bottom: 142px !important;
+  }
+}
+
+/* B38 composer compactness: keep controls integrated, not sheet-like, and preserve mobile overflow. */
+html:not(.gpt-agent-mode) #root > div.fixed.bottom-4,
+html:not(.gpt-agent-mode) #root > div.fixed.sm\:bottom-6,
+html.gpt-agent-mode .agent-chat-inputbar {
+  overflow: visible !important;
+  contain: none !important;
+}
+
+html:not(.gpt-agent-mode) #root > div.fixed.bottom-4 > div,
+html:not(.gpt-agent-mode) #root > div.fixed.sm\:bottom-6 > div,
+html.gpt-agent-mode .agent-chat-inputbar > div {
+  padding: 10px 12px !important;
+  border-radius: 24px !important;
+  background: color-mix(in srgb, var(--pd-panel) 92%, transparent) !important;
+  border: 1px solid color-mix(in srgb, var(--pd-line) 84%, transparent) !important;
+  box-shadow: 0 18px 52px rgba(15, 23, 42, .14), inset 0 1px 0 rgba(255, 255, 255, .42) !important;
+  backdrop-filter: saturate(180%) blur(28px) !important;
+  -webkit-backdrop-filter: saturate(180%) blur(28px) !important;
+  overflow: visible !important;
+}
+
+html:not(.gpt-agent-mode) #root > div.fixed.bottom-4 .mt-3,
+html:not(.gpt-agent-mode) #root > div.fixed.sm\:bottom-6 .mt-3,
+html.gpt-agent-mode .agent-chat-inputbar .mt-3 {
+  margin-top: 8px !important;
+  padding-top: 0 !important;
+  border-top: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  overflow: visible !important;
+}
+
+html:not(.gpt-agent-mode) #root > div.fixed.bottom-4 .mt-3 > div.hidden.sm\:flex,
+html:not(.gpt-agent-mode) #root > div.fixed.sm\:bottom-6 .mt-3 > div.hidden.sm\:flex,
+html:not(.gpt-agent-mode) #root > div.fixed.bottom-4 .mt-3 > div.sm\:hidden,
+html:not(.gpt-agent-mode) #root > div.fixed.sm\:bottom-6 .mt-3 > div.sm\:hidden,
+html.gpt-agent-mode .agent-chat-inputbar .mt-3 > div {
+  display: flex !important;
+  align-items: stretch !important;
+  justify-content: flex-start !important;
+  gap: 8px !important;
+  max-width: 100% !important;
+  overflow-x: auto !important;
+  overflow-y: visible !important;
+  padding: 2px 2px 6px !important;
+  -webkit-overflow-scrolling: touch !important;
+  scroll-snap-type: x proximity !important;
+}
+
+html:not(.gpt-agent-mode) #root > div.fixed.bottom-4 .mt-3 label,
+html:not(.gpt-agent-mode) #root > div.fixed.sm\:bottom-6 .mt-3 label,
+html.gpt-agent-mode .agent-chat-inputbar .mt-3 label {
+  min-height: 54px !important;
+  justify-content: end !important;
+  gap: 6px !important;
+  scroll-snap-align: start !important;
+}
+
+html:not(.gpt-agent-mode) #root > div.fixed.bottom-4 .mt-3 label > span,
+html:not(.gpt-agent-mode) #root > div.fixed.sm\:bottom-6 .mt-3 label > span,
+html.gpt-agent-mode .agent-chat-inputbar .mt-3 label > span {
+  display: block !important;
+  height: 14px !important;
+  line-height: 14px !important;
+  font-size: 11px !important;
+  color: var(--pd-sub) !important;
+}
+
+html:not(.gpt-agent-mode) #root > div.fixed.bottom-4 .mt-3 label:has(input[type="number"]),
+html:not(.gpt-agent-mode) #root > div.fixed.sm\:bottom-6 .mt-3 label:has(input[type="number"]),
+html.gpt-agent-mode .agent-chat-inputbar .mt-3 label:has(input[type="number"]) {
+  min-width: 88px !important;
+}
+
+html:not(.gpt-agent-mode) #root > div.fixed.bottom-4 .mt-3 label:has(input[type="number"]) input[type="number"],
+html:not(.gpt-agent-mode) #root > div.fixed.sm\:bottom-6 .mt-3 label:has(input[type="number"]) input[type="number"],
+html.gpt-agent-mode .agent-chat-inputbar .mt-3 label:has(input[type="number"]) input[type="number"] {
+  width: 100% !important;
+  min-width: 0 !important;
+  padding-inline: 10px !important;
+  text-align: center !important;
+}
+
+html:not(.gpt-agent-mode) #root > div.fixed.bottom-4 .mt-3 button,
+html:not(.gpt-agent-mode) #root > div.fixed.sm\:bottom-6 .mt-3 button,
+html:not(.gpt-agent-mode) #root > div.fixed.bottom-4 .mt-3 input,
+html:not(.gpt-agent-mode) #root > div.fixed.sm\:bottom-6 .mt-3 input,
+html:not(.gpt-agent-mode) #root > div.fixed.bottom-4 .mt-3 select,
+html:not(.gpt-agent-mode) #root > div.fixed.sm\:bottom-6 .mt-3 select,
+html.gpt-agent-mode .agent-chat-inputbar .mt-3 button,
+html.gpt-agent-mode .agent-chat-inputbar .mt-3 input,
+html.gpt-agent-mode .agent-chat-inputbar .mt-3 select {
+  height: 38px !important;
+  min-height: 38px !important;
+  border-radius: 14px !important;
+  font-size: 12px !important;
+}
+
+html:not(.gpt-agent-mode) #root > div.fixed.bottom-4 .mt-3 > div:last-child,
+html:not(.gpt-agent-mode) #root > div.fixed.sm\:bottom-6 .mt-3 > div:last-child {
+  height: 38px !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+}
+
+html:not(.gpt-agent-mode) #root > div.fixed.bottom-4 .mt-3 > div:last-child button,
+html:not(.gpt-agent-mode) #root > div.fixed.sm\:bottom-6 .mt-3 > div:last-child button {
+  width: 42px !important;
+  min-width: 42px !important;
+  height: 38px !important;
+  min-height: 38px !important;
+}
+
+@media (max-width: 760px) {
+  html:not(.gpt-agent-mode) #root > div.fixed.bottom-4,
+  html:not(.gpt-agent-mode) #root > div.fixed.sm\:bottom-6,
+  html.gpt-agent-mode .agent-chat-inputbar {
+    left: 8px !important;
+    right: 8px !important;
+    width: auto !important;
+    max-width: calc(100vw - 16px) !important;
+    bottom: calc(10px + env(safe-area-inset-bottom)) !important;
+  }
+
+  html:not(.gpt-agent-mode) #root > div.fixed.bottom-4 > div,
+  html:not(.gpt-agent-mode) #root > div.fixed.sm\:bottom-6 > div,
+  html.gpt-agent-mode .agent-chat-inputbar > div {
+    padding: 9px 10px !important;
+    border-radius: 22px !important;
+  }
+
+  html:not(.gpt-agent-mode) #root > div.fixed.bottom-4 .mt-3,
+  html:not(.gpt-agent-mode) #root > div.fixed.sm\:bottom-6 .mt-3,
+  html.gpt-agent-mode .agent-chat-inputbar .mt-3 {
+    margin-top: 6px !important;
+    padding-bottom: 2px !important;
+  }
+
+  html:not(.gpt-agent-mode) #root > div.fixed.bottom-4 .mt-3 > div.hidden.sm\:flex,
+  html:not(.gpt-agent-mode) #root > div.fixed.sm\:bottom-6 .mt-3 > div.hidden.sm\:flex,
+  html:not(.gpt-agent-mode) #root > div.fixed.bottom-4 .mt-3 > div.sm\:hidden,
+  html:not(.gpt-agent-mode) #root > div.fixed.sm\:bottom-6 .mt-3 > div.sm\:hidden,
+  html.gpt-agent-mode .agent-chat-inputbar .mt-3 > div {
+    gap: 6px !important;
+    padding-bottom: 4px !important;
+  }
+
+  html:not(.gpt-agent-mode) #root > div.fixed.bottom-4 .mt-3 label,
+  html:not(.gpt-agent-mode) #root > div.fixed.sm\:bottom-6 .mt-3 label,
+  html.gpt-agent-mode .agent-chat-inputbar .mt-3 label {
+    min-height: 52px !important;
+  }
+
+  html:not(.gpt-agent-mode) #root > div.fixed.bottom-4 .mt-3 button,
+  html:not(.gpt-agent-mode) #root > div.fixed.sm\:bottom-6 .mt-3 button,
+  html:not(.gpt-agent-mode) #root > div.fixed.bottom-4 .mt-3 input,
+  html:not(.gpt-agent-mode) #root > div.fixed.sm\:bottom-6 .mt-3 input,
+  html:not(.gpt-agent-mode) #root > div.fixed.bottom-4 .mt-3 select,
+  html:not(.gpt-agent-mode) #root > div.fixed.sm\:bottom-6 .mt-3 select,
+  html.gpt-agent-mode .agent-chat-inputbar .mt-3 button,
+  html.gpt-agent-mode .agent-chat-inputbar .mt-3 input,
+  html.gpt-agent-mode .agent-chat-inputbar .mt-3 select {
+    height: 36px !important;
+    min-height: 36px !important;
+    border-radius: 13px !important;
   }
 }
