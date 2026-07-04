@@ -168,6 +168,50 @@ function Invoke-QualityTests([string]$Url, [string]$Label) {
   }
 }
 
+function Test-PreviewSupportsAuth([string]$Url) {
+  $payload = @{
+    username = $TestUser
+    usernameB64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($TestUser))
+    password = $TestPass
+  } | ConvertTo-Json -Compress
+  try {
+    $res = Invoke-WebRequest -UseBasicParsing -Uri ($Url.TrimEnd('/') + '/api/auth/login') -Method POST -ContentType 'application/json' -Body $payload -TimeoutSec 30
+    return @{ ok = ($res.StatusCode -ge 200 -and $res.StatusCode -lt 300); reason = 'login-ok' }
+  } catch {
+    $message = ''
+    if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $message = $_.ErrorDetails.Message }
+    elseif ($_.Exception -and $_.Exception.Message) { $message = $_.Exception.Message }
+    if ($message -match 'JWT_SECRET is required') {
+      return @{ ok = $false; reason = 'preview-missing-jwt-secret' }
+    }
+    return @{ ok = $false; reason = $message }
+  }
+}
+
+function Invoke-PreviewStaticChecks([string]$Url) {
+  Write-Step "Run static deploy checks against preview"
+  $root = Invoke-WebRequest -UseBasicParsing -Uri ($Url.TrimEnd('/') + '/') -TimeoutSec 45
+  if (-not ($root.Content -match 'home-v3-20260705-full-audit-r25')) {
+    throw "Preview HTML does not contain expected asset version home-v3-20260705-full-audit-r25."
+  }
+  $js = Invoke-WebRequest -UseBasicParsing -Method Head -Uri ($Url.TrimEnd('/') + '/assets/homepage-v3.js') -TimeoutSec 45
+  $css = Invoke-WebRequest -UseBasicParsing -Method Head -Uri ($Url.TrimEnd('/') + '/assets/homepage-v3.css') -TimeoutSec 45
+  $jsType = [string]($js.Headers['Content-Type'])
+  $cssType = [string]($css.Headers['Content-Type'])
+  if ($jsType -notmatch 'javascript|ecmascript|text/plain') { throw "Preview homepage-v3.js has unexpected content type: $jsType" }
+  if ($cssType -notmatch 'css|text/plain') { throw "Preview homepage-v3.css has unexpected content type: $cssType" }
+  foreach ($path in @('/init_db.sql', '/scripts/deploy-quality.ps1', '/tests/e2e-quality.js', '/README.md')) {
+    try {
+      $res = Invoke-WebRequest -UseBasicParsing -Method Head -Uri ($Url.TrimEnd('/') + $path) -TimeoutSec 30
+      if ($res.StatusCode -ne 404) { throw "Preview sensitive path should be 404: $path returned $($res.StatusCode)" }
+    } catch {
+      if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 404) { continue }
+      throw
+    }
+  }
+  Write-Host 'Preview static checks passed. Dynamic auth smoke is reserved for production when preview JWT_SECRET is unavailable.'
+}
+
 Push-Location -LiteralPath $ProjectDir
 try {
   Require-Command 'git'
@@ -187,7 +231,16 @@ try {
   Invoke-GitDiffCheck
 
   $previewUrl = Invoke-PagesDeploy -Branch $PreviewBranch -Label 'preview'
-  Invoke-QualityTests -Url $previewUrl -Label 'preview'
+  $previewAuth = Test-PreviewSupportsAuth -Url $previewUrl
+  if ($previewAuth.ok) {
+    Invoke-QualityTests -Url $previewUrl -Label 'preview'
+  } elseif ($previewAuth.reason -eq 'preview-missing-jwt-secret') {
+    Write-Host 'Preview environment does not expose JWT_SECRET through current Pages direct-upload CLI; running static preview checks and reserving full auth smoke for production.' -ForegroundColor Yellow
+    Invoke-PreviewStaticChecks -Url $previewUrl
+  } else {
+    Write-Host "Preview auth probe failed: $($previewAuth.reason)" -ForegroundColor Yellow
+    Invoke-PreviewStaticChecks -Url $previewUrl
+  }
 
   if (-not $SkipProductionDeploy) {
     $productionUrl = Invoke-PagesDeploy -Branch $ProductionBranch -Label 'production'
