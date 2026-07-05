@@ -412,6 +412,56 @@ function blobToDataUrl(blob) {
     reader.readAsDataURL(blob);
   });
 }
+async function exportGalleryMigrationPayload() {
+  const raw = localStorage.getItem(STORE_KEY) || '';
+  const parsed = raw ? JSON.parse(raw) : {};
+  const tasks = Array.isArray(parsed.tasks) ? parsed.tasks : [];
+  const favorites = parsed.favorites && typeof parsed.favorites === 'object' ? parsed.favorites : {};
+  const blobIds = new Set();
+  const add = (id) => { if (id) blobIds.add(id); };
+  for (const task of tasks) {
+    for (const img of task.images || []) add(img.blobId);
+    for (const ref of task.referenceSnapshots || []) {
+      add(ref.blobId);
+      add(ref.originalBlobId);
+      add(ref.compositedBlobId);
+      add(ref.maskBlobId);
+    }
+  }
+  const blobs = [];
+  for (const id of blobIds) {
+    const blob = await getBlob(id).catch(() => null);
+    if (!blob) continue;
+    blobs.push({ id, dataUrl: await blobToDataUrl(blob), type: blob.type || 'application/octet-stream' });
+  }
+  return {
+    type: 'nexgen-gallery-migration',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    sourceOrigin: location.origin,
+    tasks,
+    favorites,
+    blobs
+  };
+}
+async function importGalleryMigrationPayload(payload) {
+  if (!payload || payload.type !== 'nexgen-gallery-migration') throw new Error('迁移数据格式无效');
+  const incomingTasks = Array.isArray(payload.tasks) ? payload.tasks : [];
+  const incomingFavorites = payload.favorites && typeof payload.favorites === 'object' ? payload.favorites : {};
+  const incomingBlobs = Array.isArray(payload.blobs) ? payload.blobs : [];
+  for (const item of incomingBlobs) {
+    if (!item?.id || !item?.dataUrl) continue;
+    await putBlob(dataUrlToBlob(item.dataUrl), item.id);
+  }
+  const existingIds = new Set((state.tasks || []).map((task) => task.id));
+  const importedTasks = incomingTasks.filter((task) => task?.id && !existingIds.has(task.id));
+  state.tasks = [...importedTasks, ...(state.tasks || [])];
+  state.favorites = { ...(state.favorites || {}), ...incomingFavorites };
+  state.selectedTaskIds = [];
+  writeStore();
+  render();
+  return { tasks: importedTasks.length, skipped: incomingTasks.length - importedTasks.length, blobs: incomingBlobs.length };
+}
 function dataUrlToBlob(dataUrl) {
   const [meta, body] = String(dataUrl).split(',');
   const type = (meta.match(/data:([^;]+)/) || [])[1] || 'image/png';
@@ -5931,6 +5981,54 @@ function applyPromptFromUrl() {
   }
 }
 
+function cleanMigrationUrl() {
+  try {
+    const url = new URL(location.href);
+    url.searchParams.delete('nexgenExportGallery');
+    url.searchParams.delete('nexgenImportGallery');
+    url.searchParams.delete('target');
+    history.replaceState(null, '', url.pathname + url.search + url.hash);
+  } catch {}
+}
+async function runGalleryMigrationBridge() {
+  const params = new URLSearchParams(location.search);
+  if (params.get('nexgenExportGallery') === '1') {
+    const target = params.get('target') || 'https://gpt-image2-bg5.pages.dev/?nexgenImportGallery=1';
+    try {
+      document.body.classList.add('is-migrating-gallery');
+      const payload = await exportGalleryMigrationPayload();
+      window.name = `NEXGEN_GALLERY_MIGRATION:${JSON.stringify(payload)}`;
+      location.href = target.includes('nexgenImportGallery=1') ? target : `${target}${target.includes('?') ? '&' : '?'}nexgenImportGallery=1`;
+      return true;
+    } catch (err) {
+      toast(`本地画廊导出失败：${err?.message || err}`);
+      cleanMigrationUrl();
+      return false;
+    }
+  }
+  if (params.get('nexgenImportGallery') === '1') {
+    const prefix = 'NEXGEN_GALLERY_MIGRATION:';
+    try {
+      if (!String(window.name || '').startsWith(prefix)) {
+        toast('未收到本地画廊迁移数据，请从本地 8788 迁移入口重新打开。');
+        cleanMigrationUrl();
+        return false;
+      }
+      const payload = JSON.parse(String(window.name).slice(prefix.length));
+      window.name = '';
+      const result = await importGalleryMigrationPayload(payload);
+      cleanMigrationUrl();
+      toast(`画廊同步完成：新增 ${result.tasks} 个任务，图片缓存 ${result.blobs} 个`);
+      return true;
+    } catch (err) {
+      toast(`线上画廊导入失败：${err?.message || err}`);
+      cleanMigrationUrl();
+      return false;
+    }
+  }
+  return false;
+}
+
 async function init() {
   applyTheme();
   watchSystemTheme();
@@ -5941,6 +6039,7 @@ async function init() {
   });
   writeStore();
   render();
+  await runGalleryMigrationBridge();
   setTimeout(() => cleanupOrphanBlobs().catch((err) => console.warn('[home-v3] blob cleanup skipped', err)), 1200);
   setInterval(updateRunningTimers, 1000);
 }
