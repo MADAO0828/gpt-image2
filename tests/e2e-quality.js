@@ -331,13 +331,23 @@ async function smokeMobileLayout(browser) {
   assert(!workbenchMobile.upstreamTitleVisible, 'mobile workbench should not show upstream Image Playground title');
   await clickMode(page, ['Agent']);
   await assertNoRuntimeRecovery(page);
+  await page.evaluate(() => {
+    const promptLine = document.querySelector('.agent-project-prompt-line');
+    if (promptLine) promptLine.textContent = '这是一个用于回归测试的超长 Agent 项目提示词，需要模拟用户输入大量提示词后顶栏左侧内容持续变长的状态。'.repeat(12);
+  });
   const agentMobile = await page.evaluate(() => {
     const session = document.querySelector('.agent-project-card');
     const actions = document.querySelector('.agent-stage .agent-head');
+    const actionBar = document.querySelector('.agent-stage .agent-head-actions');
+    const threadButton = document.querySelector('.agent-stage .agent-thread-menu-trigger');
+    const clearButton = document.querySelector('.agent-stage .agent-clear-icon-button');
     const workflowWorkspace = document.querySelector('.workflow-workspace');
     const workflowTable = document.querySelector('.workflow-table-wrap');
     const sr = session ? session.getBoundingClientRect() : null;
     const ar = actions ? actions.getBoundingClientRect() : null;
+    const abr = actionBar ? actionBar.getBoundingClientRect() : null;
+    const tbr = threadButton ? threadButton.getBoundingClientRect() : null;
+    const cbr = clearButton ? clearButton.getBoundingClientRect() : null;
     const wr = workflowWorkspace ? workflowWorkspace.getBoundingClientRect() : null;
     const tr = workflowTable ? workflowTable.getBoundingClientRect() : null;
     const hitTargets = Array.from(document.querySelectorAll('.agent-stage button, .agent-composer button, .sidebar button'))
@@ -352,6 +362,9 @@ async function smokeMobileLayout(browser) {
     return {
       session: sr ? { left: sr.left, right: sr.right, top: sr.top, bottom: sr.bottom, w: sr.width, h: sr.height } : null,
       actions: ar ? { left: ar.left, right: ar.right, top: ar.top, bottom: ar.bottom, w: ar.width, h: ar.height } : null,
+      actionBar: abr ? { left: abr.left, right: abr.right, top: abr.top, bottom: abr.bottom, w: abr.width, h: abr.height } : null,
+      threadButton: tbr ? { left: tbr.left, right: tbr.right, top: tbr.top, bottom: tbr.bottom, w: tbr.width, h: tbr.height } : null,
+      clearButton: cbr ? { left: cbr.left, right: cbr.right, top: cbr.top, bottom: cbr.bottom, w: cbr.width, h: cbr.height } : null,
       workflowWorkspace: wr ? { left: wr.left, right: wr.right, w: wr.width } : null,
       workflowTable: tr ? { left: tr.left, right: tr.right, w: tr.width } : null,
       vw: window.innerWidth,
@@ -361,6 +374,10 @@ async function smokeMobileLayout(browser) {
   if (agentMobile.session && agentMobile.actions) {
     assert(agentMobile.session.right <= agentMobile.actions.left + 4 || agentMobile.session.bottom <= agentMobile.actions.top || agentMobile.session.top >= agentMobile.actions.bottom, `mobile agent session/actions should not overlap: ${JSON.stringify(agentMobile)}`);
   }
+  assert(agentMobile.actionBar && agentMobile.threadButton && agentMobile.clearButton, `mobile agent header controls should exist with long prompt: ${JSON.stringify(agentMobile)}`);
+  assert(agentMobile.actionBar.right <= agentMobile.vw + 1 && agentMobile.actionBar.left >= -1, `mobile agent header actions should remain in viewport with long prompt: ${JSON.stringify(agentMobile)}`);
+  assert(agentMobile.threadButton.right <= agentMobile.vw + 1 && agentMobile.threadButton.w >= 88, `mobile agent thread button should remain visible with long prompt: ${JSON.stringify(agentMobile)}`);
+  assert(agentMobile.clearButton.right <= agentMobile.vw + 1 && agentMobile.clearButton.w >= 32, `mobile agent clear button should remain visible with long prompt: ${JSON.stringify(agentMobile)}`);
   assert(!agentMobile.workflowWorkspace || agentMobile.workflowWorkspace.right <= agentMobile.vw + 2, `mobile workflow workspace should not overflow: ${JSON.stringify(agentMobile)}`);
   assert(!agentMobile.workflowTable || agentMobile.workflowTable.right <= agentMobile.vw + 24, `mobile workflow table container should not overflow: ${JSON.stringify(agentMobile)}`);
   const tooSmallAgent = agentMobile.hitTargets.filter((b) => b.w < 32 || b.h < 32);

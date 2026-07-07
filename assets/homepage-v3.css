@@ -1602,10 +1602,14 @@ button { cursor: pointer; }
   padding: 10px 14px 14px;
 }
 .agent-head {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: flex-start;
-  justify-content: space-between;
   gap: 10px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   min-height: 48px;
   padding: 0 2px 7px;
   border-bottom: 1px solid rgba(126, 141, 164, .14);
@@ -1626,6 +1630,8 @@ button { cursor: pointer; }
 }
 .agent-head-copy {
   min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   flex: 1;
   flex-direction: column;
   gap: 3px;
@@ -1689,7 +1695,9 @@ button { cursor: pointer; }
 .agent-menu-bars::before { top: -5px; }
 .agent-menu-bars::after { top: 5px; }
 .agent-project-prompt-line {
-  max-width: min(760px, 100%);
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   border: 0;
   padding: 0;
   background: transparent;
@@ -1710,6 +1718,8 @@ button { cursor: pointer; }
   align-items: center;
   justify-content: flex-end;
   flex-wrap: nowrap;
+  flex: 0 0 auto;
+  min-width: max-content;
   padding-top: 1px;
 }
 .agent-thread-menu-trigger {
@@ -3874,8 +3884,8 @@ button { cursor: pointer; }
     max-width: 100%;
   }
   .agent-head-actions {
-    flex: 0 1 auto;
-    min-width: 0;
+    flex: 0 0 auto;
+    min-width: max-content;
   }
   .agent-title { font-size: 18px; }
   .agent-log .empty-state {
