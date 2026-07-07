@@ -468,7 +468,7 @@ async function smokeFirefoxAgentLayout() {
       const log = document.querySelector('.agent-log');
       if (!log) return;
       const prompt = '赛博朋克女孩站在雨夜街头，暗黑未来风，破旧但高科技的城市街区，智能霓虹与故障路牌交错，女孩穿磨损机能皮衣与义体装甲，表面有雨水与划痕，神情冷冽觉醒，身后是朦胧的工业建筑，蒸汽管道与闪烁广告屏，整体低饱和冷色调，局部红蓝霓虹点缀，重氛围，压迫感，电影级末世科技美术风格，gritty cyberpunk, dystopian rainy street, dark cinematic lighting, futuristic decay';
-      log.innerHTML = `<div class="agent-conversation"><article class="agent-message assistant"><div class="agent-message-head"><span>ASSISTANT</span><button class="agent-message-menu-button">•••</button></div><div class="agent-prose-wrap"><div class="agent-prose"><p>下面是 5 个可选方案。</p><div class="agent-prompt-options"><div class="agent-option-grid"><section class="agent-prompt-option-card recommended"><div class="agent-prompt-option-head"><span>方案 1 推荐</span><strong>暗黑未来街区觉醒</strong></div><div class="agent-prompt-option-meta"><span>适合模型：Flux / SDXL / Midjourney</span><span>理由：比较统筹赛博朋克更冷、更硬核，适合想要压抑、成熟、末世科技感的画面。</span></div><div class="agent-prompt-box"><div><strong>正向 PROMPT</strong><button>复制</button></div><p>${prompt}</p></div><div class="agent-prompt-box negative"><div><strong>负面 PROMPT</strong><button>复制</button></div><p>色彩过艳，卡通化，可爱风，多人，干净明亮，低细节，材质塑料感，结构混乱，过度曝光</p></div><button class="agent-option-generate">生成该方案</button></section></div><div class="agent-option-shortcuts"><button>1</button><button>2</button><button>3</button><button>4</button><button>5</button></div><div class="agent-task-strip"><button class="agent-task-card"><span class="agent-task-preview"></span><span class="agent-task-meta"><strong>完成</strong><span>1/1 · 00:57</span><span class="agent-task-progress"><i style="width:100%"></i></span></span></button></div></div></div></div><time>2026/7/8 07:06:09</time></article><article class="agent-message assistant pending"><div class="agent-message-head"><span>AGENT</span><button class="agent-message-menu-button">•••</button></div><div class="agent-prose"><p>正在思考...</p></div><time>2026/7/8 07:27:46</time></article></div>`;
+      log.innerHTML = `<div class="agent-conversation"><article class="agent-message user"><div class="agent-message-head"><span>你</span><button class="agent-message-menu-button">•••</button></div><div class="agent-prose"><p>我想做一个壁纸，绿色的海洋和岸边的女孩</p></div><time>2026/7/8 07:27:46</time></article><article class="agent-message assistant"><div class="agent-message-head"><span>ASSISTANT</span><button class="agent-message-menu-button">•••</button></div><div class="agent-prose-wrap"><div class="agent-prose"><p>下面是 5 个可选方案。</p><div class="agent-prompt-options"><div class="agent-option-grid"><section class="agent-prompt-option-card recommended"><div class="agent-prompt-option-head"><span>方案 1 推荐</span><strong>暗黑未来街区觉醒</strong></div><div class="agent-prompt-option-meta"><span>适合模型：Flux / SDXL / Midjourney</span><span>理由：比较统筹赛博朋克更冷、更硬核，适合想要压抑、成熟、末世科技感的画面。</span></div><div class="agent-prompt-box"><div><strong>正向 PROMPT</strong><button>复制</button></div><p>${prompt}</p></div><div class="agent-prompt-box negative"><div><strong>负面 PROMPT</strong><button>复制</button></div><p>色彩过艳，卡通化，可爱风，多人，干净明亮，低细节，材质塑料感，结构混乱，过度曝光</p></div><button class="agent-option-generate">生成该方案</button></section></div><div class="agent-option-shortcuts"><button>1</button><button>2</button><button>3</button><button>4</button><button>5</button></div><div class="agent-task-strip"><button class="agent-task-card"><span class="agent-task-preview"></span><span class="agent-task-meta"><strong>完成</strong><span>1/1 · 00:57</span><span class="agent-task-progress"><i style="width:100%"></i></span></span></button></div></div></div></div><time>2026/7/8 07:06:09</time></article><article class="agent-message assistant pending"><div class="agent-message-head"><span>AGENT</span><button class="agent-message-menu-button">•••</button></div><div class="agent-prose"><p>正在思考...</p></div><time>2026/7/8 07:27:46</time></article></div>`;
     });
     const layout = await page.evaluate(() => {
       const box = (selector) => {
@@ -486,16 +486,18 @@ async function smokeFirefoxAgentLayout() {
         log: box('.agent-log'),
         conversation: box('.agent-conversation'),
         message: box('.agent-message'),
+        userMessage: box('.agent-message.user'),
         promptOptions: box('.agent-prompt-options'),
         taskStrip: box('.agent-task-strip'),
         composer: box('.agent-composer'),
       };
     });
     assert(layout.rootOverflow <= 2 && layout.bodyOverflow <= 2, `Firefox Agent should not create page horizontal overflow: ${JSON.stringify(layout)}`);
-    for (const key of ['stage', 'log', 'conversation', 'message', 'promptOptions', 'taskStrip', 'composer']) {
+    for (const key of ['stage', 'log', 'conversation', 'message', 'userMessage', 'promptOptions', 'taskStrip', 'composer']) {
       const rect = layout[key];
       assert(!rect || (rect.left >= -1 && rect.right <= layout.vw + 2), `Firefox Agent ${key} should stay inside viewport: ${JSON.stringify(layout)}`);
     }
+    assert(!layout.userMessage || !layout.conversation || Math.abs(layout.conversation.right - layout.userMessage.right) <= 24, `Firefox user message should align near the right edge of the conversation: ${JSON.stringify(layout)}`);
     assert(errors.length === 0, `unexpected Firefox browser errors on Agent layout: ${errors.join(' | ')}`);
   } finally {
     await context.close();

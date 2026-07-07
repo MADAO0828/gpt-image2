@@ -191,8 +191,8 @@ function Test-PreviewSupportsAuth([string]$Url) {
 function Invoke-PreviewStaticChecks([string]$Url) {
   Write-Step "Run static deploy checks against preview"
   $root = Invoke-WebRequest -UseBasicParsing -Uri ($Url.TrimEnd('/') + '/') -TimeoutSec 45
-  if (-not ($root.Content -match 'home-v3-20260708-firefox-agent-r75')) {
-    throw "Preview HTML does not contain expected asset version home-v3-20260708-firefox-agent-r75."
+  if (-not ($root.Content -match 'home-v3-20260708-firefox-agent-balance-r76')) {
+    throw "Preview HTML does not contain expected asset version home-v3-20260708-firefox-agent-balance-r76."
   }
   $js = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($Url.TrimEnd('/') + '/assets/homepage-v3.js') -TimeoutSec 45
   $css = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($Url.TrimEnd('/') + '/assets/homepage-v3.css') -TimeoutSec 45

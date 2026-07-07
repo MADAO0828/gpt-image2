@@ -110,8 +110,8 @@ for (const name of allowedAssets) {
 }
 
 const index = read('index.html');
-assertContains(index, '/assets/homepage-v3.css?v=home-v3-20260708-firefox-agent-r75', 'Index must load cache-busted homepage v3 CSS r75.');
-assertContains(index, '/assets/homepage-v3.js?v=home-v3-20260708-firefox-agent-r75', 'Index must load cache-busted homepage v3 JS r75.');
+assertContains(index, '/assets/homepage-v3.css?v=home-v3-20260708-firefox-agent-balance-r76', 'Index must load cache-busted homepage v3 CSS r76.');
+assertContains(index, '/assets/homepage-v3.js?v=home-v3-20260708-firefox-agent-balance-r76', 'Index must load cache-busted homepage v3 JS r76.');
 for (const old of ['homepage-v2', 'index-CZHhOunP', 'index-BR6pbS6i', 'fast-workbench-skeleton', 'home-v3-20260703', 'home-v3-20260704-cache-recovery-agent-viewer-r8', 'home-v3-20260704-cache-recovery-agent-viewer-r9', 'home-v3-20260704-cache-recovery-agent-viewer-r10', 'home-v3-20260704-cache-recovery-agent-viewer-r11', 'home-v3-20260704-cache-recovery-agent-viewer-r12', 'home-v3-20260704-cache-recovery-agent-viewer-r13', 'home-v3-20260704-cache-recovery-agent-viewer-r14', 'home-v3-20260704-cache-recovery-agent-viewer-r15', 'home-v3-20260704-cache-recovery-agent-viewer-r16', 'home-v3-20260704-cache-recovery-agent-viewer-r17', 'home-v3-20260704-cache-recovery-agent-viewer-r18', 'home-v3-20260704-cache-recovery-agent-viewer-r19', 'home-v3-20260704-cache-recovery-agent-viewer-r20', 'home-v3-20260704-cache-recovery-agent-viewer-r21', 'home-v3-20260704-cache-recovery-agent-viewer-r22', 'home-v3-20260704-cache-recovery-agent-viewer-r23', 'home-v3-20260704-cache-recovery-agent-viewer-r24']) {
   assertNotContains(index, old, `Index still references obsolete shell marker: ${old}`);
 }

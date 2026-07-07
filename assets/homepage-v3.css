@@ -1915,10 +1915,10 @@ button { cursor: pointer; }
   gap: 12px;
 }
 .agent-conversation {
-  width: min(100%, 980px);
+  width: 100%;
   max-width: 100%;
   min-width: 0;
-  justify-self: start;
+  justify-self: stretch;
   display: grid;
   gap: 12px;
 }
@@ -1941,7 +1941,7 @@ button { cursor: pointer; }
 }
 .agent-message {
   width: fit-content;
-  max-width: min(880px, 100%);
+  max-width: min(880px, calc(100vw - 96px), 100%);
   min-width: 0;
   box-sizing: border-box;
   border: 1px solid var(--line);
@@ -1956,7 +1956,7 @@ button { cursor: pointer; }
 .agent-message.assistant { justify-self: start; }
 .agent-message.user {
   justify-self: end;
-  max-width: min(760px, 82%);
+  max-width: min(760px, calc(100vw - 96px), 82%);
 }
 .agent-message-head {
   display: flex;
