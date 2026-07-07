@@ -3852,6 +3852,20 @@ button { cursor: pointer; }
     align-items: flex-start;
     padding-bottom: 10px;
   }
+  .agent-top-icon-button,
+  .agent-clear-icon-button {
+    width: 34px;
+    min-width: 34px;
+    height: 34px;
+  }
+  .agent-project-prompt-line {
+    min-height: 32px;
+    display: block;
+    line-height: 32px;
+  }
+  .agent-thread-menu-trigger {
+    height: 34px;
+  }
   .agent-head-copy,
   .agent-project-title-row,
   .agent-project-prompt-line,
