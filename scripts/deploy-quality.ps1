@@ -194,8 +194,8 @@ function Invoke-PreviewStaticChecks([string]$Url) {
   if (-not ($root.Content -match 'home-v3-20260708-full-qa-r72')) {
     throw "Preview HTML does not contain expected asset version home-v3-20260708-full-qa-r72."
   }
-  $js = Invoke-WebRequest -UseBasicParsing -Method Head -Uri ($Url.TrimEnd('/') + '/assets/homepage-v3.js') -TimeoutSec 45
-  $css = Invoke-WebRequest -UseBasicParsing -Method Head -Uri ($Url.TrimEnd('/') + '/assets/homepage-v3.css') -TimeoutSec 45
+  $js = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($Url.TrimEnd('/') + '/assets/homepage-v3.js') -TimeoutSec 45
+  $css = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($Url.TrimEnd('/') + '/assets/homepage-v3.css') -TimeoutSec 45
   $jsType = [string]($js.Headers['Content-Type'])
   $cssType = [string]($css.Headers['Content-Type'])
   if ($jsType -notmatch 'javascript|ecmascript|text/plain') { throw "Preview homepage-v3.js has unexpected content type: $jsType" }
