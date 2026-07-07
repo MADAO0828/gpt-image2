@@ -94,11 +94,13 @@ button { cursor: pointer; }
 
 .workspace {
   width: 100%;
+  max-width: 100vw;
   height: 100dvh;
   padding: 10px;
   display: grid;
   grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
   gap: 8px;
+  overflow: hidden;
 }
 .workspace.is-agent, .workspace.is-gallery, .workspace.is-pro, .workspace.is-workflow { --sidebar-w: 220px; }
 
@@ -481,12 +483,17 @@ button { cursor: pointer; }
   z-index: 1;
   height: calc(100dvh - 20px);
   min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
   gap: 8px;
 }
 
 .gallery-stage, .agent-stage, .pro-stage, .workflow-workspace {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   min-height: 0;
   overflow: hidden;
   border: 1px solid var(--line);
@@ -1598,6 +1605,9 @@ button { cursor: pointer; }
 
 .agent-stage {
   display: grid;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   grid-template-rows: auto minmax(0, 1fr);
   padding: 10px 14px 14px;
 }
@@ -1895,6 +1905,7 @@ button { cursor: pointer; }
   color: var(--accent) !important;
 }
 .agent-log {
+  width: 100%;
   min-height: 0;
   max-width: 100%;
   overflow: auto;
@@ -1904,9 +1915,10 @@ button { cursor: pointer; }
   gap: 12px;
 }
 .agent-conversation {
-  width: 100%;
+  width: min(100%, 980px);
   max-width: 100%;
   min-width: 0;
+  justify-self: start;
   display: grid;
   gap: 12px;
 }
@@ -1928,8 +1940,10 @@ button { cursor: pointer; }
   word-break: break-word;
 }
 .agent-message {
-  max-width: min(880px, 88%);
+  width: fit-content;
+  max-width: min(880px, 100%);
   min-width: 0;
+  box-sizing: border-box;
   border: 1px solid var(--line);
   border-radius: 20px;
   padding: 10px 12px;
@@ -1940,7 +1954,10 @@ button { cursor: pointer; }
   word-break: break-word;
 }
 .agent-message.assistant { justify-self: start; }
-.agent-message.user { justify-self: end; }
+.agent-message.user {
+  justify-self: end;
+  max-width: min(760px, 82%);
+}
 .agent-message-head {
   display: flex;
   align-items: center;
@@ -1972,6 +1989,8 @@ button { cursor: pointer; }
   position: relative;
   display: grid;
   gap: 8px;
+  min-width: 0;
+  max-width: 100%;
 }
 .agent-prose-wrap.is-collapsed .agent-prose {
   max-height: 420px;
@@ -1982,6 +2001,8 @@ button { cursor: pointer; }
 .agent-prose {
   display: grid;
   gap: 8px;
+  min-width: 0;
+  max-width: 100%;
   color: var(--ink);
   font-size: 12.5px;
   line-height: 1.6;
@@ -2025,6 +2046,7 @@ button { cursor: pointer; }
 }
 .agent-prose table {
   width: 100%;
+  max-width: 100%;
   border-collapse: collapse;
   overflow: hidden;
   border-radius: 12px;
@@ -2098,6 +2120,8 @@ button { cursor: pointer; }
 .agent-prompt-options {
   display: grid;
   gap: 12px;
+  min-width: 0;
+  max-width: 100%;
   margin-top: 12px;
 }
 .agent-recommended-action {
@@ -2107,10 +2131,15 @@ button { cursor: pointer; }
 .agent-option-grid {
   display: grid;
   gap: 10px;
+  min-width: 0;
+  max-width: 100%;
 }
 .agent-prompt-option-card {
   display: grid;
   gap: 9px;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   border: 1px solid rgba(148, 163, 184, .22);
   border-radius: 18px;
   padding: 12px;
@@ -2123,6 +2152,8 @@ button { cursor: pointer; }
 .agent-prompt-option-head {
   display: grid;
   gap: 2px;
+  min-width: 0;
+  max-width: 100%;
 }
 .agent-prompt-option-head span {
   color: var(--accent);
@@ -2132,18 +2163,25 @@ button { cursor: pointer; }
   text-transform: uppercase;
 }
 .agent-prompt-option-head strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
   color: var(--ink);
   font-size: 13px;
 }
 .agent-prompt-option-meta {
   display: grid;
   gap: 3px;
+  min-width: 0;
+  max-width: 100%;
   color: var(--muted);
   font-size: 11.5px;
 }
 .agent-prompt-box {
   display: grid;
   gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   border-radius: 14px;
   padding: 9px;
   background: rgba(255, 255, 255, .54);
@@ -2157,6 +2195,7 @@ button { cursor: pointer; }
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  min-width: 0;
 }
 .agent-prompt-box strong {
   color: var(--muted);
@@ -2166,6 +2205,8 @@ button { cursor: pointer; }
 }
 .agent-prompt-box p {
   margin: 0;
+  min-width: 0;
+  max-width: 100%;
   color: var(--ink);
   white-space: pre-wrap;
   word-break: break-word;
@@ -2236,8 +2277,10 @@ button { cursor: pointer; }
 }
 .agent-task-strip {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(max(150px, calc((100% - 48px) / 5)), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr));
   gap: 8px;
+  min-width: 0;
+  max-width: 100%;
   margin-top: 12px;
 }
 .agent-task-card {
@@ -2246,6 +2289,9 @@ button { cursor: pointer; }
   align-items: center;
   gap: 9px;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   border: 1px solid rgba(148, 163, 184, .22);
   border-radius: 15px;
   padding: 7px;

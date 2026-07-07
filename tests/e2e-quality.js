@@ -4,7 +4,7 @@
  *   $env:BASE_URL='https://gpt-image2-bg5.pages.dev'; $env:TEST_USER='a691466166'; $env:TEST_PASS='<hidden>'
  *   npx --yes --package playwright node tests/e2e-quality.js
  */
-const { chromium, devices } = require('playwright');
+const { chromium, firefox, devices } = require('playwright');
 
 const DEFAULT_BASE_URL = 'https://gpt-image2-bg5.pages.dev';
 const BASE_URL = normalizeBaseUrl(process.env.BASE_URL || DEFAULT_BASE_URL);
@@ -436,6 +436,73 @@ async function smokeMobileLayout(browser) {
   await context.close();
 }
 
+async function loginToken() {
+  const res = await fetch(absolutePath('/api/auth/login'), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: TEST_USER, password: TEST_PASS })
+  });
+  const data = await res.json().catch(() => ({}));
+  assert(res.ok && data.token, `api login should return token for browser-specific smoke; status=${res.status}`);
+  return data.token;
+}
+
+async function smokeFirefoxAgentLayout() {
+  const token = await loginToken();
+  const browser = await firefox.launch({ headless: HEADLESS, slowMo: SLOW_MO });
+  const context = await browser.newContext({
+    viewport: { width: 1536, height: 820 },
+    ignoreHTTPSErrors: true,
+  });
+  const host = new URL(BASE_URL).hostname;
+  await context.addCookies([{ name: 'session', value: token, domain: host, path: '/', httpOnly: true, secure: BASE_URL.startsWith('https:'), sameSite: 'Lax' }]);
+  const page = await context.newPage();
+  const errors = attachPageDiagnostics(page);
+  try {
+    await page.goto(absolutePath('/'), { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
+    await waitForSettled(page);
+    await assertNoRuntimeRecovery(page);
+    await clickMode(page, ['Agent']);
+    await page.waitForSelector('.agent-stage .agent-head', { timeout: TIMEOUT });
+    await page.evaluate(() => {
+      const log = document.querySelector('.agent-log');
+      if (!log) return;
+      const prompt = '赛博朋克女孩站在雨夜街头，暗黑未来风，破旧但高科技的城市街区，智能霓虹与故障路牌交错，女孩穿磨损机能皮衣与义体装甲，表面有雨水与划痕，神情冷冽觉醒，身后是朦胧的工业建筑，蒸汽管道与闪烁广告屏，整体低饱和冷色调，局部红蓝霓虹点缀，重氛围，压迫感，电影级末世科技美术风格，gritty cyberpunk, dystopian rainy street, dark cinematic lighting, futuristic decay';
+      log.innerHTML = `<div class="agent-conversation"><article class="agent-message assistant"><div class="agent-message-head"><span>ASSISTANT</span><button class="agent-message-menu-button">•••</button></div><div class="agent-prose-wrap"><div class="agent-prose"><p>下面是 5 个可选方案。</p><div class="agent-prompt-options"><div class="agent-option-grid"><section class="agent-prompt-option-card recommended"><div class="agent-prompt-option-head"><span>方案 1 推荐</span><strong>暗黑未来街区觉醒</strong></div><div class="agent-prompt-option-meta"><span>适合模型：Flux / SDXL / Midjourney</span><span>理由：比较统筹赛博朋克更冷、更硬核，适合想要压抑、成熟、末世科技感的画面。</span></div><div class="agent-prompt-box"><div><strong>正向 PROMPT</strong><button>复制</button></div><p>${prompt}</p></div><div class="agent-prompt-box negative"><div><strong>负面 PROMPT</strong><button>复制</button></div><p>色彩过艳，卡通化，可爱风，多人，干净明亮，低细节，材质塑料感，结构混乱，过度曝光</p></div><button class="agent-option-generate">生成该方案</button></section></div><div class="agent-option-shortcuts"><button>1</button><button>2</button><button>3</button><button>4</button><button>5</button></div><div class="agent-task-strip"><button class="agent-task-card"><span class="agent-task-preview"></span><span class="agent-task-meta"><strong>完成</strong><span>1/1 · 00:57</span><span class="agent-task-progress"><i style="width:100%"></i></span></span></button></div></div></div></div><time>2026/7/8 07:06:09</time></article><article class="agent-message assistant pending"><div class="agent-message-head"><span>AGENT</span><button class="agent-message-menu-button">•••</button></div><div class="agent-prose"><p>正在思考...</p></div><time>2026/7/8 07:27:46</time></article></div>`;
+    });
+    const layout = await page.evaluate(() => {
+      const box = (selector) => {
+        const el = document.querySelector(selector);
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { left: r.left, right: r.right, width: r.width, height: r.height };
+      };
+      const vw = window.innerWidth;
+      return {
+        vw,
+        rootOverflow: Math.max(0, document.documentElement.scrollWidth - vw),
+        bodyOverflow: Math.max(0, document.body.scrollWidth - vw),
+        stage: box('.agent-stage'),
+        log: box('.agent-log'),
+        conversation: box('.agent-conversation'),
+        message: box('.agent-message'),
+        promptOptions: box('.agent-prompt-options'),
+        taskStrip: box('.agent-task-strip'),
+        composer: box('.agent-composer'),
+      };
+    });
+    assert(layout.rootOverflow <= 2 && layout.bodyOverflow <= 2, `Firefox Agent should not create page horizontal overflow: ${JSON.stringify(layout)}`);
+    for (const key of ['stage', 'log', 'conversation', 'message', 'promptOptions', 'taskStrip', 'composer']) {
+      const rect = layout[key];
+      assert(!rect || (rect.left >= -1 && rect.right <= layout.vw + 2), `Firefox Agent ${key} should stay inside viewport: ${JSON.stringify(layout)}`);
+    }
+    assert(errors.length === 0, `unexpected Firefox browser errors on Agent layout: ${errors.join(' | ')}`);
+  } finally {
+    await context.close();
+    await browser.close();
+  }
+}
+
 (async () => {
   log(`BASE_URL=${BASE_URL}`);
   log(`TEST_USER=${TEST_USER}`);
@@ -450,6 +517,7 @@ async function smokeMobileLayout(browser) {
   } finally {
     await browser.close();
   }
+  await step('Firefox Agent layout', () => smokeFirefoxAgentLayout());
 
   const failed = results.filter((r) => !r.ok);
   if (failed.length) {
