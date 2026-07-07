@@ -55,3 +55,6 @@
 # Prompt repository data is large; short cache improves loading without keeping it stale too long.
 /prompts_data.json
   Cache-Control: public, max-age=300
+
+/prompts_fast/*
+  Cache-Control: public, max-age=86400, stale-while-revalidate=604800

@@ -68,9 +68,14 @@ includes('executeWorkflowInvoke', 'Workflow batch execution entry should exist')
 includes('const runProfile = imageProfile()', 'Workflow runs should snapshot the current Composer image profile');
 includes('profileSnapshot', 'Workflow runs should preserve the Composer image profile snapshot for reproducible history');
 includes('const profile = run.profileSnapshot || imageProfile()', 'Workflow image tasks should use the saved Composer profile snapshot');
-includes('const params = { ...requestedParams(profile), count: run.budget.countPerRow }', 'Workflow image tasks should compute provider params from the saved Composer profile and override count');
+includes('function workflowImageParams(workflow, profile, countPerRow)', 'Workflow image tasks should use a dedicated params helper');
+includes('const params = workflowImageParams(workflow, profile, run.budget.countPerRow)', 'Workflow image tasks should compute provider params from the saved Composer profile and workflow config');
+includes('negative_prompt: negativePrompt', 'Workflow image params should forward workflow negative prompts to image requests');
 includes('await generateImageTask(taskSeed)', 'Workflow execution should reuse the normal image generation task path');
 includes('providerPayload(provider, requestParams)', 'Workflow generation path should keep provider-specific payload branching through task snapshot params');
+includes('function buildWorkflowAgentRequestPayload(input, options = {})', 'Workflow planning/rewrite should use a dedicated Responses payload builder');
+includes('function postAgentResponsesRequest(payload, textProfile)', 'Workflow planning/rewrite should use the shared Agent Responses request helper with timeout handling');
+includes('agentRequestTimeoutSeconds(textProfile)', 'Workflow Responses requests should use configured Agent timeouts');
 includes('referenceLimit()', 'Workflow/reference UI should continue to rely on provider reference limits');
 
 if (failures.length) {

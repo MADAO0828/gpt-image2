@@ -40,7 +40,8 @@ assertContains('multipart sends provider payload', 'appendProviderParams(fd, pro
 assertPattern('output params include quality', /quality:\s*firstDefined\(/);
 assertContains('output params include format', 'output_format: format');
 assertContains('non-png sends compression', "out.output_compression = Number(firstDefined");
-assertContains('png sends transparent background', 'out.transparent_background = !!firstDefined');
+assertContains('png sends transparent background', 'out.transparent_background = transparent');
+assertContains('png sends official background field', "out.background = transparent ? 'transparent' : 'auto'");
 assertContains('generation n respects Google split', "n: provider === 'google' ? 1");
 assertContains('edit n respects Google split', "fd.append('n', String(provider === 'google' ? 1");
 

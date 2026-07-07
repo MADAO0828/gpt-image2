@@ -15,8 +15,10 @@ function ok(condition, message) {
 
 const sandbox = {
   console,
+  TextDecoder,
+  TextEncoder,
   window: {},
-  document: { querySelector: () => null, querySelectorAll: () => [], addEventListener: () => {}, removeEventListener: () => {} },
+  document: { documentElement: { dataset: {}, setAttribute: () => {} }, querySelector: () => null, querySelectorAll: () => [], addEventListener: () => {}, removeEventListener: () => {} },
   indexedDB: {
     open: () => {
       const req = {};
@@ -53,7 +55,7 @@ const sandbox = {
     }
   },
   localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
-  sessionStorage: { getItem: () => null, removeItem: () => {} },
+  sessionStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
   matchMedia: () => ({ matches: false, addEventListener: () => {}, removeEventListener: () => {} }),
   setInterval: () => 0,
   setTimeout,
@@ -92,6 +94,7 @@ ok(typeof hooks.normalizeRestoredTask === 'function', 'normalizeRestoredTask hoo
 ok(typeof hooks.collectImageCandidates === 'function', 'collectImageCandidates hook missing');
 ok(typeof hooks.collectGenerationResult === 'function', 'collectGenerationResult hook missing');
 ok(typeof hooks.persistResponseImages === 'function', 'persistResponseImages hook missing');
+ok(typeof hooks.imageInfoFromBlob === 'function', 'imageInfoFromBlob hook missing');
 ok(typeof hooks.resolveTaskProfile === 'function', 'resolveTaskProfile hook missing');
 ok(typeof hooks.retryTask === 'function', 'retryTask hook missing');
 ok(typeof hooks.extractReturnedParams === 'function', 'extractReturnedParams hook missing');
@@ -104,6 +107,15 @@ ok(typeof hooks.cloneReferenceSnapshots === 'function', 'cloneReferenceSnapshots
 ok(typeof hooks.taskCountInfo === 'function', 'taskCountInfo hook missing');
 ok(typeof hooks.renderReferenceBadge === 'function', 'renderReferenceBadge hook missing');
 ok(typeof hooks.renderTaskReferenceStrip === 'function', 'renderTaskReferenceStrip hook missing');
+ok(typeof hooks.captureAgentScrollAnchor === 'function', 'captureAgentScrollAnchor hook missing');
+ok(typeof hooks.restoreAgentScrollAnchor === 'function', 'restoreAgentScrollAnchor hook missing');
+ok(typeof hooks.freezeAgentScrollForRender === 'function', 'freezeAgentScrollForRender hook missing');
+ok(typeof hooks.releaseAgentScrollFreezeAfterRender === 'function', 'releaseAgentScrollFreezeAfterRender hook missing');
+ok(typeof hooks.renderSafeMarkdown === 'function', 'renderSafeMarkdown hook missing');
+ok(typeof hooks.extractAgentPromptOptions === 'function', 'extractAgentPromptOptions hook missing');
+ok(typeof hooks.recommendedAgentPromptOption === 'function', 'recommendedAgentPromptOption hook missing');
+ok(typeof hooks.parseAgentOptionSelection === 'function', 'parseAgentOptionSelection hook missing');
+ok(typeof hooks.renderAgentMessage === 'function', 'renderAgentMessage hook missing');
 ok(typeof hooks.expectedProviderResolution === 'function', 'expectedProviderResolution hook missing');
 ok(typeof hooks.isTierResolutionMatch === 'function', 'isTierResolutionMatch hook missing');
 ok(typeof hooks.taskReferenceDisplayBlobId === 'function', 'taskReferenceDisplayBlobId hook missing');
@@ -116,9 +128,16 @@ ok(typeof hooks.setTestTasks === 'function', 'setTestTasks hook missing');
 ok(typeof hooks.shouldCloseModalFromClick === 'function', 'shouldCloseModalFromClick hook missing');
 ok(typeof hooks.normalizeComparableValue === 'function', 'normalizeComparableValue hook missing');
 ok(typeof hooks.providerPayload === 'function', 'providerPayload hook missing');
+ok(typeof hooks.promptWithCanvasConstraint === 'function', 'promptWithCanvasConstraint hook missing');
+ok(typeof hooks.buildTransparentKeyPrompt === 'function', 'buildTransparentKeyPrompt hook missing');
+ok(typeof hooks.getTransparentRequestParams === 'function', 'getTransparentRequestParams hook missing');
+ok(typeof hooks.detectKeyColorFromPixels === 'function', 'detectKeyColorFromPixels hook missing');
+ok(typeof hooks.removeKeyedBackgroundFromPixels === 'function', 'removeKeyedBackgroundFromPixels hook missing');
 ok(typeof hooks.openAiSizePayload === 'function', 'openAiSizePayload hook missing');
 ok(typeof hooks.googleOfficialImageSize === 'function', 'googleOfficialImageSize hook missing');
 ok(typeof hooks.summarizeResponse === 'function', 'summarizeResponse hook missing');
+ok(typeof hooks.consumeResponseTextStream === 'function', 'consumeResponseTextStream hook missing');
+ok(typeof hooks.resolveResponsePayload === 'function', 'resolveResponsePayload hook missing');
 ok(typeof hooks.agentTextProfile === 'function', 'agentTextProfile hook missing');
 ok(typeof hooks.agentWebSearchSupported === 'function', 'agentWebSearchSupported hook missing');
 ok(typeof hooks.agentRequestTimeoutSeconds === 'function', 'agentRequestTimeoutSeconds hook missing');
@@ -130,6 +149,15 @@ ok(typeof hooks.branchAgentThreadFromMessage === 'function', 'branchAgentThreadF
 ok(typeof hooks.clearAgentThreadMessages === 'function', 'clearAgentThreadMessages hook missing');
 ok(typeof hooks.renderAgentStage === 'function', 'renderAgentStage hook missing');
 ok(typeof hooks.renderAgentComposer === 'function', 'renderAgentComposer hook missing');
+ok(typeof hooks.renderWorkflowWorkspace === 'function', 'renderWorkflowWorkspace hook missing');
+ok(typeof hooks.renderSidebar === 'function', 'renderSidebar hook missing');
+ok(typeof hooks.renderPopover === 'function', 'renderPopover hook missing');
+ok(typeof hooks.agentImageParams === 'function', 'agentImageParams hook missing');
+ok(typeof hooks.agentImageSettings === 'function', 'agentImageSettings hook missing');
+ok(typeof hooks.createAgentThread === 'function', 'createAgentThread hook missing');
+ok(typeof hooks.deleteAgentThread === 'function', 'deleteAgentThread hook missing');
+ok(typeof hooks.handlePaste === 'function', 'handlePaste hook missing');
+ok(typeof hooks.loadRuntime === 'function', 'loadRuntime hook missing');
 ok(typeof hooks.setTestState === 'function', 'setTestState hook missing');
 ok(typeof hooks.getTestState === 'function', 'getTestState hook missing');
 ok(typeof hooks.writeStore === 'function', 'writeStore hook missing');
@@ -158,7 +186,7 @@ const restoredFromStaleError = hooks.normalizeRestoredTask({
 ok(restoredFromStaleError.status === 'success', 'task with stale refresh-interrupted error and persisted images must restore as success');
 ok(restoredFromStaleError.error === '', 'stale refresh-interrupted error should be cleared when success evidence exists');
 
-const restoredCompleteNano = hooks.normalizeRestoredTask({
+  const restoredCompleteNano = hooks.normalizeRestoredTask({
   id: 'task-nano-two-success-refresh',
   status: 'error',
   providerFamily: 'google',
@@ -489,6 +517,78 @@ if (typeof hooks.openAiSizePayload === 'function') {
 }
 
 (async () => {
+  const runtimeOriginalFetch = sandbox.fetch;
+  hooks.setTestState({
+    preferences: {
+      clearInputAfterSubmit: false,
+      persistInputOnRestart: false,
+      alwaysShowRetryButton: true,
+      reuseTaskApiProfileTemporarily: false,
+      allowPromptRewrite: true,
+      enterSubmit: false
+    },
+    settings: {
+      quality: 'low',
+      output_format: 'jpeg',
+      output_compression: 80,
+      n: 1,
+      transparent_output: false,
+      moderation: 'auto'
+    },
+    activeProfileId: 'old-profile',
+    activeImageProfileId: 'old-profile'
+  });
+  sandbox.fetch = async (url) => {
+    if (String(url).includes('/api/auth/me')) return new Response(JSON.stringify({ user: { id: 'u1', username: 'tester' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (String(url).includes('/.well-known/img-runtime-config.json')) return new Response(JSON.stringify({
+      themeMode: 'dark',
+      clearInputAfterSubmit: true,
+      persistInputOnRestart: true,
+      alwaysShowRetryButton: false,
+      reuseTaskApiProfileTemporarily: true,
+      allowPromptRewrite: false,
+      enterSubmit: true,
+      referenceImageEditAction: 'add-mask',
+      zipDownloadRoutes: ['task-detail-all'],
+      quality: 'high',
+      output_format: 'png',
+      output_compression: null,
+      n: 3,
+      transparent_output: true,
+      moderation: 'low',
+      profiles: [{ id: 'runtime-image', name: 'Runtime Image', provider: 'openai', apiMode: 'images', model: 'gpt-image-2' }],
+      activeProfileId: 'runtime-image'
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    return runtimeOriginalFetch(url);
+  };
+  await hooks.loadRuntime();
+  sandbox.fetch = runtimeOriginalFetch;
+  const runtimeState = hooks.getTestState();
+  ok(runtimeState.preferences.clearInputAfterSubmit === true, 'runtime habit clearInputAfterSubmit should override local stale preference');
+  ok(runtimeState.preferences.persistInputOnRestart === true, 'runtime habit persistInputOnRestart should override local stale preference');
+  ok(runtimeState.preferences.alwaysShowRetryButton === false, 'runtime habit alwaysShowRetryButton=false should be preserved');
+  ok(runtimeState.preferences.reuseTaskApiProfileTemporarily === true, 'runtime habit reuseTaskApiProfileTemporarily should apply');
+  ok(runtimeState.preferences.allowPromptRewrite === false, 'runtime habit allowPromptRewrite=false should be preserved');
+  ok(runtimeState.preferences.enterSubmit === true, 'runtime habit enterSubmit should apply');
+  ok(runtimeState.preferences.referenceImageEditAction === 'add-mask', 'runtime reference edit action should apply');
+  ok(runtimeState.preferences.zipDownloadRoutes.length === 1 && runtimeState.preferences.zipDownloadRoutes[0] === 'task-detail-all', 'runtime zip routes should apply');
+  ok(runtimeState.settings.output_format === 'png' && runtimeState.settings.transparent_output === true && runtimeState.settings.n === 3, 'runtime toolbar generation settings should override stale local defaults');
+  ok(runtimeState.activeProfileId === 'runtime-image' && runtimeState.activeImageProfileId === 'runtime-image', 'runtime active profile should override stale local profile');
+  hooks.setTestState({
+    settings: {
+      quality: 'high',
+      output_format: 'png',
+      output_compression: 90,
+      n: 1,
+      transparent_output: false,
+      moderation: 'auto'
+    },
+    preferences: {
+      allowPromptRewrite: true,
+      alwaysShowRetryButton: true
+    }
+  });
+
   const fakeGalleryScroll = {
     scrollTop: 640,
     scrollLeft: 12,
@@ -534,6 +634,26 @@ if (typeof hooks.openAiSizePayload === 'function') {
   const virtualWindow = hooks.galleryVirtualWindow(300);
   ok(virtualWindow.shouldVirtualize === true, 'large gallery should use virtualized rendering');
   ok(virtualWindow.endIndex - virtualWindow.startIndex < 90, 'virtual gallery should render only a bounded window of cards');
+  const agentLogForAnchor = {
+    scrollTop: 400,
+    clientHeight: 600,
+    getBoundingClientRect: () => ({ top: 100, bottom: 700 }),
+    querySelectorAll: () => [
+      { dataset: { agentMessageId: 'm1' }, getBoundingClientRect: () => ({ top: -200, bottom: 80 }) },
+      { dataset: { agentMessageId: 'm2' }, getBoundingClientRect: () => ({ top: 140, bottom: 420 }) }
+    ],
+    querySelector: () => null
+  };
+  const agentAnchor = hooks.captureAgentScrollAnchor(agentLogForAnchor);
+  ok(agentAnchor?.id === 'm2' && agentAnchor.offsetTop === 40, 'Agent scroll anchor should capture the first visible message relative to the log viewport');
+  const restoredAgentLog = {
+    scrollTop: 400,
+    clientHeight: 600,
+    getBoundingClientRect: () => ({ top: 100, bottom: 700 }),
+    querySelector: () => ({ getBoundingClientRect: () => ({ top: 260, bottom: 540 }) })
+  };
+  ok(hooks.restoreAgentScrollAnchor(restoredAgentLog, agentAnchor) === true, 'Agent scroll anchor restore should find the previous visible message');
+  ok(restoredAgentLog.scrollTop === 520, 'Agent scroll anchor restore should keep the clicked/visible message at the same viewport offset after render');
   const paintedCanvas = { width: 1, height: 1, getContext: () => ({ getImageData: () => ({ data: new Uint8ClampedArray([0, 0, 0, 255]) }) }) };
   const emptyCanvas = { width: 1, height: 1, getContext: () => ({ getImageData: () => ({ data: new Uint8ClampedArray([0, 0, 0, 0]) }) }) };
   ok(hooks.maskCanvasHasPaint(paintedCanvas) === true, 'mask canvas paint detector should detect painted alpha');
@@ -552,6 +672,7 @@ if (typeof hooks.openAiSizePayload === 'function') {
     aspectRatio: '9:16',
     quality: 'high',
     format: 'png',
+    negativePrompt: '不要文字，不要水印',
     count: 2,
     moderation: 'auto'
   }, {
@@ -567,12 +688,29 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(googleBody.extra_body?.generationConfig?.imageConfig?.aspectRatio === '9:16', 'Google generation request body should include Gemini imageConfig aspectRatio');
   ok(googleBody.extra_body?.generationConfig?.imageConfig?.imageSize === '4K', 'Google generation request body should include Gemini imageConfig imageSize');
   ok(googleBody.target_size === '3072x5504', 'Google 4K + 9:16 request body should include official target pixel size');
-  ok(googleBody.prompt.includes('3072x5504'), 'Google request prompt should reinforce official target pixel size');
+  ok(googleBody.prompt === 'google portrait', 'Google request prompt should remain exactly the user prompt');
   ok(googleBody.quality === 'high', 'Google generation request body should include selected quality');
   ok(googleBody.output_format === 'png', 'Google generation request body should include selected output format');
+  ok(googleBody.negative_prompt === '不要文字，不要水印' && googleBody.negativePrompt === '不要文字，不要水印', 'JSON generation request should include extracted negative prompt aliases');
   ok(googleBody.transparent_background === false, 'Google png request body should explicitly include selected transparent background false value');
+  ok(googleBody.background === 'auto', 'Google opaque png request body should include background=auto for gateway compatibility');
   ok(googleBody.moderation === 'auto', 'Google generation request body should include selected moderation');
   ok(Number(googleBody.n) === 1, 'Google generation request body should force n=1 so Gemini-compatible providers can be split and aggregated');
+
+  await hooks.sendGenerationRequest('google transparent png generation', {
+    resolution: '1K',
+    aspectRatio: '1:1',
+    quality: 'high',
+    format: 'png',
+    transparent: true,
+    count: 1
+  }, {
+    profile: { id: 'google-image', name: 'Nano Banana2', provider: 'google', model: 'gemini-3.1-flash-image-preview' },
+    references: []
+  });
+  const googleTransparentBody = JSON.parse(capturedRequest?.options?.body || '{}');
+  ok(googleTransparentBody.background === 'transparent', 'Google transparent png generation should include background=transparent for compatible gateways');
+  ok(googleTransparentBody.transparent_background === true, 'Google transparent png generation should preserve legacy transparent_background=true for compatible gateways');
 
   let google4kFetchCount = 0;
   const google4kBodies = [];
@@ -654,6 +792,51 @@ if (typeof hooks.openAiSizePayload === 'function') {
   const googlePngForm = capturedRequest?.options?.body;
   ok(String(googlePngForm.get('transparent_background')) === 'true', 'Google png reference FormData should include selected transparent background value');
   ok(googlePngForm.get('output_compression') === null, 'Google png reference FormData should not include compression');
+  ok(hooks.imageOutputParams({ format: 'png', transparent: true }).background === 'transparent', 'transparent png output params should include official OpenAI background=transparent');
+  ok(hooks.imageOutputParams({ format: 'png', transparent: false }).background === 'auto', 'opaque png output params should include background=auto');
+  ok(hooks.openAiTransparentBackgroundSupported({ provider: 'openai', model: 'gpt-image-2' }) === true, 'gpt-image-2 OpenAI-compatible profiles should allow transparent background gateway requests');
+  ok(hooks.openAiTransparentBackgroundSupported({ provider: 'openai', model: 'gpt-image-1' }) === true, 'supported OpenAI image models should allow transparent background requests');
+  ok(hooks.openAiTransparentBackgroundSupported({ provider: 'google', model: 'gemini-3.1-flash-image-preview' }) === false, 'Google/Nano profiles should not claim OpenAI transparent-background support');
+  ok(hooks.openAiTransparentBackgroundSupported({ provider: 'xai', model: 'grok-imagine-image-pro' }) === false, 'Xai/Grok profiles should not claim OpenAI transparent-background support');
+
+  const greenPixels = new Uint8ClampedArray([
+    0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255,
+    0, 255, 0, 255, 220, 40, 40, 255, 0, 255, 0, 255,
+    0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255
+  ]);
+  ok(hooks.detectKeyColorFromPixels(greenPixels, 3, 3) === '#00FF00', 'transparent post-processing should detect green key color');
+  hooks.removeKeyedBackgroundFromPixels(greenPixels, 3, 3, '#00FF00');
+  ok(greenPixels[3] === 0 && greenPixels[19] === 255, 'green key background should become transparent while subject remains opaque');
+
+  const magentaPixels = new Uint8ClampedArray([
+    255, 0, 255, 255, 255, 0, 255, 255, 255, 0, 255, 255,
+    255, 0, 255, 255, 20, 220, 20, 255, 255, 0, 255, 255,
+    255, 0, 255, 255, 255, 0, 255, 255, 255, 0, 255, 255
+  ]);
+  ok(hooks.detectKeyColorFromPixels(magentaPixels, 3, 3) === '#FF00FF', 'transparent post-processing should detect magenta key color');
+  hooks.removeKeyedBackgroundFromPixels(magentaPixels, 3, 3, '#FF00FF');
+  ok(magentaPixels[3] === 0 && magentaPixels[19] === 255, 'magenta key background should become transparent while green subject remains opaque');
+
+  await hooks.sendGenerationRequest('openai transparent png generation', {
+    resolution: '1K',
+    aspectRatio: '1:1',
+    quality: 'high',
+    format: 'png',
+    transparent: true,
+    moderation: 'auto',
+    count: 1
+  }, {
+    profile: { id: 'openai-image', name: 'gpt-image2', provider: 'openai', apiMode: 'images', model: 'gpt-image-2' },
+    references: []
+  });
+  const openAiTransparentBody = JSON.parse(capturedRequest?.options?.body || '{}');
+  ok(openAiTransparentBody.background === 'transparent', 'OpenAI/gpt-image2 transparent png request should include background=transparent');
+  ok(openAiTransparentBody.transparent_background === true, 'OpenAI/gpt-image2 transparent png request should preserve legacy transparent_background=true for SkyAPI compatibility');
+  ok(openAiTransparentBody.prompt.includes('openai transparent png generation') && openAiTransparentBody.prompt.includes('#00FF00'), 'transparent mode should use an internal chroma-key effective prompt');
+  ok(hooks.promptWithCanvasConstraint('主体贴纸', 'openai', { format: 'png', transparent: true }).includes('#00FF00'), 'transparent helper should build an internal chroma-key prompt');
+  ok(hooks.promptWithCanvasConstraint('主体贴纸', 'openai', { format: 'png', transparent: false }) === '主体贴纸', 'opaque prompt helper should preserve the user prompt exactly');
+  const transparentParams = hooks.getTransparentRequestParams({ output_format: 'jpeg', output_compression: 80, transparent: true });
+  ok(transparentParams.output_format === 'png' && transparentParams.output_compression === null && transparentParams.transparent_background === true, 'transparent params should force PNG without compression');
 
   await hooks.sendGenerationRequest('openai reference edit', {
     resolution: '2K',
@@ -661,6 +844,7 @@ if (typeof hooks.openAiSizePayload === 'function') {
     quality: 'high',
     format: 'png',
     transparent: false,
+    negative_prompt: '不要边框，不要裁切',
     moderation: 'auto',
     count: 1
   }, {
@@ -671,6 +855,7 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(openAiEditForm && typeof openAiEditForm.getAll === 'function', 'OpenAI reference request should use FormData');
   ok(openAiEditForm.getAll('image').length === 1, 'OpenAI/gpt-image2 edits must send reference files as image');
   ok(openAiEditForm.getAll('image[]').length === 0, 'OpenAI/gpt-image2 edits must not send image[]');
+  ok(openAiEditForm.get('negative_prompt') === '不要边框，不要裁切' && openAiEditForm.get('negativePrompt') === '不要边框，不要裁切', 'FormData edit request should include extracted negative prompt aliases');
   ok(openAiEditForm.get('response_format') === null || openAiEditForm.get('response_format') === 'b64_json', 'OpenAI/gpt-image2 edits should only include supported response_format values');
 
   await hooks.sendGenerationRequest('xai portrait', {
@@ -690,6 +875,21 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(Number(xaiBody.output_compression) === 80, 'Xai generation request body should include selected compression');
   ok(xaiBody.response_format === undefined, 'Xai generation request body should not include response_format');
 
+  await hooks.sendGenerationRequest('grok transparent png payload', {
+    resolution: '1k',
+    aspectRatio: '1:1',
+    quality: 'high',
+    format: 'png',
+    transparent: true,
+    count: 1
+  }, {
+    profile: { id: 'xai-image', name: 'Grok Image', provider: 'xai', model: 'grok-imagine-image-pro' },
+    references: []
+  });
+  const grokTransparentBody = JSON.parse(capturedRequest?.options?.body || '{}');
+  ok(grokTransparentBody.background === 'transparent', 'Grok transparent png request should include official background=transparent field for compatible gateways');
+  ok(grokTransparentBody.transparent_background === true, 'Grok transparent png request should preserve legacy transparent_background field for compatible gateways');
+
   await hooks.sendGenerationRequest('openai poster', {
     resolution: '4K',
     aspectRatio: '9:16',
@@ -702,7 +902,7 @@ if (typeof hooks.openAiSizePayload === 'function') {
   });
   const openAiBody = JSON.parse(capturedRequest?.options?.body || '{}');
   ok(openAiBody.size === '2160x3840', 'OpenAI generation request body should include selected resolution + ratio as official 4K portrait size');
-  ok(openAiBody.prompt.includes('9:16') && openAiBody.prompt.includes('竖版'), 'OpenAI generation request prompt should reinforce selected portrait aspect ratio');
+  ok(openAiBody.prompt === 'openai poster', 'OpenAI generation request prompt should remain exactly the user prompt');
 
   const inferredParams = hooks.extractReturnedParams({}, {
     aspectRatio: '9:16',
@@ -819,6 +1019,11 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(inlineUrlImages.length === 2, 'data URL images returned through url/image_url fields should both be persisted');
   ok(inlineUrlImages.every((image) => image.blobId && !String(image.remoteUrl || image.url || '').startsWith('data:')), 'persisted inline data URL images should not keep data URLs in task state');
 
+  const fakeJpegBytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01]);
+  const fakeJpegInfo = await hooks.imageInfoFromBlob(new Blob([fakeJpegBytes], { type: 'image/png' }));
+  ok(fakeJpegInfo.type === 'image/jpeg', 'imageInfoFromBlob should detect JPEG bytes even when the declared MIME type says PNG');
+  ok(fakeJpegInfo.hasAlpha === undefined, 'JPEG byte payload should not be treated as transparent PNG');
+
   const localStorageWrites = [];
   sandbox.localStorage.setItem = (key, value) => localStorageWrites.push([key, value]);
   hooks.setTestTasks([{
@@ -883,6 +1088,7 @@ if (typeof hooks.openAiSizePayload === 'function') {
     profiles: [
       { id: 'fallback-text', name: 'Fallback Text', provider: 'openai', apiMode: 'responses', model: 'gpt-5.1' },
       { id: 'good-text', name: '5.4mini', provider: 'openai', apiMode: 'responses', model: 'gpt-5.4-mini' },
+      { id: 'bad-image-as-text', name: 'Bad Image As Text', provider: 'openai', apiMode: 'responses', model: 'gpt-image-2' },
       { id: 'image-only', name: 'Image Only', provider: 'openai', apiMode: 'images', model: 'gpt-image-2' },
       { id: 'xai-text', name: 'Xai Text', provider: 'xai', apiMode: 'responses', model: 'grok-4' }
     ],
@@ -904,11 +1110,15 @@ if (typeof hooks.openAiSizePayload === 'function') {
 
   hooks.setTestState({ agentConfig: { mode: 'hybrid', textProfileId: 'missing-text', imageProfileId: 'image-only', webSearchEnabled: true } });
   ok(hooks.agentTextProfile() === null, 'hybrid Agent text profile should not silently fall back when the selected responses profile is missing');
+  hooks.setTestState({ agentConfig: { mode: 'hybrid', textProfileId: 'bad-image-as-text', imageProfileId: 'image-only', webSearchEnabled: true } });
+  ok(hooks.agentTextProfile() === null, 'hybrid Agent text profile should reject image models saved as Responses profiles');
+  ok(hooks.configuredAgentTextProfile()?.id === 'bad-image-as-text', 'configured Agent text profile should still expose the invalid selected profile for diagnostics');
+  ok(/图片模型|gpt-image-2/.test(hooks.agentTextProfileInvalidReason()), 'invalid Agent text profile reason should explain that the selected model is an image model');
 
   hooks.setTestState({ agentConfig: { mode: 'hybrid', textProfileId: 'good-text', imageProfileId: 'image-only', webSearchEnabled: true } });
   ok(hooks.agentWebSearchSupported(strictTextProfile) === true, 'OpenAI responses Agent profile should support web search');
-  ok(hooks.agentWebSearchSupported({ id: 'xai-text', provider: 'xai', apiMode: 'responses', model: 'grok-4' }) === false, 'non-OpenAI Agent profile should not claim official Responses web search support');
-  ok(hooks.agentWebSearchSupported({ id: 'skyapi-text', provider: 'openai', apiMode: 'responses', model: 'gpt-5.4-mini', baseUrl: 'https://skyapi2026.com/v1' }) === false, 'OpenAI-compatible relay profiles should not send official Responses web_search tools');
+  ok(hooks.agentWebSearchSupported({ id: 'xai-text', provider: 'xai', apiMode: 'responses', model: 'grok-4' }) === true, 'Responses Agent profiles should be allowed to try web search through compatible gateways');
+  ok(hooks.agentWebSearchSupported({ id: 'skyapi-text', provider: 'openai', apiMode: 'responses', model: 'gpt-5.4-mini', baseUrl: 'https://skyapi2026.com/v1' }) === true, 'OpenAI-compatible Responses relay profiles should be allowed to try web_search tools');
 
   const payload = hooks.buildAgentRequestPayload('你是基于什么模型的agent,当前北京时间是多少', {
     project: { id: 'project-1', name: '测试项目', prompt: '项目提示词' },
@@ -919,7 +1129,29 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(typeof payload.currentBeijingTime === 'string' && /北京时间/.test(payload.currentBeijingTime), 'Agent payload should inject current Beijing time context');
   ok(payload.currentModelSlug === 'gpt-5.4-mini', 'Agent payload should expose the actual model slug');
   ok(payload.webSearchEnabled === true, 'Agent payload should expose the runtime web search state');
+  ok(!Object.prototype.hasOwnProperty.call(payload, 'reasoning'), 'normal Agent chat payload should not force Responses reasoning for compatible relays');
+  ok(String(payload.instructions || '').includes('当前文本模型 slug') && String(payload.instructions || '').includes('项目专属提示词'), 'Agent payload should send CookSleep-style instructions context');
   ok(String(payload.input || '').includes('当前北京时间') && String(payload.input || '').includes('当前文本模型 slug'), 'Agent payload input should mention Beijing time and actual model slug');
+  const longAgentImageReply = '可以。先说明一点：我不能直接复刻角色。你可以直接用下面提示词生成： **中文提示词：** 一只原创的蓝色圆脸机器猫风格角色，手里抱着几枚金黄色圆形甜点，神情慌张，正在快速奔跑；后方一个原创的瘦弱男孩角色戴着圆框眼镜，穿简单休闲服，表情着急，正追赶前面的机器猫角色。整体构图有强烈的追逐动感，日系动画风，线条干净，色彩明亮，2D 插画，完整人物，全身，居中构图，透明背景，PNG，背景留空，无场景无地面无道具杂物。 **负面提示词：** 不要直接使用已有角色形象，不要版权角色，不要真实背景，不要街道。 如果你想，我还可以继续输出 Midjourney 版。';
+  const extractedAgentPrompt = hooks.extractImagePromptFromAgentText(longAgentImageReply);
+  ok(extractedAgentPrompt.includes('一只原创的蓝色圆脸机器猫风格角色'), 'Agent image prompt extraction should keep the labeled prompt body');
+  ok(!extractedAgentPrompt.includes('可以。先说明') && !extractedAgentPrompt.includes('负面提示词') && !extractedAgentPrompt.includes('Midjourney'), 'Agent image prompt extraction should remove explanation, negative prompt, and follow-up options');
+  const unlabeledAgentReply = '我不能直接为你生成哆啦A梦/大雄这种现有版权角色图片，但可以立刻给你一份 表情包夸张风 可直接出图的原创新提示词，效果会非常接近你要的“机器猫偷点心、男孩追赶、透明背景”的感觉，同时保留你强调的：后面追的是人，不是熊';
+  const extractedUnlabeledPrompt = hooks.extractImagePromptFromAgentText(unlabeledAgentReply);
+  ok(extractedUnlabeledPrompt.includes('机器猫偷点心') && extractedUnlabeledPrompt.includes('男孩追赶') && extractedUnlabeledPrompt.includes('透明背景'), 'Agent image prompt extraction should recover unlabeled concise visual prompt');
+  ok(!/我不能直接|但可以|效果会非常接近|感觉/.test(extractedUnlabeledPrompt), 'unlabeled Agent prompt extraction should remove disclaimer/explanation text');
+  const screenshotAgentReply = '我不能直接为你生成哆啦A梦/大雄这种现有版权角色图片，但可以立刻给你一份 表情包夸张风 可直接出图的原创新提示词，效果会非常接近你要的“机器猫偷点心、男孩追赶、透明背景”的感觉，同时保留你强调的：后面追的是人，不是熊';
+  const screenshotPrompt = hooks.extractImagePromptFromAgentText(screenshotAgentReply);
+  ok(screenshotPrompt === '机器猫偷点心、男孩追赶、透明背景，后面追赶者是人类男孩，不是熊，不是动物，PNG 透明背景', 'screenshot-style Agent reply should become a compact clean prompt');
+  const markdownSectionAgentReply = '我不能直接为你生成**哆啦A梦/大雄**这种现有版权角色图片，但可以立刻给你一份**表情包夸张风”可直接出图**的原创提示词，效果会非常接近你要的“机器猫偷点心、男孩追赶、透明背景”的感觉，同时保留你强调的：**后面追的是人，不是熊**\n\n## 表情包夸张风 | 直接可用 Prompt ### 中文版\n一张 **透明背景** 的夸张搞笑表情包风 2D 插画，前面是一个 **原创蓝色圆脸机器猫风格角色**，白色肚皮，脖子上有铃铛感配饰，怀里抱着几块金黄色圆形夹心甜点，神情极度慌张，眼睛瞪大，张嘴，边跑边回头，动作夸张，像偷吃后被发现；后面是一个 **原创人类男孩** 正在疯狂追赶，**明确是人，不是熊，不是动物**，瘦高、短发，穿简单 T 恤、短裤、运动鞋，表情又气又急，张大嘴巴，伸手往前追，跑步姿势夸张滑稽。整体风格为 **搞笑表情包 + 日系动漫简化风**，线条清晰，表情非常丰富，动作有强烈速度感和喜剧感，人物完整全身，居中构图，**PNG 透明底**，无场景，无地面，无背景元素，无文字，无水印。\n\n### 负面提示词\n不要直接出现哆啦A梦、大雄等版权角色，不要完全照搬原作造型，不要熊，不要动物追赶者，不要真实背景，不要房间，不要街道，不要树木，不要桌椅，不要地面阴影，不要多余人物，不要文字，不要对白框，不要 logo，不要水印，不要边框，不要裁切，不要半身。\n\n--- ## 英文版\ntransparent background, funny meme-style 2D illustration, an original blue round-faced robot-cat style character with a white belly and bell-like collar accessory, clutching several golden round filled pastries, extremely panicked expression, wide eyes, open mouth, running fast while looking back, exaggerated action, comedic feeling; behind him, an original human boy is chasing wildly, **human boy, not a bear, not an animal**, slim build, short hair, simple T-shirt, shorts, sneakers, angry and frantic expression, mouth open, reaching forward while running, exaggerated goofy running pose, strong motion, cute anime meme style, clean lineart, bright colors, full body, centered composition, PNG, transparent background, no scenery, no floor, no text, no watermark';
+  const markdownSectionPrompt = hooks.extractImagePromptFromAgentText(markdownSectionAgentReply);
+  ok(markdownSectionPrompt.startsWith('一张 透明背景 的夸张搞笑表情包风 2D 插画'), 'Agent image prompt extraction should start at the markdown Chinese prompt section');
+  ok(markdownSectionPrompt.includes('原创人类男孩') && markdownSectionPrompt.includes('PNG 透明底'), 'Agent image prompt extraction should preserve the positive prompt section content');
+  ok(!/我不能直接|可直接出图|##|###|负面提示词|英文版|transparent background/.test(markdownSectionPrompt), 'Agent image prompt extraction should exclude disclaimers, markdown headings, negative prompts, and alternate language sections');
+  const markdownSectionPrompts = hooks.extractAgentImagePrompts(markdownSectionAgentReply);
+  ok(markdownSectionPrompts.prompt === markdownSectionPrompt, 'Agent image prompt bundle should include the same positive prompt');
+  ok(markdownSectionPrompts.negativePrompt.includes('不要直接出现哆啦A梦') && markdownSectionPrompts.negativePrompt.includes('不要动物追赶者'), 'Agent image prompt bundle should extract the negative prompt section');
+  ok(!/英文版|transparent background|##/.test(markdownSectionPrompts.negativePrompt), 'Agent negative prompt extraction should stop before alternate language sections');
 
   hooks.setTestState({
     agentConfig: { mode: 'hybrid', textProfileId: 'xai-text', imageProfileId: 'image-only', webSearchEnabled: true },
@@ -930,7 +1162,153 @@ if (typeof hooks.openAiSizePayload === 'function') {
     history: [],
     textProfile: { id: 'xai-text', provider: 'xai', apiMode: 'responses', model: 'grok-4' }
   });
-  ok(!unsupportedPayload.tools, 'unsupported Agent web search request should not send official web_search tools');
+  ok(Array.isArray(unsupportedPayload.tools) && unsupportedPayload.tools[0]?.type === 'web_search', 'Responses gateway Agent web search request should send official web_search tools');
+  const workflowPayload = hooks.buildWorkflowAgentRequestPayload('生成电商主图工作流', {
+    project: { id: 'project-1', name: '测试项目', prompt: '项目提示词' },
+    textProfile: strictTextProfile,
+    mode: 'planner'
+  });
+  ok(workflowPayload.model === 'gpt-5.4-mini', 'workflow Agent payload should use the configured text model');
+  ok(!Object.prototype.hasOwnProperty.call(workflowPayload, 'reasoning'), 'workflow Agent payload should not force Responses reasoning for compatible relays');
+  ok(String(workflowPayload.instructions || '').includes('workflow JSON') && String(workflowPayload.input || '').includes('生成电商主图工作流'), 'workflow planner payload should ask for workflow JSON without using the chat prompt');
+  const workflowParams = hooks.workflowImageParams({
+    config: { negativePrompt: '不要文字，不要水印', promptTemplate: '为 {{subject}} 生成图片' },
+    nodes: [{ id: 'image', type: 'image', promptTemplate: '为 {{subject}} 生成图片' }]
+  }, { id: 'openai-image', name: 'gpt-image2', provider: 'openai', apiMode: 'images', model: 'gpt-image-2' }, 3);
+  ok(workflowParams.count === 3, 'workflow image params should apply countPerRow');
+  ok(workflowParams.negativePrompt === '不要文字，不要水印' && workflowParams.negative_prompt === '不要文字，不要水印', 'workflow image params should forward workflow negative prompt to image requests');
+  const markdownHtml = hooks.renderSafeMarkdown('# 标题\n\n- 项目 A\n- 项目 B\n\n> 引用\n\n| 参数 | 值 |\n| --- | --- |\n| 模型 | gpt-image2 |\n\n```json\n{"a":1}\n```\n\n<script>xss(1)</script>');
+  ok(markdownHtml.includes('<h2>标题</h2>') && markdownHtml.includes('<ul>') && markdownHtml.includes('<blockquote>') && markdownHtml.includes('<table>'), 'safe Markdown renderer should render headings, lists, blockquotes, and tables');
+  ok(markdownHtml.includes('data-action="copy-agent-code"') && markdownHtml.includes('<code>'), 'safe Markdown renderer should render copyable code blocks');
+  ok(!markdownHtml.includes('<script>') && markdownHtml.includes('&lt;script&gt;'), 'safe Markdown renderer should escape raw HTML');
+  const fiveOptionReply = [
+    '可以。我会用原创替代方案，不复刻现有版权角色。',
+    '',
+    '## 方案 1：稳妥透明表情包（推荐）',
+    '**适合模型：** gpt-image2',
+    '**推荐理由：** 最稳定，适合透明 PNG。',
+    '**正向 Prompt：**',
+    '原创蓝色机器猫风格角色偷点心逃跑，后面人类男孩追赶，PNG 透明背景，夸张表情，全身。',
+    '**负面 Prompt：**',
+    '不要版权角色，不要熊，不要动物追赶者，不要背景，不要文字，不要水印。',
+    '',
+    '## 方案 2：速度漫画感',
+    '**适合模型：** Nano Banana Pro',
+    '**推荐理由：** 动作更强。',
+    '**正向 Prompt：**',
+    '原创蓝色圆脸机器猫角色抱着甜点冲刺，速度线，人类男孩追赶，日系漫画感。',
+    '**负面 Prompt：**',
+    '不要真实街道，不要 logo，不要裁切。',
+    '',
+    '## 方案 3：极简贴纸',
+    '**适合模型：** gpt-image2',
+    '**推荐理由：** 最适合做贴纸。',
+    '**正向 Prompt：**',
+    '极简贴纸风原创蓝色机器猫角色和人类男孩追逐，透明底，粗描边。',
+    '**负面 Prompt：**',
+    '不要复杂背景，不要半身。',
+    '',
+    '## 方案 4：高级彩色插画',
+    '**适合模型：** Grok',
+    '**推荐理由：** 色彩更丰富。',
+    '**正向 Prompt：**',
+    '高饱和彩色插画，原创机器人猫角色偷点心，人类男孩追赶，欢乐夸张。',
+    '**负面 Prompt：**',
+    '不要阴影地面，不要多余人物。',
+    '',
+    '## 方案 5：国产模型稳妥版',
+    '**适合模型：** 即梦 / 豆包 / 通义',
+    '**推荐理由：** 中文理解更稳。',
+    '**正向 Prompt：**',
+    '中文最终版：透明背景，原创蓝色机器猫风格角色抱着甜点逃跑，后面人类男孩追赶。',
+    '**负面 Prompt：**',
+    '不要哆啦A梦，不要大雄，不要熊，不要动物。'
+  ].join('\n');
+  const promptOptions = hooks.extractAgentPromptOptions(fiveOptionReply);
+  ok(promptOptions.length === 5, 'Agent prompt option parser should extract five options');
+  ok(promptOptions[0].recommended === true && hooks.recommendedAgentPromptOption(promptOptions).index === 1, 'Agent prompt option parser should mark the recommended option');
+  ok(promptOptions[2].prompt.includes('极简贴纸') && promptOptions[2].negativePrompt.includes('不要复杂背景'), 'Agent prompt option parser should keep per-option positive and negative prompts');
+  ok(hooks.parseAgentOptionSelection('/1') === 1 && hooks.parseAgentOptionSelection('用第3个') === 3 && hooks.parseAgentOptionSelection('5') === 5, 'Agent option selector should parse slash, Chinese ordinal, and bare number forms');
+  const agentMessageHtml = hooks.renderAgentMessage({ id: 'msg-options', role: 'assistant', text: fiveOptionReply, createdAt: 0 });
+  ok(agentMessageHtml.includes('agent-prose') && agentMessageHtml.includes('agent-prompt-option-card'), 'Agent message should render Markdown prose and prompt option cards');
+  ok(agentMessageHtml.includes('data-option-index="1"') && agentMessageHtml.includes('生成推荐方案') && agentMessageHtml.includes('生成该方案'), 'Agent message should render main recommended generation and per-option generation buttons');
+  ok(agentMessageHtml.includes('agent-option-shortcuts') && agentMessageHtml.includes('data-action="copy-agent-prompt"'), 'Agent message should render option shortcuts and prompt copy buttons');
+  ok(!agentMessageHtml.includes('data-prompt='), 'Agent generation buttons should not embed the whole prompt in DOM attributes');
+  const frozenAnchor = hooks.freezeAgentScrollForRender({ id: 'msg-options', offsetTop: 96, scrollTop: 420 });
+  const frozenState = hooks.getTestState();
+  ok(frozenAnchor?.id === 'msg-options' && frozenState.agentScrollLock?.anchor?.id === 'msg-options' && frozenState.agentScrollState?.nearBottom === false, 'Agent option generation should be able to freeze the current scroll anchor before rendering task cards');
+  hooks.releaseAgentScrollFreezeAfterRender();
+  ok(hooks.getTestState().agentScrollLock?.keep === false, 'Agent scroll freeze should be released after the task-card render is scheduled');
+  hooks.setTestTasks([
+    { id: 'agent-task-1', status: 'success', prompt: '这是一段很长很长的生图提示词，不应该在 Agent 内嵌紧凑卡片中展示出来', images: [{ blobId: 'img-1' }], actualCount: 1, expectedCount: 1, apiElapsedMs: 61000 },
+    { id: 'agent-task-2', status: 'running', prompt: '另一个很长提示词', images: [], actualCount: 0, expectedCount: 1, startedAt: Date.now() - 9000 }
+  ]);
+  const agentTaskMessageHtml = hooks.renderAgentMessage({ id: 'msg-tasks', role: 'assistant', text: '已开始生成', taskIds: ['agent-task-1', 'agent-task-2'], createdAt: 0 });
+  ok(agentTaskMessageHtml.includes('agent-task-strip') && agentTaskMessageHtml.includes('agent-task-progress') && agentTaskMessageHtml.includes('data-action="open-detail"'), 'Agent embedded task cards should render as compact clickable progress cards');
+  ok(!agentTaskMessageHtml.includes('不应该在 Agent 内嵌紧凑卡片中展示出来'), 'Agent embedded task cards should not show full image prompts');
+  hooks.setTestState({
+    agent: {
+      attachments: [{ id: 'att-1', blobId: 'blob-1', name: 'brief.png', type: 'image/png', size: 2048, width: 1200, height: 800 }]
+    }
+  });
+  const agentAttachmentComposerHtml = hooks.renderAgentComposer();
+  ok(agentAttachmentComposerHtml.includes('data-action="agent-pick-attachment"') && agentAttachmentComposerHtml.includes('agent-attachment-tray') && agentAttachmentComposerHtml.includes('brief.png'), 'Agent composer should render upload attachment button and pending attachment tray');
+  ok(agentAttachmentComposerHtml.includes('agent-image-attachment-thumb') && agentAttachmentComposerHtml.includes('data-agent-attachment-id="att-1"'), 'Agent image attachments should render as thumbnail previews instead of file-only chips');
+  hooks.setTestState({ mode: 'agent', agent: { attachments: [] }, references: [] });
+  await hooks.handlePaste({
+    clipboardData: { files: [new Blob(['img'], { type: 'image/png' })] },
+    preventDefault: () => {}
+  });
+  const pastedAgentState = hooks.getTestState();
+  ok((pastedAgentState.agent.attachments || []).length === 1 && (pastedAgentState.references || []).length === 0, 'Pasted images in Agent mode should upload to Agent attachments, not gallery references');
+  hooks.setTestState({ mode: 'agent', agent: { attachments: [] }, references: [] });
+  const itemPasteFile = new Blob(['img-item'], { type: 'image/png' });
+  await hooks.handlePaste({
+    clipboardData: {
+      items: [{ kind: 'file', type: 'image/png', getAsFile: () => itemPasteFile }]
+    },
+    preventDefault: () => {}
+  });
+  const itemPastedAgentState = hooks.getTestState();
+  ok((itemPastedAgentState.agent.attachments || []).length === 1 && (itemPastedAgentState.references || []).length === 0, 'Pasted image clipboard items should upload to Agent attachments in Firefox/Chromium item-based paste flows');
+  const plainAgentPayload = hooks.buildAgentRequestPayload('普通问题', {
+    project: { name: '测试项目', prompt: '' },
+    textProfile: { id: 'text', model: 'gpt-5.5', provider: 'openai', apiMode: 'responses' },
+    history: []
+  });
+  ok(typeof plainAgentPayload.input === 'string', 'Agent payload without attachments should keep string input for compatibility');
+  const multimodalAgentPayload = hooks.buildAgentRequestPayload('看这张图', {
+    project: { name: '测试项目', prompt: '' },
+    textProfile: { id: 'text', model: 'gpt-5.5', provider: 'openai', apiMode: 'responses' },
+    history: [],
+    attachmentSummary: '1. brief.png (image/png, 2KB, 1200x800)',
+    attachmentText: '文本附件摘要',
+    attachmentImageParts: [{ type: 'input_image', image_url: 'data:image/png;base64,abc' }]
+  });
+  ok(Array.isArray(multimodalAgentPayload.input) && multimodalAgentPayload.input[0].content.some((part) => part.type === 'input_image'), 'Agent payload with image attachments should use Responses multimodal content');
+
+  const sseText = [
+    'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"你好"}',
+    'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"，已收到。"}',
+    'data: [DONE]'
+  ].join('\n\n');
+  const sseResponse = new Response(new TextEncoder().encode(sseText), { headers: { 'Content-Type': 'text/event-stream' } });
+  const ssePayload = await hooks.consumeResponseTextStream(sseResponse);
+  ok(ssePayload.output_text === '你好，已收到。', 'Agent should consume Responses SSE text deltas');
+
+  const completedResponse = new Response(new TextEncoder().encode('data: {"type":"response.completed","response":{"output_text":"最终回答"}}\n\n'), { headers: { 'Content-Type': 'text/event-stream' } });
+  const completedPayload = await hooks.resolveResponsePayload({ __stream: true, response: completedResponse });
+  ok(/最终回答/.test(completedPayload.output_text || ''), 'Agent should extract completed Responses SSE final text');
+
+  const completedOutputResponse = new Response(new TextEncoder().encode('data: {"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"output_text","text":"数组最终回答"}]}]}}\n\n'), { headers: { 'Content-Type': 'text/event-stream' } });
+  const completedOutputPayload = await hooks.resolveResponsePayload({ __stream: true, response: completedOutputResponse });
+  ok(/数组最终回答/.test(completedOutputPayload.output_text || ''), 'Agent should extract text from completed Responses output message snapshots');
+
+  const streamFailureResponse = new Response(new TextEncoder().encode('data: {"type":"response.failed","error":{"message":"上游拒绝联网工具"}}\n\n'), { headers: { 'Content-Type': 'text/event-stream' } });
+  await hooks.consumeResponseTextStream(streamFailureResponse).then(
+    () => ok(false, 'Agent failed stream should reject'),
+    (err) => ok(/上游拒绝联网工具/.test(String(err?.message || err)), 'Agent failed stream should expose upstream error message')
+  );
 
   const failureDetail = typeof hooks.agentFailureDetail === 'function' ? hooks.agentFailureDetail({
     normalized: { summary: 'timeout', detail: 'request aborted' },
@@ -997,6 +1375,87 @@ if (typeof hooks.openAiSizePayload === 'function') {
   const agentComposerHtml = hooks.renderAgentComposer();
   ok(!agentStageHtml.includes('默认预算'), 'Agent stage should no longer render workflow budget copy');
   ok(!agentComposerHtml.includes('agent-budget') && !agentComposerHtml.includes('预算'), 'Agent composer should no longer render a workflow budget control');
+
+  hooks.setTestState({
+    mode: 'agent',
+    settings: {
+      quality: 'high',
+      output_format: 'png',
+      output_compression: 90,
+      n: 2,
+      transparent_output: true,
+      openaiSize: '4K',
+      openaiAspectRatio: '3:2',
+      googleBaseResolution: '2K',
+      googleAspectRatio: '1:1',
+      xaiResolution: '2k',
+      xaiAspectRatio: '1:1'
+    },
+    activeImageProfileId: 'image-only',
+    profiles: [
+      { id: 'image-only', name: '画廊模型', provider: 'openai', apiMode: 'images', model: 'gpt-image-2' },
+      { id: 'image-alt', name: '备用模型', provider: 'google', apiMode: 'images', model: 'nano-banana-pro' },
+      strictTextProfile
+    ],
+    agentConfig: { mode: 'hybrid', textProfileId: 'good-text', imageProfileId: 'image-only', webSearchEnabled: true },
+    agent: {
+      activeProjectId: 'project-compact',
+      projects: [{ id: 'project-compact', name: '紧凑项目', prompt: '这是一条很长的项目提示词，需要在顶栏只显示一行并可以点击编辑。', createdAt: 1, updatedAt: 1 }],
+      threadsByProject: {
+        'project-compact': [
+          { id: 'thread-main', projectId: 'project-compact', title: '主对话', createdAt: 1, updatedAt: 1 },
+          { id: 'thread-alt', projectId: 'project-compact', title: '备选对话', createdAt: 2, updatedAt: 2 }
+        ]
+      },
+      activeThreadIdByProject: { 'project-compact': 'thread-main' },
+      messagesByThread: { 'thread-main': [], 'thread-alt': [] },
+      imageSettings: null
+    }
+  });
+  const compactAgentSidebar = hooks.renderSidebar();
+  ok(!compactAgentSidebar.includes('agent-project-card') && !compactAgentSidebar.includes('Project'), 'Agent sidebar should not render the old Project block');
+  hooks.setTestState({ mode: 'workflow' });
+  const compactWorkflowSidebar = hooks.renderSidebar();
+  ok(!compactWorkflowSidebar.includes('agent-project-card') && !compactWorkflowSidebar.includes('Project'), 'Workflow sidebar should not render the old Project block');
+  const compactWorkflowHtml = hooks.renderWorkflowWorkspace({ id: 'project-compact', name: '紧凑项目', prompt: '工作流项目提示词' }, []);
+  ok(compactWorkflowHtml.includes('data-action="open-agent-project-menu"'), 'Workflow workspace should expose the migrated project menu');
+  hooks.setTestState({ mode: 'agent' });
+  const compactStageHtml = hooks.renderAgentStage();
+  ok(compactStageHtml.includes('data-action="open-agent-project-menu"'), 'Agent topbar should render the project menu trigger');
+  ok(compactStageHtml.includes('agent-menu-bars') && !compactStageHtml.includes('项目菜单">⌄'), 'Agent project menu trigger should use a hamburger icon, not a chevron text button');
+  ok(compactStageHtml.includes('data-action="open-agent-thread-menu"'), 'Agent topbar should render the custom conversation menu trigger');
+  ok(compactStageHtml.includes('data-action="agent-project-edit-prompt"'), 'Agent project prompt line should be clickable for editing');
+  ok(compactStageHtml.includes('agent-project-prompt-line'), 'Agent project prompt should use a one-line compact element');
+  ok(!compactStageHtml.includes('agent-status-line') && !compactStageHtml.includes('联网开启') && !compactStageHtml.includes('联网关闭'), 'Agent topbar should not render web/text model status pills');
+  ok(!compactStageHtml.includes('data-action="switch-agent-thread"') && !compactStageHtml.includes('<select'), 'Agent topbar should not use the native conversation select');
+  ok(compactStageHtml.includes('data-action="clear-agent-thread"') && !compactStageHtml.includes('清空对话</button>'), 'Agent clear thread button should be icon-only');
+  const projectMenuHtml = hooks.renderPopover({ type: 'agent-project-menu', rect: { left: 40, top: 40, bottom: 80 } });
+  ok(projectMenuHtml.includes('agent-project-switch') && projectMenuHtml.includes('agent-project-new') && projectMenuHtml.includes('agent-project-rename') && projectMenuHtml.includes('agent-project-edit-prompt') && projectMenuHtml.includes('agent-project-delete'), 'Agent project menu should contain switch/new/rename/prompt/delete actions');
+  ok(projectMenuHtml.includes('agent-project-menu-action'), 'Agent project menu footer actions should use compact menu action styling');
+  const threadMenuHtml = hooks.renderPopover({ type: 'agent-thread-menu', rect: { left: 40, top: 40, bottom: 80 } });
+  ok(threadMenuHtml.includes('agent-thread-select') && threadMenuHtml.includes('agent-thread-new') && threadMenuHtml.includes('agent-thread-delete'), 'Agent thread menu should contain select/new/delete actions');
+  const compactComposerHtml = hooks.renderAgentComposer();
+  ok(compactComposerHtml.includes('agent-unified-toolbar') && compactComposerHtml.includes('composer-param-zone') && compactComposerHtml.includes('composer-action-zone'), 'Agent composer should use one unified gallery-style toolbar row');
+  ok(!compactComposerHtml.includes('agent-image-param-group'), 'Agent composer should not render the old second-row image param group');
+  ok(compactComposerHtml.includes('data-action="open-agent-model-config"') && compactComposerHtml.includes('data-action="open-agent-resolution-modal"') && compactComposerHtml.includes('data-action="open-agent-size-modal"'), 'Agent image params should open gallery-style model/resolution/ratio controls');
+  ok(compactComposerHtml.includes('data-action="open-agent-popover"') && compactComposerHtml.includes('data-action="open-agent-image-advanced"'), 'Agent image params should reuse gallery-style popovers and advanced gear');
+  ok(compactComposerHtml.indexOf('文本模型') < compactComposerHtml.indexOf('生图模型') && compactComposerHtml.indexOf('生图模型') < compactComposerHtml.indexOf('data-action="agent-chat"'), 'Agent toolbar should keep text controls, image params, and send button in one row order');
+  const initialAgentParams = hooks.agentImageParams();
+  ok(initialAgentParams.profileName === '画廊模型' && initialAgentParams.resolution === '4K' && initialAgentParams.aspectRatio === '3:2' && initialAgentParams.transparent === true && initialAgentParams.count === 2, 'Agent image params should initialize from gallery settings on first use');
+  hooks.setTestState({ settings: { openaiSize: '1K', openaiAspectRatio: '1:1', n: 1, transparent_output: false } });
+  const independentAgentParams = hooks.agentImageParams();
+  ok(independentAgentParams.resolution === '4K' && independentAgentParams.aspectRatio === '3:2' && independentAgentParams.transparent === true && independentAgentParams.count === 2, 'Agent image params should stay independent after gallery settings change');
+  const afterNewThread = hooks.createAgentThread('project-compact', '新对话 09:30');
+  ok((afterNewThread.threadsByProject['project-compact'] || []).some((thread) => thread.title === '新对话 09:30'), 'Agent thread creation helper should add and activate a new conversation');
+  const singleThreadState = hooks.deleteAgentThread({
+    activeProjectId: 'project-compact',
+    projects: [{ id: 'project-compact', name: '紧凑项目', prompt: '' }],
+    threadsByProject: { 'project-compact': [{ id: 'only-thread', projectId: 'project-compact', title: '唯一会话', createdAt: 1, updatedAt: 1 }] },
+    activeThreadIdByProject: { 'project-compact': 'only-thread' },
+    messagesByThread: { 'only-thread': [{ id: 'm1', text: '旧消息', role: 'user' }] }
+  }, 'project-compact', 'only-thread');
+  const replacementThreads = singleThreadState.threadsByProject['project-compact'] || [];
+  ok(replacementThreads.length === 1 && replacementThreads[0].id !== 'only-thread' && Array.isArray(singleThreadState.messagesByThread[replacementThreads[0].id]), 'Deleting the final Agent conversation should create a new empty conversation');
 
   hooks.setTestState({
     agent: {

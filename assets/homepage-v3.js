@@ -8,6 +8,11 @@ const DB_STORE = 'blobs';
 const PROMPT_PAGE_SIZE = 36;
 const PROMPT_VIRTUAL_THRESHOLD = 108;
 const PROMPT_VIRTUAL_BUFFER_ROWS = 3;
+const PROMPT_REPO_CACHE_LIMIT = 24;
+const PROMPT_FAST_VERSION = 'home-v3-20260705-prompt-complete-r48';
+const PROMPT_FAST_BOOTSTRAP_URL = `/prompts_fast/bootstrap.json?v=${PROMPT_FAST_VERSION}`;
+const PROMPT_FAST_PREVIEWS_URL = `/prompts_fast/category_previews.json?v=${PROMPT_FAST_VERSION}`;
+const PROMPT_FAST_SEARCH_URL = `/prompts_fast/search_index.json?v=${PROMPT_FAST_VERSION}`;
 const GALLERY_VIRTUAL_BUFFER_ROWS = 4;
 const GALLERY_VIRTUAL_THRESHOLD = 42;
 const COMPOSER_SETTING_KEYS = ['quality', 'output_format', 'output_compression', 'n', 'transparent_output', 'moderation', 'openaiSize', 'openaiAspectRatio', 'googleBaseResolution', 'googleAspectRatio', 'xaiResolution', 'xaiAspectRatio'];
@@ -386,6 +391,12 @@ function collectReferencedBlobIds() {
       add(ref.maskBlobId);
     }
   }
+  for (const attachment of state.agent?.attachments || []) add(attachment.blobId);
+  for (const messages of Object.values(state.agent?.messagesByThread || {})) {
+    for (const message of Array.isArray(messages) ? messages : []) {
+      for (const attachment of message.attachments || []) add(attachment.blobId);
+    }
+  }
   return ids;
 }
 async function cleanupOrphanBlobs() {
@@ -501,10 +512,45 @@ function parseImageSizeFromBytes(bytes) {
   }
   return {};
 }
+function detectImageMimeFromBytes(bytes) {
+  if (!bytes || bytes.length < 12) return '';
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'image/png';
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
+  if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return 'image/webp';
+  return '';
+}
+function pngMayHaveAlpha(bytes) {
+  if (!bytes || bytes.length < 26) return false;
+  if (detectImageMimeFromBytes(bytes) !== 'image/png') return false;
+  const colorType = bytes[25];
+  if (colorType === 4 || colorType === 6) return true;
+  if (colorType === 3) {
+    for (let offset = 8; offset + 12 <= bytes.length;) {
+      const view = new DataView(bytes.buffer, bytes.byteOffset + offset, bytes.byteLength - offset);
+      const length = view.getUint32(0, false);
+      const type = String.fromCharCode(bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7]);
+      if (type === 'tRNS') return true;
+      if (type === 'IDAT' || type === 'IEND') break;
+      offset += 12 + length;
+    }
+  }
+  return false;
+}
 async function fastImageSizeFromBlob(blob) {
   const head = new Uint8Array(await blob.slice(0, 131072).arrayBuffer());
   const size = parseImageSizeFromBytes(head);
   return size.width && size.height ? size : {};
+}
+async function imageInfoFromBlob(blob) {
+  const head = new Uint8Array(await blob.slice(0, 262144).arrayBuffer());
+  const size = parseImageSizeFromBytes(head);
+  const detectedType = detectImageMimeFromBytes(head) || blob.type || '';
+  return {
+    width: size.width,
+    height: size.height,
+    type: detectedType,
+    hasAlpha: detectedType === 'image/png' ? pngMayHaveAlpha(head) : undefined
+  };
 }
 async function imageSizeFromBlob(blob) {
   const fast = await fastImageSizeFromBlob(blob).catch(() => ({}));
@@ -553,7 +599,8 @@ function defaultStore() {
     entryAdvanced: {
       gallery: { ...DEFAULT_ENTRY_ADVANCED },
       pro: { ...DEFAULT_ENTRY_ADVANCED },
-      workflow: { ...DEFAULT_ENTRY_ADVANCED }
+      workflow: { ...DEFAULT_ENTRY_ADVANCED },
+      agent: { ...DEFAULT_ENTRY_ADVANCED }
     },
     agent: {
       activeProjectId: 'default',
@@ -568,6 +615,8 @@ function defaultStore() {
       inputDraft: '',
       workflows: [],
       workflowRuns: [],
+      attachments: [],
+      imageSettings: null,
       webMode: 'on',
       reasoning: 'medium'
     },
@@ -621,7 +670,8 @@ function readStore() {
     merged.entryAdvanced = {
       gallery: { ...DEFAULT_ENTRY_ADVANCED, ...(readEntryAdvanced('gallery') || parsed.entryAdvanced?.gallery || {}) },
       pro: { ...DEFAULT_ENTRY_ADVANCED, ...(readEntryAdvanced('pro') || parsed.entryAdvanced?.pro || {}) },
-      workflow: { ...DEFAULT_ENTRY_ADVANCED, ...(readEntryAdvanced('workflow') || parsed.entryAdvanced?.workflow || {}) }
+      workflow: { ...DEFAULT_ENTRY_ADVANCED, ...(readEntryAdvanced('workflow') || parsed.entryAdvanced?.workflow || {}) },
+      agent: { ...DEFAULT_ENTRY_ADVANCED, ...(readEntryAdvanced('agent') || parsed.entryAdvanced?.agent || {}) }
     };
     if (typeof sessionStorage !== 'undefined') {
       const sessionSettings = JSON.parse(sessionStorage.getItem(COMPOSER_SESSION_KEY) || 'null');
@@ -643,6 +693,7 @@ function readStore() {
     merged.agent.reasoning = merged.agent.reasoning || 'medium';
     merged.agent.view = merged.agent.view || 'chat';
     merged.agent.promptOpen = !!merged.agent.promptOpen;
+    merged.agent.imageSettings = merged.agent.imageSettings && typeof merged.agent.imageSettings === 'object' ? merged.agent.imageSettings : null;
     merged.pro = { ...base.pro, ...(parsed.pro || {}) };
     merged.pro.params = { ...base.pro.params, ...(merged.pro.params || {}) };
     if (!Array.isArray(merged.pro.refs)) merged.pro.refs = [];
@@ -887,6 +938,7 @@ function entryAdvanced(entry = currentEntryKey()) {
 function currentEntryKey() {
   if (state.mode === 'pro') return 'pro';
   if (state.mode === 'workflow') return 'workflow';
+  if (state.mode === 'agent') return 'agent';
   return 'gallery';
 }
 function profileDefaultAdvanced(profile = imageProfile()) {
@@ -911,6 +963,12 @@ function effectiveAdvanced(entry = currentEntryKey(), profile = imageProfile()) 
 function streamSupported(profile = imageProfile()) {
   const key = providerKey(profile);
   return key === 'openai' && profileMode(profile) === 'images';
+}
+function openAiTransparentBackgroundSupported(profile = imageProfile()) {
+  return providerKey(profile) === 'openai';
+}
+function transparentBackgroundUnsupportedMessage(profile = imageProfile()) {
+  return `当前模型 ${profile?.name || profile?.id || profile?.model || '未命名模型'} / ${profile?.model || 'model'} 不能确认支持透明背景。请切换 OpenAI 图片模型，或关闭透明背景后重试。`;
 }
 function appendAdvancedHeaders(headers = {}, entry = currentEntryKey(), profile = imageProfile()) {
   const advanced = effectiveAdvanced(entry, profile);
@@ -1042,19 +1100,36 @@ function proImageProfile() {
 function agentTextProfile() {
   const cfg = state.agentConfig || {};
   const candidates = responseProfiles();
+  const usable = candidates.filter(isAgentTextProfileUsable);
+  if (cfg.mode === 'hybrid') return usable.find((p) => profileId(p) === cfg.textProfileId) || null;
+  return usable.find((p) => profileId(p) === state.activeProfileId) || usable[0] || null;
+}
+function configuredAgentTextProfile() {
+  const cfg = state.agentConfig || {};
+  const candidates = responseProfiles();
   if (cfg.mode === 'hybrid') return candidates.find((p) => profileId(p) === cfg.textProfileId) || null;
   return candidates.find((p) => profileId(p) === state.activeProfileId) || candidates[0] || null;
 }
+function isAgentTextProfileUsable(profile) {
+  if (!profile || profileMode(profile) !== 'responses') return false;
+  const model = String(profile.model || '').toLowerCase();
+  const name = String(profile.name || '').toLowerCase();
+  const provider = providerKey(profile);
+  if (provider !== 'openai') return true;
+  if (/gpt-image|image-?2|imagen|dall[- ]?e|nano|banana|gemini.*image|grok.*image/.test(`${model} ${name}`)) return false;
+  return true;
+}
+function agentTextProfileInvalidReason(profile = configuredAgentTextProfile()) {
+  if (!profile) return '未选择可用的 Responses 文本模型配置';
+  if (profileMode(profile) !== 'responses') return '所选 Agent 文本配置不是 Responses API 模式';
+  const model = String(profile.model || '');
+  const name = String(profile.name || profile.id || '');
+  if (!isAgentTextProfileUsable(profile)) return `所选 Agent 文本配置“${name}”实际模型是 ${model || '空'}，属于图片模型，不能用于对话。请在后台把该 profile 的模型改成文本模型。`;
+  return '';
+}
 function agentWebSearchSupported(profile = agentTextProfile()) {
   if (!profile || profileMode(profile) !== 'responses') return false;
-  if (providerKey(profile) !== 'openai') return false;
-  const baseUrl = String(profile.baseUrl || '').trim();
-  if (!baseUrl) return true;
-  try {
-    return /(^|\.)api\.openai\.com$/i.test(new URL(baseUrl.startsWith('http') ? baseUrl : `https://${baseUrl}`).hostname);
-  } catch {
-    return false;
-  }
+  return true;
 }
 function agentWebSearchEnabled(profile = agentTextProfile()) {
   if (!state.agentConfig?.webSearchEnabled) return false;
@@ -1063,9 +1138,8 @@ function agentWebSearchEnabled(profile = agentTextProfile()) {
 }
 function agentImageProfile() {
   const cfg = state.agentConfig || {};
-  const candidates = imageProfiles();
-  if (cfg.mode === 'hybrid') return candidates.find((p) => profileId(p) === cfg.imageProfileId) || imageProfile();
-  return imageProfile();
+  const settings = agentImageSettings();
+  return findImageProfileById(settings.profileId) || (cfg.mode === 'hybrid' ? findImageProfileById(cfg.imageProfileId) : null) || imageProfile();
 }
 function projectThreads(projectId = state.agent.activeProjectId) {
   const threads = state.agent.threadsByProject?.[projectId];
@@ -1115,41 +1189,92 @@ function referenceLimit(profile = activeProfile()) {
   if (key === 'google') return googleVersion(profile) === '3.1' ? 14 : 10;
   return PROVIDER[key]?.refLimit || 4;
 }
-function sizeSummary(profile = activeProfile()) {
-  const key = providerKey(profile);
-  if (key === 'google') return `${state.settings.googleBaseResolution} · ${state.settings.googleAspectRatio}`;
-  if (key === 'xai') return `${state.settings.xaiResolution} · ${state.settings.xaiAspectRatio}`;
-  return `${state.settings.openaiSize || 'auto'} · ${state.settings.openaiAspectRatio || 'auto'}`;
-}
-function resolutionSummary(profile = activeProfile()) {
-  const key = providerKey(profile);
-  if (key === 'google') return state.settings.googleBaseResolution || '2K';
-  if (key === 'xai') return state.settings.xaiResolution || '2k';
-  return state.settings.openaiSize || 'auto';
-}
-function ratioSummary(profile = activeProfile()) {
-  const key = providerKey(profile);
-  if (key === 'google') return state.settings.googleAspectRatio || '1:1';
-  if (key === 'xai') return state.settings.xaiAspectRatio || '1:1';
-  return state.settings.openaiAspectRatio || 'auto';
-}
-function requestedParams(profile = activeProfile()) {
+function settingsForSummary(settings = state.settings) {
   return {
-    source: `${PROVIDER[providerKey(profile)]?.name || profile.provider} · ${profile.name || profile.id} · ${profile.model || 'model'}`,
-    provider: providerKey(profile),
+    quality: settings?.quality || 'high',
+    output_format: settings?.output_format || 'png',
+    output_compression: Number(settings?.output_compression) || 90,
+    n: Math.max(1, Number(settings?.n) || 1),
+    transparent_output: !!settings?.transparent_output,
+    moderation: settings?.moderation || 'auto',
+    openaiSize: settings?.openaiSize || '1K',
+    openaiAspectRatio: settings?.openaiAspectRatio || 'auto',
+    googleBaseResolution: settings?.googleBaseResolution || '2K',
+    googleAspectRatio: settings?.googleAspectRatio || '1:1',
+    xaiResolution: settings?.xaiResolution || '2k',
+    xaiAspectRatio: settings?.xaiAspectRatio || '1:1',
+    profileId: settings?.profileId || ''
+  };
+}
+function sizeSummary(profile = activeProfile(), settings = state.settings) {
+  const source = settingsForSummary(settings);
+  const key = providerKey(profile);
+  if (key === 'google') return `${source.googleBaseResolution} · ${source.googleAspectRatio}`;
+  if (key === 'xai') return `${source.xaiResolution} · ${source.xaiAspectRatio}`;
+  return `${source.openaiSize || 'auto'} · ${source.openaiAspectRatio || 'auto'}`;
+}
+function resolutionSummary(profile = activeProfile(), settings = state.settings) {
+  const source = settingsForSummary(settings);
+  const key = providerKey(profile);
+  if (key === 'google') return source.googleBaseResolution || '2K';
+  if (key === 'xai') return source.xaiResolution || '2k';
+  return source.openaiSize || 'auto';
+}
+function ratioSummary(profile = activeProfile(), settings = state.settings) {
+  const source = settingsForSummary(settings);
+  const key = providerKey(profile);
+  if (key === 'google') return source.googleAspectRatio || '1:1';
+  if (key === 'xai') return source.xaiAspectRatio || '1:1';
+  return source.openaiAspectRatio || 'auto';
+}
+function requestedParamsFromSettings(profile = activeProfile(), settings = state.settings) {
+  const source = settingsForSummary(settings);
+  const key = providerKey(profile);
+  return {
+    source: `${PROVIDER[key]?.name || profile.provider} · ${profile.name || profile.id} · ${profile.model || 'model'}`,
+    provider: key,
     profileId: profile.id,
     profileName: profile.name,
     model: profile.model,
-    size: sizeSummary(profile),
-    resolution: providerKey(profile) === 'google' ? state.settings.googleBaseResolution : providerKey(profile) === 'xai' ? state.settings.xaiResolution : state.settings.openaiSize,
-    aspectRatio: providerKey(profile) === 'google' ? state.settings.googleAspectRatio : providerKey(profile) === 'xai' ? state.settings.xaiAspectRatio : state.settings.openaiAspectRatio,
-    quality: state.settings.quality,
-    format: state.settings.output_format,
-    compression: state.settings.output_compression,
-    transparent: !!state.settings.transparent_output,
-    moderation: state.settings.moderation,
-    count: Number(state.settings.n) || 1
+    size: sizeSummary(profile, source),
+    resolution: key === 'google' ? source.googleBaseResolution : key === 'xai' ? source.xaiResolution : source.openaiSize,
+    aspectRatio: key === 'google' ? source.googleAspectRatio : key === 'xai' ? source.xaiAspectRatio : source.openaiAspectRatio,
+    quality: source.quality,
+    format: source.output_format,
+    compression: source.output_compression,
+    transparent: !!source.transparent_output,
+    moderation: source.moderation,
+    count: Number(source.n) || 1
   };
+}
+function requestedParams(profile = activeProfile()) {
+  return requestedParamsFromSettings(profile, state.settings);
+}
+function cloneGalleryImageSettingsForAgent() {
+  return {
+    ...settingsForSummary(state.settings),
+    profileId: profileId(imageProfile()),
+    initializedFromGallery: true,
+    initializedAt: Date.now()
+  };
+}
+function agentImageSettings() {
+  state.agent = state.agent || {};
+  const existing = state.agent.imageSettings && typeof state.agent.imageSettings === 'object' ? state.agent.imageSettings : null;
+  if (!existing) {
+    state.agent.imageSettings = cloneGalleryImageSettingsForAgent();
+    return state.agent.imageSettings;
+  }
+  state.agent.imageSettings = {
+    ...settingsForSummary(existing),
+    profileId: existing.profileId || state.agentConfig?.imageProfileId || profileId(imageProfile()),
+    initializedFromGallery: existing.initializedFromGallery !== false,
+    initializedAt: existing.initializedAt || Date.now()
+  };
+  return state.agent.imageSettings;
+}
+function agentImageParams() {
+  return requestedParamsFromSettings(agentImageProfile(), agentImageSettings());
 }
 function closestAspectRatio(width, height) {
   width = Number(width);
@@ -1176,7 +1301,7 @@ function computeParamMismatches(requested = {}, returned = {}, images = []) {
     { key: 'aspectRatio', type: 'text', requested: firstDefined(requested.aspectRatio, requested.aspect_ratio), actual: firstDefined(returned.aspectRatio, returned.aspect_ratio) },
     { key: 'quality', type: 'text', requested: firstDefined(requested.quality), actual: firstDefined(returned.quality) },
     { key: 'format', type: 'format', requested: firstDefined(requested.format, requested.output_format), actual: firstDefined(returned.format, returned.outputFormat, returned.output_format) },
-    { key: 'transparent', type: 'bool', requested: firstDefined(requested.transparent, requested.transparent_background), actual: firstDefined(returned.transparent, returned.transparentBackground, returned.transparent_background) },
+    { key: 'transparent', type: 'bool', requested: firstDefined(requested.transparent, requested.background === 'transparent' ? true : requested.transparent_background), actual: firstDefined(returned.transparent, returned.transparentBackground, returned.transparent_background, returned.background) },
     { key: 'compression', type: 'number', requested: firstDefined(requested.compression, requested.outputCompression, requested.output_compression), actual: firstDefined(returned.compression, returned.outputCompression, returned.output_compression) },
     { key: 'moderation', type: 'text', requested: firstDefined(requested.moderation), actual: firstDefined(returned.moderation) },
     { key: 'count', type: 'number', requested: firstDefined(requested.count), actual: firstDefined(returned.count, images.length || undefined) }
@@ -1335,18 +1460,262 @@ function isTierResolutionMatch(requested = {}, actualValue = '', images = []) {
   const actual = actualResolutionForCompare(actualValue, images);
   return !!expected && !!actual && expected.toLowerCase() === actual.toLowerCase();
 }
+const GREEN_KEY_COLOR = '#00FF00';
+const MAGENTA_KEY_COLOR = '#FF00FF';
+const KEY_COLOR_RGB = {
+  [GREEN_KEY_COLOR]: { r: 0, g: 255, b: 0 },
+  [MAGENTA_KEY_COLOR]: { r: 255, g: 0, b: 255 }
+};
+const TRANSPARENT_KEY_PROMPT = [
+  '[背景指令]',
+  '背景色选择规则：如果主体包含绿色系（绿、青绿、黄绿、草绿等）颜色，使用纯洋红色(#FF00FF)背景；否则一律使用纯绿色(#00FF00)背景。',
+  '背景要求：整张画布仅由所选纯色填充，无任何渐变、纹理、阴影、光照变化、地面或环境元素。',
+  '主体要求：单主体、完整呈现、轮廓清晰锐利。主体与背景之间保持干净的边缘分离，不要有颜色溢出或混合。',
+  '禁止：主体本身、描边、光晕、投影或反射中不能出现所选背景色。'
+].join('\n');
+function wantsTransparentOutput(params = {}) {
+  const format = String(firstDefined(params.format, params.output_format, state.settings.output_format) || '').toLowerCase();
+  return format === 'png' && !!firstDefined(params.transparent, params.transparent_background, params.transparent_output, state.settings.transparent_output, false);
+}
+function buildTransparentKeyPrompt(prompt) {
+  return `${String(prompt || '').trim()}\n\n${TRANSPARENT_KEY_PROMPT}`;
+}
+function getTransparentRequestParams(params = {}) {
+  return {
+    ...params,
+    format: 'png',
+    output_format: 'png',
+    output_compression: null,
+    transparent: true,
+    transparent_background: true,
+    transparent_output: true
+  };
+}
 function promptWithCanvasConstraint(prompt, provider, params = {}) {
-  const ratio = params.aspectRatio || params.aspect_ratio || 'auto';
-  const resolution = params.resolution || params.size || '';
-  if (!ratio || ratio === 'auto') return prompt;
-  const [rw, rh] = String(ratio).split(':').map(Number);
-  const orientation = rw && rh ? (rw > rh ? '横版' : rw < rh ? '竖版' : '正方形') : '';
-  const googleTarget = provider === 'google' ? googleOfficialImageSize(resolution, ratio) : '';
-  return [
-    prompt,
-    `画布约束：必须生成 ${ratio} ${orientation}构图，严格匹配所选比例，不要旋转为相反方向，不要自动改成 1:1。分辨率档位：${resolution || 'auto'}${googleTarget ? `，目标像素尺寸：${googleTarget}，禁止降级为其它尺寸` : ''}。`,
-    provider === 'google' || provider === 'xai' ? `Canvas constraint: output aspect ratio must be ${ratio}; keep the ${orientation || 'selected'} orientation exactly.${googleTarget ? ` Target pixel size must be ${googleTarget}; do not downgrade to a lower resolution.` : ''}` : ''
-  ].filter(Boolean).join('\n\n');
+  return wantsTransparentOutput(params) ? buildTransparentKeyPrompt(prompt) : prompt;
+}
+function getKeyColorRgb(keyColor) {
+  const rgb = KEY_COLOR_RGB[String(keyColor || '').toUpperCase()];
+  if (!rgb) throw new Error('透明背景键色不支持');
+  return rgb;
+}
+function clamp01(value) {
+  return Math.max(0, Math.min(1, value));
+}
+function clampByte(value) {
+  return Math.max(0, Math.min(255, Math.round(value)));
+}
+function detectKeyColorFromPixels(data, width, height) {
+  const greenRgb = KEY_COLOR_RGB[GREEN_KEY_COLOR];
+  const magentaRgb = KEY_COLOR_RGB[MAGENTA_KEY_COLOR];
+  let greenScore = 0;
+  let magentaScore = 0;
+  const sample = (index) => {
+    const offset = index * 4;
+    const r = data[offset];
+    const g = data[offset + 1];
+    const b = data[offset + 2];
+    const greenDist = Math.sqrt((r - greenRgb.r) ** 2 + (g - greenRgb.g) ** 2 + (b - greenRgb.b) ** 2);
+    const magentaDist = Math.sqrt((r - magentaRgb.r) ** 2 + (g - magentaRgb.g) ** 2 + (b - magentaRgb.b) ** 2);
+    if (greenDist < 100) greenScore += 1;
+    if (magentaDist < 100) magentaScore += 1;
+  };
+  for (let x = 0; x < width; x += 1) {
+    sample(x);
+    sample((height - 1) * width + x);
+  }
+  for (let y = 1; y < height - 1; y += 1) {
+    sample(y * width);
+    sample(y * width + width - 1);
+  }
+  return magentaScore > greenScore ? MAGENTA_KEY_COLOR : GREEN_KEY_COLOR;
+}
+function backgroundConfidence(data, index, keyRgb) {
+  const offset = index * 4;
+  const distance = Math.sqrt(
+    (data[offset] - keyRgb.r) ** 2 +
+    (data[offset + 1] - keyRgb.g) ** 2 +
+    (data[offset + 2] - keyRgb.b) ** 2
+  );
+  return clamp01((150 - distance) / 150);
+}
+function connectedKeyMask(data, width, height, keyRgb) {
+  const pixelCount = width * height;
+  const mask = new Uint8Array(pixelCount);
+  const visited = new Uint8Array(pixelCount);
+  const queue = new Uint32Array(pixelCount);
+  let head = 0;
+  let tail = 0;
+  const enqueue = (index) => {
+    if (index < 0 || index >= pixelCount || visited[index]) return;
+    visited[index] = 1;
+    if (backgroundConfidence(data, index, keyRgb) < 0.18) return;
+    mask[index] = 1;
+    queue[tail++] = index;
+  };
+  for (let x = 0; x < width; x += 1) {
+    enqueue(x);
+    enqueue((height - 1) * width + x);
+  }
+  for (let y = 1; y < height - 1; y += 1) {
+    enqueue(y * width);
+    enqueue(y * width + width - 1);
+  }
+  while (head < tail) {
+    const index = queue[head++];
+    const x = index % width;
+    const y = Math.floor(index / width);
+    if (x > 0) enqueue(index - 1);
+    if (x < width - 1) enqueue(index + 1);
+    if (y > 0) enqueue(index - width);
+    if (y < height - 1) enqueue(index + width);
+  }
+  return mask;
+}
+function addInteriorKeyIslands(data, width, height, keyRgb, mask) {
+  const pixelCount = width * height;
+  const visited = new Uint8Array(pixelCount);
+  const queue = new Uint32Array(pixelCount);
+  const component = new Uint32Array(pixelCount);
+  for (let seed = 0; seed < pixelCount; seed += 1) {
+    if (mask[seed] || visited[seed] || backgroundConfidence(data, seed, keyRgb) < 0.68) continue;
+    let head = 0;
+    let tail = 0;
+    let length = 0;
+    let confidenceSum = 0;
+    let strictCount = 0;
+    let strongCount = 0;
+    visited[seed] = 1;
+    queue[tail++] = seed;
+    const enqueueNeighbor = (neighbor) => {
+      if (neighbor < 0 || neighbor >= pixelCount || mask[neighbor] || visited[neighbor]) return;
+      if (backgroundConfidence(data, neighbor, keyRgb) < 0.24) return;
+      visited[neighbor] = 1;
+      queue[tail++] = neighbor;
+    };
+    while (head < tail) {
+      const index = queue[head++];
+      const confidence = backgroundConfidence(data, index, keyRgb);
+      component[length++] = index;
+      confidenceSum += confidence;
+      if (confidence >= 0.68) strictCount += 1;
+      if (confidence >= 0.86) strongCount += 1;
+      const x = index % width;
+      const y = Math.floor(index / width);
+      enqueueNeighbor(x > 0 ? index - 1 : -1);
+      enqueueNeighbor(x < width - 1 ? index + 1 : -1);
+      enqueueNeighbor(y > 0 ? index - width : -1);
+      enqueueNeighbor(y < height - 1 ? index + width : -1);
+    }
+    const average = confidenceSum / Math.max(1, length);
+    if (average >= 0.42 || strictCount / length >= 0.18 || strongCount / length >= 0.05 || (length <= 3 && average >= 0.34)) {
+      for (let i = 0; i < length; i += 1) mask[component[i]] = 1;
+    }
+  }
+}
+function distanceToBackground(mask, width, height, maxDistance = 4) {
+  const pixelCount = width * height;
+  const distance = new Uint8Array(pixelCount);
+  let frontier = [];
+  for (let index = 0; index < pixelCount; index += 1) {
+    if (mask[index]) continue;
+    const x = index % width;
+    const y = Math.floor(index / width);
+    if ((x > 0 && mask[index - 1]) || (x < width - 1 && mask[index + 1]) || (y > 0 && mask[index - width]) || (y < height - 1 && mask[index + width])) {
+      distance[index] = 1;
+      frontier.push(index);
+    }
+  }
+  for (let current = 1; current < maxDistance && frontier.length; current += 1) {
+    const next = [];
+    for (const index of frontier) {
+      const x = index % width;
+      const y = Math.floor(index / width);
+      for (const neighbor of [x > 0 ? index - 1 : -1, x < width - 1 ? index + 1 : -1, y > 0 ? index - width : -1, y < height - 1 ? index + width : -1]) {
+        if (neighbor < 0 || mask[neighbor] || distance[neighbor]) continue;
+        distance[neighbor] = current + 1;
+        next.push(neighbor);
+      }
+    }
+    frontier = next;
+  }
+  return distance;
+}
+function keyChannelMix(red, green, blue, keyRgb) {
+  if (keyRgb.g === 255) return clamp01((green - Math.min(red, blue)) / 255);
+  return clamp01((Math.min(red, blue) - green * 0.65) / 255);
+}
+function removeColorSpill(red, green, blue, alpha, keyRgb, confidence, distance) {
+  if (alpha === 0) return { r: red, g: green, b: blue };
+  const edgeStrength = distance <= 0 ? (confidence >= 0.46 ? 0.35 : 0) : distance === 1 ? 0.55 : distance === 2 ? 0.32 : 0.16;
+  const spillMix = keyChannelMix(red, green, blue, keyRgb) * edgeStrength;
+  const backgroundMix = clamp01(Math.max((255 - alpha) / 255, ((confidence - 0.1) / 0.9) * edgeStrength, spillMix));
+  if (backgroundMix <= 0) return { r: red, g: green, b: blue };
+  const foregroundMix = Math.max(0.08, 1 - backgroundMix);
+  return {
+    r: clampByte((red - keyRgb.r * backgroundMix) / foregroundMix),
+    g: clampByte((green - keyRgb.g * backgroundMix) / foregroundMix),
+    b: clampByte((blue - keyRgb.b * backgroundMix) / foregroundMix)
+  };
+}
+function removeKeyedBackgroundFromPixels(data, width, height, keyColor) {
+  if (data.length < width * height * 4) throw new Error('透明背景像素数据尺寸不匹配');
+  const keyRgb = getKeyColorRgb(keyColor);
+  const mask = connectedKeyMask(data, width, height, keyRgb);
+  addInteriorKeyIslands(data, width, height, keyRgb, mask);
+  const distance = distanceToBackground(mask, width, height, 4);
+  for (let index = 0; index < width * height; index += 1) {
+    const offset = index * 4;
+    const red = data[offset];
+    const green = data[offset + 1];
+    const blue = data[offset + 2];
+    const confidence = backgroundConfidence(data, index, keyRgb);
+    let alpha = 255;
+    if (mask[index]) {
+      alpha = 0;
+    } else if (distance[index] > 0) {
+      const edgeStrength = distance[index] <= 1 ? 1 : distance[index] === 2 ? 0.75 : distance[index] === 3 ? 0.45 : 0.25;
+      const transparency = clamp01(Math.max(((confidence - 0.08) / 0.84) * edgeStrength, keyChannelMix(red, green, blue, keyRgb) * edgeStrength));
+      if (transparency > 0) alpha = Math.round(255 * (1 - transparency));
+      alpha = Math.max(alpha, distance[index] === 1 ? 48 : distance[index] === 2 ? 128 : 196);
+    } else if (confidence >= 0.46 && keyChannelMix(red, green, blue, keyRgb) >= 0.45) {
+      alpha = Math.max(96, Math.round(255 * (1 - keyChannelMix(red, green, blue, keyRgb) * 0.75)));
+    }
+    const cleaned = removeColorSpill(red, green, blue, alpha, keyRgb, confidence, distance[index]);
+    data[offset] = cleaned.r;
+    data[offset + 1] = cleaned.g;
+    data[offset + 2] = cleaned.b;
+    data[offset + 3] = alpha;
+  }
+  return data;
+}
+async function blobToImageElement(blob) {
+  const url = URL.createObjectURL(blob);
+  try {
+    return await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('图片加载失败，无法执行透明背景后处理'));
+      img.src = url;
+    });
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+async function removeKeyedBackgroundFromBlob(blob, keyColor) {
+  const img = await blobToImageElement(blob);
+  const canvas = document.createElement('canvas');
+  canvas.width = img.naturalWidth || img.width;
+  canvas.height = img.naturalHeight || img.height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) throw new Error('当前浏览器不支持 Canvas，无法执行透明背景后处理');
+  ctx.drawImage(img, 0, 0);
+  const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  removeKeyedBackgroundFromPixels(pixels.data, canvas.width, canvas.height, keyColor || detectKeyColorFromPixels(pixels.data, canvas.width, canvas.height));
+  ctx.putImageData(pixels, 0, 0);
+  return await new Promise((resolve, reject) => {
+    canvas.toBlob((out) => out ? resolve(out) : reject(new Error('透明背景 PNG 导出失败')), 'image/png');
+  });
 }
 function normalizeError(error, fallback = '操作失败') {
   const raw = error?.raw ?? error?.cause ?? error;
@@ -1386,9 +1755,24 @@ function errorSummary(error, fallback) {
   return normalizeError(error, fallback).summary;
 }
 function extractResponseText(data, fallback = '') {
-  const direct = firstDefined(data?.output_text, data?.text, data?.message, data?.content);
+  const direct = firstDefined(data?.output_text, data?.outputText, data?.text, data?.message, data?.content, data?.choices?.[0]?.message?.content, data?.choices?.[0]?.delta?.content);
   if (typeof direct === 'string') return direct;
   const chunks = [];
+  if (Array.isArray(data?.output)) {
+    for (const item of data.output) {
+      if (item?.type && item.type !== 'message' && !Array.isArray(item?.content)) continue;
+      for (const part of item?.content || []) {
+        const text = firstDefined(part?.text, part?.output_text, part?.content);
+        if (typeof text === 'string' && text.trim()) chunks.push(text.trim());
+      }
+    }
+  }
+  if (Array.isArray(data?.choices)) {
+    for (const choice of data.choices) {
+      const text = firstDefined(choice?.message?.content, choice?.delta?.content, choice?.text);
+      if (typeof text === 'string' && text.trim()) chunks.push(text.trim());
+    }
+  }
   for (const obj of collectObjectsDeep(data, { maxDepth: 7 })) {
     for (const key of ['output_text', 'text', 'content', 'message']) {
       const value = obj?.[key];
@@ -1402,6 +1786,7 @@ function extractResponseText(data, fallback = '') {
 
 function render() {
   const app = $('#app');
+  if (!app) return;
   const focusState = captureFocusState();
   const galleryScrollState = captureGalleryScrollState();
   captureAgentScrollState();
@@ -1418,7 +1803,7 @@ function render() {
     ${state.modal ? renderDetailModal(state.modal) : ''}
     ${state.viewer ? renderViewer(state.viewer) : ''}
     ${state.imageContextMenu ? renderImageContextMenu(state.imageContextMenu) : ''}
-    ${state.promptRepo.open ? renderPromptRepo() : ''}
+    ${state.promptRepo.open ? `<div id="promptRepoMount">${renderPromptRepo()}</div>` : ''}
     ${state.popover ? renderPopover(state.popover) : ''}
     ${state.workflowDraft ? renderWorkflowEditorModal(state.workflowDraft) : ''}
     ${state.workflowInvoke ? renderWorkflowInvokeModal() : ''}
@@ -1428,6 +1813,7 @@ function render() {
     <input id="refFileInput" class="hidden" type="file" accept="image/*" multiple>
     <input id="proFileInput" class="hidden" type="file" accept="image/*" multiple>
     <input id="workflowRefInput" class="hidden" type="file" accept="image/*" multiple>
+    <input id="agentAttachmentInput" class="hidden" type="file" accept="image/*,.txt,.md,.json,.csv,.tsv,.html,.css,.js,.mjs,.cjs,.xml,.yaml,.yml" multiple>
   `;
   hydrateImages();
   bindTransientEvents();
@@ -1463,13 +1849,42 @@ function restoreFocusState(focusState) {
   const end = Math.min(focusState.end ?? start, length);
   try { node.setSelectionRange(start, end); } catch {}
 }
+function currentThemeMode() {
+  return window.GptShellTheme?.currentThemeMode?.(state?.preferences?.themeMode || 'light')
+    || localStorage.getItem(THEME_KEY)
+    || state?.preferences?.themeMode
+    || 'light';
+}
+function themeButtonIconHtml(mode = currentThemeMode()) {
+  return window.GptShellTheme?.iconHtml?.(mode)
+    || (mode === 'dark' ? '🌙' : mode === 'system' ? '💻' : '☀️');
+}
+function themeButtonLabel(mode = currentThemeMode()) {
+  return window.GptShellTheme?.labelForTheme?.(mode)
+    || (mode === 'dark' ? '主题：深色' : mode === 'system' ? '主题：跟随系统' : '主题：浅色');
+}
+function renderThemeToggleButton(className = '') {
+  const mode = currentThemeMode();
+  return `<button class="theme-toggle-button${className ? ` ${className}` : ''}" data-action="theme" data-theme-toggle-button="1" data-theme-mode="${esc(mode)}" title="${esc(themeButtonLabel(mode))}" aria-label="${esc(themeButtonLabel(mode))}"><span class="theme-toggle-icon" aria-hidden="true">${themeButtonIconHtml(mode)}</span></button>`;
+}
 function captureAgentScrollState() {
   const log = $('.agent-log');
   if (!log) return;
+  if (state.agentScrollLock?.anchor) {
+    state.agentScrollState = {
+      nearBottom: false,
+      offsetFromBottom: Math.max(0, log.scrollHeight - log.scrollTop - log.clientHeight),
+      scrollTop: Number(log.scrollTop) || 0,
+      anchor: state.agentScrollLock.anchor
+    };
+    return;
+  }
   const offsetFromBottom = Math.max(0, log.scrollHeight - log.scrollTop - log.clientHeight);
   state.agentScrollState = {
     nearBottom: offsetFromBottom <= 56,
-    offsetFromBottom
+    offsetFromBottom,
+    scrollTop: log.scrollTop,
+    anchor: captureAgentScrollAnchor(log)
   };
 }
 function restoreAgentScrollState() {
@@ -1479,9 +1894,63 @@ function restoreAgentScrollState() {
   const intent = state.agentScrollIntent || '';
   nextRenderFrame(() => {
     if (intent === 'force-bottom' || snapshot.nearBottom) log.scrollTop = log.scrollHeight;
-    else log.scrollTop = Math.max(0, log.scrollHeight - log.clientHeight - snapshot.offsetFromBottom);
+    else if (!restoreAgentScrollAnchor(log, snapshot.anchor)) log.scrollTop = Math.max(0, log.scrollHeight - log.clientHeight - snapshot.offsetFromBottom);
     state.agentScrollIntent = '';
+    if (state.agentScrollLock && !state.agentScrollLock.keep) state.agentScrollLock = null;
   });
+}
+function freezeAgentScrollForRender(anchor = captureAgentScrollAnchor()) {
+  if (!anchor?.id) return null;
+  state.agentScrollLock = { anchor, keep: true };
+  state.agentScrollState = {
+    nearBottom: false,
+    offsetFromBottom: 0,
+    scrollTop: Number(anchor.scrollTop) || 0,
+    anchor
+  };
+  return anchor;
+}
+function releaseAgentScrollFreezeAfterRender() {
+  if (state.agentScrollLock) state.agentScrollLock.keep = false;
+}
+function captureAgentScrollAnchor(log = $('.agent-log')) {
+  if (!log || typeof log.getBoundingClientRect !== 'function') return null;
+  const logRect = log.getBoundingClientRect();
+  const messages = Array.from(log.querySelectorAll?.('.agent-message[data-agent-message-id]') || []);
+  for (const message of messages) {
+    if (!message?.dataset?.agentMessageId || typeof message.getBoundingClientRect !== 'function') continue;
+    const rect = message.getBoundingClientRect();
+    if (rect.bottom <= logRect.top || rect.top >= logRect.bottom) continue;
+    if (rect.top < logRect.top) continue;
+    return {
+      id: message.dataset.agentMessageId,
+      offsetTop: Math.round(rect.top - logRect.top),
+      scrollTop: Number(log.scrollTop) || 0
+    };
+  }
+  const spanning = messages.find((message) => {
+    if (!message?.dataset?.agentMessageId || typeof message.getBoundingClientRect !== 'function') return false;
+    const rect = message.getBoundingClientRect();
+    return rect.top < logRect.top && rect.bottom > logRect.top;
+  });
+  if (!spanning) return null;
+  const rect = spanning.getBoundingClientRect();
+  return {
+    id: spanning.dataset.agentMessageId,
+    offsetTop: Math.round(rect.top - logRect.top),
+    scrollTop: Number(log.scrollTop) || 0
+  };
+}
+function restoreAgentScrollAnchor(log = $('.agent-log'), anchor = null) {
+  if (!log || !anchor?.id || typeof log.getBoundingClientRect !== 'function') return false;
+  const selector = `.agent-message[data-agent-message-id="${cssEscape(anchor.id)}"]`;
+  const message = log.querySelector?.(selector);
+  if (!message || typeof message.getBoundingClientRect !== 'function') return false;
+  const logRect = log.getBoundingClientRect();
+  const rect = message.getBoundingClientRect();
+  const delta = Math.round((rect.top - logRect.top) - (Number(anchor.offsetTop) || 0));
+  log.scrollTop = Math.max(0, (Number(log.scrollTop) || 0) + delta);
+  return true;
 }
 function captureGalleryScrollState(root = document) {
   const scroll = $('.gallery-scroll', root);
@@ -1508,14 +1977,14 @@ function restoreGalleryScrollState(snapshot, root = document) {
 }
 
 function renderSidebar() {
-  const project = state.agent.projects.find((p) => p.id === state.agent.activeProjectId) || state.agent.projects[0];
   const username = state.user?.username || '未登录';
   const userInitial = (state.user?.username || '访').slice(0, 1);
   return `
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-logo">NG</div>
-        <div><div class="brand-title">NexGen</div><div class="brand-subtitle">Nexus Generation</div></div>
+        <div class="brand-copy"><div class="brand-title">NexGen</div><div class="brand-subtitle">Nexus Generation</div></div>
+        ${renderThemeToggleButton('sidebar-theme-toggle')}
       </div>
       <section class="sidebar-section">
         <button class="nav-button ${state.mode === 'gallery' ? 'active' : ''}" data-action="set-mode" data-mode="gallery" title="画廊生图"><span class="nav-icon">G</span><span>画廊</span></button>
@@ -1523,29 +1992,12 @@ function renderSidebar() {
         <button class="nav-button ${state.mode === 'agent' ? 'active' : ''}" data-action="set-mode" data-mode="agent" title="Agent 项目"><span class="nav-icon">A</span><span>Agent</span></button>
         <button class="nav-button ${state.mode === 'workflow' ? 'active' : ''}" data-action="set-mode" data-mode="workflow" title="工作流"><span class="nav-icon">W</span><span>工作流</span></button>
       </section>
-      ${state.mode === 'agent' || state.mode === 'workflow' ? `
-        <section class="sidebar-section">
-          <div class="section-label">Project</div>
-          <div class="agent-project-card">
-            <div class="project-name">${esc(project?.name || '默认项目')}</div>
-            <div class="project-meta">项目内保存独立对话分支与工作流上下文</div>
-            <select class="project-select" data-action="switch-project">
-              ${state.agent.projects.map((p) => `<option value="${esc(p.id)}" ${p.id === state.agent.activeProjectId ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}
-            </select>
-            <button class="project-prompt-toggle" data-action="toggle-project-prompt">${state.agent.promptOpen ? '收起项目提示词' : '编辑项目提示词'}</button>
-            ${state.agent.promptOpen ? `<textarea class="project-prompt" data-action="project-prompt-input" placeholder="项目专属提示词...">${esc(project?.prompt || '')}</textarea>` : `<div class="project-prompt-preview">${esc(project?.prompt || '未设置项目提示词')}</div>`}
-          </div>
-          <div class="mini-grid">
-            <button class="mini-button" data-action="new-project">新建</button>
-            <button class="mini-button" data-action="delete-project">删除</button>
-          </div>
-        </section>
-        ${state.mode === 'agent' && agentConfigNotice() ? `<section class="sidebar-section"><div class="agent-config-note">${esc(agentConfigNotice())}</div></section>` : ''}` : ''}
       <section class="sidebar-section">
         <div class="account-card">
           <div class="account-line">
             <span class="account-avatar">${esc(userInitial)}</span>
             <div><div class="account-name">${esc(username)}</div><div class="account-role">${esc(state.user?.role || 'guest')}</div></div>
+            ${renderThemeToggleButton('mobile-theme-toggle')}
             <button class="account-menu-button" data-action="account-menu" title="菜单">•••</button>
           </div>
           ${state.accountMenuOpen ? `<div class="account-menu" data-stop>
@@ -1638,6 +2090,16 @@ function cardInsightSummary(task, countInfo = taskCountInfo(task)) {
 function iconButtonHtml(action, id, icon, label, extra = '') {
   return `<button class="asset-icon-action ${extra}" data-action="${action}" data-id="${esc(id)}" title="${esc(label)}" aria-label="${esc(label)}"><span aria-hidden="true">${icon}</span></button>`;
 }
+function taskActionIcon(name, active = false) {
+  if (name === 'retry') return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M19 12a7 7 0 1 1-2.1-5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  if (name === 'favorite') return active
+    ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3.8 2.45 4.97 5.49.8-3.97 3.88.94 5.47L12 16.34 7.09 18.92l.94-5.47-3.97-3.88 5.49-.8L12 3.8Z" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>'
+    : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3.8 2.45 4.97 5.49.8-3.97 3.88.94 5.47L12 16.34 7.09 18.92l.94-5.47-3.97-3.88 5.49-.8L12 3.8Z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></svg>';
+  if (name === 'reuse') return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7H4v5M4.5 12.1A7.5 7.5 0 0 0 17 7.8M15 17h5v-5M19.5 11.9A7.5 7.5 0 0 0 7 16.2" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  if (name === 'edit') return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l9.9-9.9a1.9 1.9 0 0 0 0-2.7l-1.3-1.3a1.9 1.9 0 0 0-2.7 0L4 16v4Z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/><path d="m12.7 7.3 4 4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>';
+  if (name === 'delete') return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8h8m-7 3v6m3-6v6m3-6v6M6.5 8l.7 11.2A2 2 0 0 0 9.2 21h5.6a2 2 0 0 0 2-1.8L17.5 8M10 5h4l.8 2H19M5 7h14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  return '';
+}
 function galleryMetrics() {
   const width = typeof window !== 'undefined' ? window.innerWidth || 1280 : 1280;
   if (width <= 760) return { columns: 1, cardHeight: 338, gap: 10 };
@@ -1699,8 +2161,9 @@ function renderGalleryStage() {
   return `
     <section class="gallery-stage">
       <div class="asset-toolbar">
-        <label class="search-box">搜索
-          <input value="${esc(state.promptQuery || '')}" placeholder="按提示词、模型、尺寸、标签搜索..." data-action="search-gallery">
+        <label class="search-box" aria-label="搜索画廊">
+          <span class="search-box-prefix" aria-hidden="true">搜索</span>
+          <input value="${esc(state.promptQuery || '')}" placeholder="按提示词、模型、尺寸、标签搜索..." data-action="search-gallery" autocomplete="off" spellcheck="false">
         </label>
         ${renderBatchActions(hasSelection)}
       </div>
@@ -1962,11 +2425,11 @@ function renderAssetCard(task) {
           ${insights.map((item) => `<span>${esc(item)}</span>`).join('')}
         </div>
         <div class="asset-actions icon-only">
-          ${(state.preferences?.alwaysShowRetryButton !== false || task.status !== 'success') ? iconButtonHtml('retry-task', task.id, '↻', '重试') : ''}
-          ${iconButtonHtml('favorite-task', task.id, state.favorites[task.id] ? '★' : '☆', '收藏', state.favorites[task.id] ? 'active' : '')}
-          ${iconButtonHtml('reuse-task', task.id, '↩', '复用配置')}
-          ${iconButtonHtml('edit-output', task.id, '✎', '编辑输出')}
-          ${iconButtonHtml('delete-task', task.id, '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8h8m-7 3v6m3-6v6m3-6v6M6.5 8l.7 11.2A2 2 0 0 0 9.2 21h5.6a2 2 0 0 0 2-1.8L17.5 8M10 5h4l.8 2H19M5 7h14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>', '删除', 'danger')}
+          ${(state.preferences?.alwaysShowRetryButton !== false || task.status !== 'success') ? iconButtonHtml('retry-task', task.id, taskActionIcon('retry'), '重试') : ''}
+          ${iconButtonHtml('favorite-task', task.id, taskActionIcon('favorite', !!state.favorites[task.id]), '收藏', state.favorites[task.id] ? 'active' : '')}
+          ${iconButtonHtml('reuse-task', task.id, taskActionIcon('reuse'), '复用配置')}
+          ${iconButtonHtml('edit-output', task.id, taskActionIcon('edit'), '编辑输出')}
+          ${iconButtonHtml('delete-task', task.id, taskActionIcon('delete'), '删除', 'danger')}
         </div>
       </div>
     </article>
@@ -2046,9 +2509,9 @@ function renderEntryAdvancedFields(entry, profile) {
   </div>`;
 }
 function renderEntryAdvancedModal(entry) {
-  const profile = entry === 'pro' ? proImageProfile() : imageProfile();
+  const profile = entry === 'pro' ? proImageProfile() : entry === 'agent' ? agentImageProfile() : imageProfile();
   const advanced = effectiveAdvanced(entry, profile);
-  const title = entry === 'gallery' ? '画廊高级配置' : entry === 'workflow' ? '工作流高级配置' : '专业工作台高级配置';
+  const title = entry === 'gallery' ? '画廊高级配置' : entry === 'workflow' ? '工作流高级配置' : entry === 'agent' ? 'Agent 生图高级配置' : '专业工作台高级配置';
   const modelName = profile.name || profile.model || profileId(profile) || '未选择模型';
   return `
     <div class="modal-layer" data-action="close-entry-advanced">
@@ -2111,28 +2574,30 @@ function renderAgentStage() {
   ensureAgentProjectThread(project?.id);
   const threadId = activeAgentThreadId(project?.id);
   const threads = projectThreads(project?.id);
+  const activeThread = threads.find((thread) => thread.id === threadId) || threads[0];
   const messages = agentMessages(project?.id);
   const textProfile = agentTextProfile();
-  const searchState = !state.agentConfig?.webSearchEnabled ? '后台已关闭联网' : agentWebSearchSupported(textProfile) ? (state.agent.webMode === 'off' ? '联网关闭' : '联网开启') : '当前模型不支持联网';
+  const configuredTextProfile = configuredAgentTextProfile();
+  const invalidTextReason = textProfile ? '' : agentTextProfileInvalidReason(configuredTextProfile);
   return `
     <section class="agent-stage">
       <div class="agent-head">
         <div class="agent-head-copy">
-          <div class="agent-title">${esc(project?.name || '默认项目')}</div>
-          <div class="project-meta">${esc(project?.prompt || '未设置项目提示词')}</div>
-          <div class="agent-status-line">
-            <span class="status-pill">${esc(textProfile?.model || '未配置文本模型')}</span>
-            <span class="status-pill">${esc(searchState)}</span>
+          <div class="agent-project-title-row">
+            <div class="agent-title">${esc(project?.name || '默认项目')}</div>
+            <button class="agent-top-icon-button" data-action="open-agent-project-menu" title="项目菜单" aria-label="项目菜单"><span class="agent-menu-bars" aria-hidden="true"></span></button>
           </div>
+          <button class="agent-project-prompt-line" data-action="agent-project-edit-prompt" title="${esc(project?.prompt || '编辑项目提示词')}">${esc(project?.prompt || '未设置项目提示词，点击编辑')}</button>
+          ${invalidTextReason ? `<div class="agent-config-note">${esc(invalidTextReason)}</div>` : ''}
         </div>
         <div class="agent-head-actions">
-          <label class="agent-thread-select">
-            <span>会话</span>
-            <select data-action="switch-agent-thread">
-              ${threads.map((thread) => `<option value="${esc(thread.id)}" ${thread.id === threadId ? 'selected' : ''}>${esc(thread.title || '主对话')}</option>`).join('')}
-            </select>
-          </label>
-          <button class="toolbar-button" data-action="clear-agent-thread">清空对话</button>
+          <button class="agent-thread-menu-trigger" data-action="open-agent-thread-menu" title="选择对话" aria-label="选择对话">
+            <span>${esc(activeThread?.title || '主对话')}</span>
+            <i aria-hidden="true">⌄</i>
+          </button>
+          <button class="agent-clear-icon-button" data-action="clear-agent-thread" title="清空当前对话" aria-label="清空当前对话">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4h6l1 2h4M5 6h14M8 10v8M12 10v8M16 10v8M7 6l1 14h8l1-14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
         </div>
       </div>
       <div class="agent-log workflow-stage-scroll">
@@ -2168,6 +2633,9 @@ function renderWorkflowWorkspace(project, runs) {
           <div class="project-meta">像调用 skill 一样复用批量生图流程。运行前会确认变量、预算、并发和参考图。</div>
         </div>
         <div class="workflow-head-actions">
+          <button class="workflow-project-menu-trigger" data-action="open-agent-project-menu" title="项目菜单" aria-label="项目菜单">
+            <span>${esc(project?.name || '默认项目')}</span><i aria-hidden="true">⌄</i>
+          </button>
           <button class="toolbar-button" data-action="agent-workflow">AI 创建</button>
           <button class="toolbar-button" data-action="new-series-workflow">新建多图</button>
           <button class="generate-button compact" data-action="new-workflow-draft">新建工作流</button>
@@ -2221,23 +2689,192 @@ function renderWorkflowCard(workflow) {
     </article>
   `;
 }
+function agentImageResolutionValue(profile = agentImageProfile(), settings = agentImageSettings()) {
+  const source = settingsForSummary(settings);
+  const key = providerKey(profile);
+  if (key === 'google') return source.googleBaseResolution;
+  if (key === 'xai') return source.xaiResolution;
+  return source.openaiSize;
+}
+function agentImageAspectValue(profile = agentImageProfile(), settings = agentImageSettings()) {
+  const source = settingsForSummary(settings);
+  const key = providerKey(profile);
+  if (key === 'google') return source.googleAspectRatio;
+  if (key === 'xai') return source.xaiAspectRatio;
+  return source.openaiAspectRatio;
+}
+function agentImageResolutionOptions(profile = agentImageProfile()) {
+  const key = providerKey(profile);
+  if (key === 'google') return PROVIDER.google.baseResolutions;
+  if (key === 'xai') return PROVIDER.xai.resolutions;
+  return ['1K', '2K', '4K'];
+}
+function agentImageAspectOptions(profile = agentImageProfile()) {
+  const key = providerKey(profile);
+  if (key === 'google') return googleVersion(profile) === '3.1' ? PROVIDER.google.ratios31 : PROVIDER.google.ratios25;
+  if (key === 'xai') return PROVIDER.xai.ratios;
+  return ['auto', '1:1', '5:4', '9:16', '16:9', '4:3', '3:2', '4:5', '3:4', '2:3', '21:9'];
+}
+function renderAgentImageParamButton(field, label, value) {
+  return `<button class="control-chip agent-image-param-chip" data-action="set-agent-image-param" data-field="${esc(field)}"><small>${esc(label)}</small>${esc(value)}</button>`;
+}
+function renderAgentImageParamControls() {
+  const settings = agentImageSettings();
+  const profile = agentImageProfile();
+  const format = settings.output_format || 'png';
+  const transparent = settings.transparent_output ? '是' : '否';
+  return `
+    <button class="control-chip control-model" data-action="open-agent-model-config" title="Agent 生图模型">
+      <span class="chip-icon" aria-hidden="true"></span>
+      <strong>${esc(profile.name || profile.id || profile.model || '模型')}</strong>
+    </button>
+    <button class="control-chip" data-action="open-agent-resolution-modal"><small>分辨率</small>${esc(agentImageResolutionValue(profile, settings))}</button>
+    <button class="control-chip" data-action="open-agent-size-modal"><small>比例</small>${esc(agentImageAspectValue(profile, settings))}</button>
+    <button class="control-chip" data-action="open-agent-popover" data-popover="agent-quality"><small>质量</small>${esc(settings.quality || 'high')}</button>
+    <button class="control-chip" data-action="open-agent-popover" data-popover="agent-format"><small>格式</small>${esc(format)}</button>
+    <button class="control-chip" data-action="open-agent-popover" data-popover="agent-compression"><small>${format === 'png' ? '透明' : '压缩/质量'}</small>${esc(format === 'png' ? transparent : settings.output_compression)}</button>
+    <button class="control-chip" data-action="set-agent-image-param" data-field="n"><small>数量</small>${esc(Number(settings.n) || 1)}</button>
+    <button class="control-icon control-advanced" data-action="open-agent-image-advanced" title="Agent 生图高级配置" aria-label="Agent 生图高级配置">⚙</button>
+  `;
+}
 function renderAgentComposer() {
   const textProfile = agentTextProfile();
   const webDisabled = !state.agentConfig?.webSearchEnabled || !agentWebSearchSupported(textProfile);
   const webLabel = !state.agentConfig?.webSearchEnabled ? '后台关闭' : webDisabled ? '不支持' : state.agent.webMode === 'off' ? '关闭' : '开启';
   const pending = activeAgentHasPending();
+  const attachments = Array.isArray(state.agent.attachments) ? state.agent.attachments : [];
   return `
-    <section class="composer agent-composer">
+    <section class="composer agent-composer ${state.agent.attachmentDragActive ? 'is-dragging' : ''}" id="agentComposer">
       <div class="composer-text-wrap">
         <textarea id="agentInput" placeholder="和当前项目 Agent 对话；批量生图请进入左侧工作流分页..." data-action="agent-input">${esc(state.agent.inputDraft || '')}</textarea>
+        <div class="agent-drop-hint">松开即可上传到 Agent 对话</div>
       </div>
-      <div class="composer-controls">
-        <button class="control-chip ${!webDisabled && state.agent.webMode !== 'off' ? 'active-chip' : ''}" data-action="agent-web" ${webDisabled ? 'disabled aria-disabled="true"' : ''}><small>联网</small>${esc(webLabel)}</button>
-        <button class="control-chip active-chip" data-action="agent-reason"><small>推理</small>${esc(state.agent.reasoning || 'medium')}</button>
-        <button class="generate-button" data-action="agent-chat" ${pending ? 'disabled aria-disabled="true"' : ''}>${pending ? '正在思考' : '发送对话'}</button>
+      ${attachments.length ? renderAgentAttachmentTray(attachments, true) : ''}
+      <div class="composer-controls agent-composer-controls agent-unified-toolbar">
+        <div class="composer-param-zone agent-param-zone" aria-label="Agent 对话与生图参数">
+          <span class="control-chip agent-text-model-chip"><small>文本模型</small>${esc(textProfile?.name || textProfile?.model || '未配置')}</span>
+          <button class="control-chip ${!webDisabled && state.agent.webMode !== 'off' ? 'active-chip' : ''}" data-action="agent-web" ${webDisabled ? 'disabled aria-disabled="true"' : ''}><small>联网</small>${esc(webLabel)}</button>
+          <button class="control-chip active-chip" data-action="agent-reason"><small>推理</small>${esc(state.agent.reasoning || 'medium')}</button>
+          ${renderAgentImageParamControls()}
+        </div>
+        <div class="composer-action-zone agent-action-zone" aria-label="Agent 发送控制">
+          <button class="toolbar-button agent-attach-button" data-action="agent-pick-attachment" title="上传附件" aria-label="上传附件">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 12.5l5.7-5.7a3.2 3.2 0 114.5 4.5l-7.1 7.1a5 5 0 01-7.1-7.1l7.4-7.4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M16 9.5l-7.1 7.1a1.8 1.8 0 01-2.5-2.5l6.5-6.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button class="generate-button" data-action="agent-chat" ${pending ? 'disabled aria-disabled="true"' : ''}>${pending ? '正在思考' : '发送'}</button>
+        </div>
       </div>
     </section>
   `;
+}
+function renderAgentAttachmentTray(attachments, removable = false) {
+  const items = (attachments || []).filter(Boolean);
+  if (!items.length) return '';
+  return `<div class="agent-attachment-tray">
+    ${items.map((item) => item.kind === 'image' || item.type?.startsWith('image/')
+      ? `<div class="agent-image-attachment-thumb" title="${esc(item.name || '图片附件')}">
+          <img data-agent-attachment-id="${esc(item.id)}" alt="${esc(item.name || '图片附件')}">
+          <span>${esc(item.name || '图片')}</span>
+          ${removable ? `<button type="button" data-action="agent-remove-attachment" data-id="${esc(item.id)}" aria-label="移除附件">×</button>` : ''}
+        </div>`
+      : `<div class="agent-attachment-chip" title="${esc(item.name || '附件')}">
+          <span class="agent-attachment-icon">文</span>
+          <span class="agent-attachment-name">${esc(item.name || '附件')}</span>
+          <small>${esc(formatFileSize(item.size || 0))}</small>
+          ${removable ? `<button type="button" data-action="agent-remove-attachment" data-id="${esc(item.id)}" aria-label="移除附件">×</button>` : ''}
+        </div>`).join('')}
+  </div>`;
+}
+function formatFileSize(size) {
+  const bytes = Number(size) || 0;
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(bytes >= 10 * 1024 * 1024 ? 0 : 1)}MB`;
+  if (bytes >= 1024) return `${Math.max(1, Math.round(bytes / 1024))}KB`;
+  return `${bytes}B`;
+}
+function isTextAgentAttachment(file) {
+  const type = String(file?.type || '').toLowerCase();
+  const name = String(file?.name || '').toLowerCase();
+  return type.startsWith('text/') || /\.(txt|md|json|csv|tsv|html|css|js|mjs|cjs|xml|ya?ml)$/i.test(name);
+}
+function isSupportedAgentAttachment(file) {
+  const type = String(file?.type || '').toLowerCase();
+  return type.startsWith('image/') || isTextAgentAttachment(file);
+}
+async function addAgentAttachments(files = []) {
+  const list = Array.from(files || []).filter(Boolean);
+  if (!list.length) return;
+  state.agent.attachments = Array.isArray(state.agent.attachments) ? state.agent.attachments : [];
+  const room = Math.max(0, 8 - state.agent.attachments.length);
+  if (!room) return toast('Agent 单次最多上传 8 个附件');
+  let added = 0;
+  let skippedUnsupported = 0;
+  for (const file of list.slice(0, room)) {
+    if (!isSupportedAgentAttachment(file)) {
+      skippedUnsupported += 1;
+      continue;
+    }
+    if (file.size > 24 * 1024 * 1024) {
+      toast(`${file.name || '附件'} 超过 24MB，已跳过`);
+      continue;
+    }
+    const type = file.type || (isTextAgentAttachment(file) ? 'text/plain' : 'application/octet-stream');
+    const blobId = await putBlob(file);
+    const attachment = {
+      id: uid('agent-att'),
+      blobId,
+      name: file.name || 'attachment',
+      type,
+      size: file.size || 0,
+      kind: type.startsWith('image/') ? 'image' : isTextAgentAttachment(file) ? 'text' : 'file',
+      createdAt: Date.now()
+    };
+    if (type.startsWith('image/')) {
+      const size = await imageSizeFromBlob(file).catch(() => ({}));
+      attachment.width = size.width;
+      attachment.height = size.height;
+    }
+    state.agent.attachments.push(attachment);
+    added += 1;
+  }
+  if (list.length > room) toast(`已添加前 ${room} 个附件，超出部分未加入`);
+  if (skippedUnsupported) toast('已跳过暂不支持的附件类型；Agent 当前支持图片和文本文件');
+  if (added) persistRender();
+}
+async function removeAgentAttachment(id) {
+  const attachments = Array.isArray(state.agent.attachments) ? state.agent.attachments : [];
+  const item = attachments.find((attachment) => attachment.id === id);
+  state.agent.attachments = attachments.filter((attachment) => attachment.id !== id);
+  if (item?.blobId) await deleteBlob(item.blobId).catch(() => {});
+  persistRender();
+}
+function agentAttachmentSummary(attachments = []) {
+  return attachments.map((item, index) => {
+    const dims = item.width && item.height ? `, ${item.width}x${item.height}` : '';
+    return `${index + 1}. ${item.name || '附件'} (${item.type || 'unknown'}, ${formatFileSize(item.size || 0)}${dims})`;
+  }).join('\n');
+}
+async function agentAttachmentParts(attachments = []) {
+  const parts = [];
+  const textNotes = [];
+  for (const item of attachments || []) {
+    const blob = await getBlob(item.blobId).catch(() => null);
+    if (!blob) {
+      textNotes.push(`[附件读取失败] ${item.name || item.id}`);
+      continue;
+    }
+    if (String(item.type || blob.type || '').startsWith('image/')) {
+      const dataUrl = await blobToDataUrl(blob);
+      parts.push({ type: 'input_image', image_url: dataUrl });
+      continue;
+    }
+    if (item.kind === 'text' || isTextAgentAttachment(item)) {
+      const text = await blob.text().catch(() => '');
+      textNotes.push(`--- 附件：${item.name || 'text'} ---\n${text.slice(0, 12000)}${text.length > 12000 ? '\n[已截断]' : ''}`);
+    } else {
+      textNotes.push(`[非文本附件] ${item.name || '附件'} (${item.type || blob.type || 'unknown'}, ${formatFileSize(item.size || blob.size || 0)})`);
+    }
+  }
+  return { imageParts: parts, textNote: textNotes.join('\n\n') };
 }
 function agentMessages(projectId = state.agent.activeProjectId) {
   const thread = ensureAgentProjectThread(projectId);
@@ -2291,6 +2928,60 @@ function branchActiveThreadFromMessage(messageId) {
   if (!messageId) return;
   state.agent = branchAgentThreadFromMessage(state.agent, state.agent.activeProjectId, messageId);
 }
+function newAgentThreadTitle(now = new Date()) {
+  return `新对话 ${now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })}`;
+}
+function createAgentThread(agentStateOrProjectId = state.agent, projectIdOrTitle = '', maybeTitle = '') {
+  const useGlobal = typeof agentStateOrProjectId === 'string';
+  const agentState = useGlobal ? state.agent : agentStateOrProjectId;
+  const projectId = useGlobal ? agentStateOrProjectId : projectIdOrTitle;
+  const title = useGlobal ? projectIdOrTitle : maybeTitle;
+  const nextAgent = migrateAgentThreads(JSON.parse(JSON.stringify(agentState || {})));
+  const project = (nextAgent.projects || []).find((item) => item.id === projectId) || (nextAgent.projects || [])[0];
+  if (!project) return nextAgent;
+  const threads = Array.isArray(nextAgent.threadsByProject?.[project.id]) ? nextAgent.threadsByProject[project.id] : [];
+  const thread = makeAgentThread(project.id, { title: String(title || '').trim() || newAgentThreadTitle() });
+  nextAgent.threadsByProject[project.id] = [...threads, thread];
+  nextAgent.messagesByThread[thread.id] = [];
+  nextAgent.activeThreadIdByProject[project.id] = thread.id;
+  if (useGlobal) state.agent = nextAgent;
+  return nextAgent;
+}
+function deleteAgentThread(agentStateOrProjectId = state.agent, projectIdOrThreadId = '', maybeThreadId = '') {
+  const useGlobal = typeof agentStateOrProjectId === 'string';
+  const agentState = useGlobal ? state.agent : agentStateOrProjectId;
+  const projectId = useGlobal ? agentStateOrProjectId : projectIdOrThreadId;
+  const threadId = useGlobal ? projectIdOrThreadId : maybeThreadId;
+  const nextAgent = migrateAgentThreads(JSON.parse(JSON.stringify(agentState || {})));
+  const project = (nextAgent.projects || []).find((item) => item.id === projectId) || (nextAgent.projects || [])[0];
+  if (!project || !threadId) return nextAgent;
+  const threads = Array.isArray(nextAgent.threadsByProject?.[project.id]) ? nextAgent.threadsByProject[project.id] : [];
+  let remaining = threads.filter((thread) => thread.id !== threadId);
+  delete nextAgent.messagesByThread[threadId];
+  if (!remaining.length) {
+    const replacement = makeAgentThread(project.id, { title: newAgentThreadTitle() });
+    remaining = [replacement];
+    nextAgent.messagesByThread[replacement.id] = [];
+  }
+  nextAgent.threadsByProject[project.id] = remaining;
+  if (!remaining.some((thread) => thread.id === nextAgent.activeThreadIdByProject?.[project.id])) {
+    nextAgent.activeThreadIdByProject[project.id] = remaining[0].id;
+  }
+  if (useGlobal) state.agent = nextAgent;
+  return nextAgent;
+}
+function confirmDeleteAgentThread(threadId) {
+  const thread = projectThreads(state.agent.activeProjectId).find((item) => item.id === threadId);
+  openConfirmDialog({
+    kind: 'delete-agent-thread',
+    payload: { projectId: state.agent.activeProjectId, threadId },
+    kicker: '删除会话',
+    title: `删除「${thread?.title || '当前会话'}」？`,
+    message: '只会删除这个 Agent 会话分支，不影响同项目下其它会话。',
+    confirmText: '删除会话',
+    riskText: '如果这是最后一个会话，系统会自动创建一个新的空会话。'
+  });
+}
 function clearAgentThreadMessages(agentState, threadId) {
   const nextAgent = migrateAgentThreads(JSON.parse(JSON.stringify(agentState || {})));
   nextAgent.messagesByThread[threadId] = [];
@@ -2311,19 +3002,344 @@ async function clearActiveAgentThread() {
     riskText: '当前分支消息会从本地记录中移除，但不会影响同项目下的其它分支。'
   });
 }
+function renderMarkdownInline(text) {
+  const source = String(text || '');
+  return source.split(/(`[^`\n]*`)/g).map((part) => {
+    if (part.startsWith('`') && part.endsWith('`')) return `<code>${esc(part.slice(1, -1))}</code>`;
+    return esc(part)
+      .replace(/\*\*([^*\n][\s\S]*?[^*\n])\*\*/g, '<strong>$1</strong>')
+      .replace(/__([^_\n][\s\S]*?[^_\n])__/g, '<strong>$1</strong>');
+  }).join('');
+}
+function isMarkdownTableSeparator(line) {
+  return /^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(String(line || ''));
+}
+function markdownTableCells(line) {
+  return String(line || '')
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split('|')
+    .map((cell) => cell.trim());
+}
+function renderMarkdownTable(lines, start) {
+  const header = markdownTableCells(lines[start]);
+  const rows = [];
+  let index = start + 2;
+  while (index < lines.length && /\|/.test(lines[index]) && String(lines[index]).trim()) {
+    rows.push(markdownTableCells(lines[index]));
+    index += 1;
+  }
+  const head = `<thead><tr>${header.map((cell) => `<th>${renderMarkdownInline(cell)}</th>`).join('')}</tr></thead>`;
+  const body = rows.length ? `<tbody>${rows.map((row) => `<tr>${header.map((_, idx) => `<td>${renderMarkdownInline(row[idx] || '')}</td>`).join('')}</tr>`).join('')}</tbody>` : '';
+  return { html: `<table>${head}${body}</table>`, next: index };
+}
+function renderSafeMarkdown(text) {
+  const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
+  const html = [];
+  let index = 0;
+  const flushParagraph = (items) => {
+    const value = items.join(' ').trim();
+    if (value) html.push(`<p>${renderMarkdownInline(value)}</p>`);
+  };
+  while (index < lines.length) {
+    const line = lines[index];
+    if (!String(line).trim()) { index += 1; continue; }
+    const fence = line.match(/^\s*```([a-z0-9_-]+)?\s*$/i);
+    if (fence) {
+      const lang = fence[1] || '';
+      const code = [];
+      index += 1;
+      while (index < lines.length && !/^\s*```\s*$/.test(lines[index])) {
+        code.push(lines[index]);
+        index += 1;
+      }
+      if (index < lines.length) index += 1;
+      const codeText = code.join('\n');
+      html.push(`<div class="agent-code-block"><div class="agent-code-head"><span>${esc(lang || 'code')}</span><button type="button" data-action="copy-agent-code" data-copy-text="${esc(codeText)}">复制</button></div><pre><code>${esc(codeText)}</code></pre></div>`);
+      continue;
+    }
+    if (/\|/.test(line) && index + 1 < lines.length && isMarkdownTableSeparator(lines[index + 1])) {
+      const table = renderMarkdownTable(lines, index);
+      html.push(table.html);
+      index = table.next;
+      continue;
+    }
+    const heading = line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
+    if (heading) {
+      const level = Math.min(4, Math.max(2, heading[1].length + 1));
+      html.push(`<h${level}>${renderMarkdownInline(heading[2])}</h${level}>`);
+      index += 1;
+      continue;
+    }
+    if (/^\s{0,3}(?:---+|\*\*\*+|___+)\s*$/.test(line)) {
+      html.push('<hr>');
+      index += 1;
+      continue;
+    }
+    const quote = line.match(/^\s{0,3}>\s?(.*)$/);
+    if (quote) {
+      const parts = [];
+      while (index < lines.length) {
+        const current = lines[index].match(/^\s{0,3}>\s?(.*)$/);
+        if (!current) break;
+        parts.push(current[1]);
+        index += 1;
+      }
+      html.push(`<blockquote>${renderSafeMarkdown(parts.join('\n'))}</blockquote>`);
+      continue;
+    }
+    const unordered = line.match(/^\s{0,3}[-*+]\s+(.+)$/);
+    if (unordered) {
+      const items = [];
+      while (index < lines.length) {
+        const current = lines[index].match(/^\s{0,3}[-*+]\s+(.+)$/);
+        if (!current) break;
+        items.push(`<li>${renderMarkdownInline(current[1])}</li>`);
+        index += 1;
+      }
+      html.push(`<ul>${items.join('')}</ul>`);
+      continue;
+    }
+    const ordered = line.match(/^\s{0,3}\d+[.)]\s+(.+)$/);
+    if (ordered) {
+      const items = [];
+      while (index < lines.length) {
+        const current = lines[index].match(/^\s{0,3}\d+[.)]\s+(.+)$/);
+        if (!current) break;
+        items.push(`<li>${renderMarkdownInline(current[1])}</li>`);
+        index += 1;
+      }
+      html.push(`<ol>${items.join('')}</ol>`);
+      continue;
+    }
+    const paragraph = [];
+    while (index < lines.length && String(lines[index]).trim()) {
+      if (/^\s*```/.test(lines[index]) || /^\s{0,3}(#{1,6})\s+/.test(lines[index]) || /^\s{0,3}(?:[-*+]|\d+[.)])\s+/.test(lines[index]) || /^\s{0,3}>\s?/.test(lines[index])) break;
+      if (/\|/.test(lines[index]) && index + 1 < lines.length && isMarkdownTableSeparator(lines[index + 1])) break;
+      paragraph.push(lines[index]);
+      index += 1;
+    }
+    flushParagraph(paragraph);
+  }
+  return html.join('');
+}
+function normalizeAgentOptionTitle(title) {
+  return stripPromptMarkdown(title)
+    .replace(/[（(]\s*推荐\s*[）)]/g, '')
+    .replace(/^\s*[：:、.\-—\s]+/, '')
+    .trim();
+}
+function agentOptionLabelType(line) {
+  const normalized = stripPromptMarkdown(line)
+    .replace(/^\s*(?:[-*+]\s*)?/, '')
+    .replace(/\*\*/g, '')
+    .replace(/^#{1,6}\s*/, '')
+    .trim();
+  const match = normalized.match(/^(适合模型|推荐理由|正向\s*Prompt|正向提示词|中文提示词|出图提示词|图像提示词|Prompt|负面\s*Prompt|负面提示词|反向提示词|Negative\s*Prompt|Negative)\s*[:：]?\s*(.*)$/i);
+  if (!match) return null;
+  const raw = match[1].toLowerCase();
+  const type = /负面|反向|negative/i.test(raw) ? 'negativePrompt'
+    : /适合模型/.test(match[1]) ? 'modelHint'
+      : /推荐理由/.test(match[1]) ? 'reason'
+        : 'prompt';
+  return { type, rest: match[2] || '' };
+}
+function cleanAgentOptionField(type, value) {
+  const text = String(value || '').replace(/\r\n?/g, '\n').trim();
+  if (type === 'prompt') {
+    return stripPromptMarkdown(text)
+      .replace(/^(?:正向\s*Prompt|正向提示词|中文提示词|出图提示词|图像提示词|Prompt)\s*[:：]?\s*/i, '')
+      .replace(/\s+/g, ' ')
+      .replace(/^[：:，,。.["'“”\s]+|[：:，,。.["'“”\s]+$/g, '')
+      .trim();
+  }
+  if (type === 'negativePrompt') return cleanNegativeAgentPrompt(text);
+  return stripPromptMarkdown(text).replace(/\s+/g, ' ').trim();
+}
+function parseAgentOptionSection(section) {
+  const fields = { modelHint: '', reason: '', prompt: '', negativePrompt: '' };
+  const lines = String(section || '').replace(/\r\n?/g, '\n').split('\n');
+  let current = '';
+  for (const line of lines) {
+    if (/^\s*(?:#{1,6}\s*)?方案\s*[1-5]\b/i.test(line)) break;
+    const label = agentOptionLabelType(line);
+    if (label) {
+      current = label.type;
+      fields[current] = [fields[current], label.rest].filter(Boolean).join('\n');
+      continue;
+    }
+    if (current) fields[current] = [fields[current], line].filter(Boolean).join('\n');
+  }
+  return {
+    modelHint: cleanAgentOptionField('modelHint', fields.modelHint),
+    reason: cleanAgentOptionField('reason', fields.reason),
+    prompt: cleanAgentOptionField('prompt', fields.prompt),
+    negativePrompt: cleanAgentOptionField('negativePrompt', fields.negativePrompt)
+  };
+}
+function extractAgentPromptOptions(text) {
+  const source = String(text || '').replace(/\r\n?/g, '\n');
+  const pattern = /(?:^|\n)\s*(?:#{1,6}\s*)?方案\s*([1-5])\s*[：:、.\-—]?\s*([^\n]*)/gi;
+  const matches = [];
+  let match;
+  while ((match = pattern.exec(source))) {
+    matches.push({
+      index: Number(match[1]),
+      title: match[2] || '',
+      recommended: /推荐|最终|首选/i.test(match[2] || ''),
+      start: pattern.lastIndex,
+      headingStart: match.index
+    });
+  }
+  return matches.map((item, idx) => {
+    const end = idx + 1 < matches.length ? matches[idx + 1].headingStart : source.length;
+    const fields = parseAgentOptionSection(source.slice(item.start, end));
+    return {
+      index: item.index,
+      title: normalizeAgentOptionTitle(item.title) || `方案 ${item.index}`,
+      recommended: item.recommended,
+      modelHint: fields.modelHint,
+      reason: fields.reason,
+      prompt: fields.prompt,
+      negativePrompt: fields.negativePrompt
+    };
+  }).filter((item, idx, arr) => item.index >= 1 && item.index <= 5 && item.prompt && arr.findIndex((other) => other.index === item.index) === idx)
+    .sort((a, b) => a.index - b.index)
+    .slice(0, 5);
+}
+function recommendedAgentPromptOption(options = []) {
+  const list = Array.isArray(options) ? options : [];
+  return list.find((item) => item.recommended) || list[0] || null;
+}
+function parseAgentOptionSelection(input) {
+  const value = String(input || '').trim();
+  const chinese = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5 };
+  const direct = value.match(/^\/\s*([1-5])$/) || value.match(/^([1-5])$/);
+  if (direct) return Number(direct[1]);
+  const ordinal = value.match(/(?:用|选|选择|生成)?\s*(?:第|方案)\s*([1-5一二三四五])\s*(?:个|项|号|方案)?/);
+  if (!ordinal) return 0;
+  return Number(ordinal[1]) || chinese[ordinal[1]] || 0;
+}
+function agentPromptOptionsForMessage(message) {
+  if (!message) return [];
+  const cached = Array.isArray(message.promptOptions) ? message.promptOptions : [];
+  const options = cached.length ? cached : extractAgentPromptOptions(message.text || '');
+  return options.filter((item) => item && item.prompt);
+}
+function agentPromptOptionForMessage(message, optionIndex = '') {
+  const options = agentPromptOptionsForMessage(message);
+  if (!options.length) return null;
+  const requested = Number(optionIndex) || 0;
+  return options.find((item) => item.index === requested) || (!requested ? recommendedAgentPromptOption(options) : null);
+}
+function agentMessageById(messageId) {
+  for (const messages of Object.values(state.agent?.messagesByThread || {})) {
+    const found = Array.isArray(messages) ? messages.find((message) => message.id === messageId) : null;
+    if (found) return found;
+  }
+  return null;
+}
+function latestAgentPromptOptionsMessage(projectId = state.agent.activeProjectId) {
+  const thread = activeAgentThread(projectId);
+  const messages = Array.isArray(state.agent.messagesByThread?.[thread?.id]) ? state.agent.messagesByThread[thread.id] : [];
+  for (let idx = messages.length - 1; idx >= 0; idx -= 1) {
+    const message = messages[idx];
+    if (message?.role === 'assistant' && !message.pending && agentPromptOptionsForMessage(message).length) return message;
+  }
+  return null;
+}
+function agentMessageDisplayText(message, options) {
+  const text = String(message?.text || '');
+  if (!options?.length) return text;
+  const firstOption = text.search(/(?:^|\n)\s*(?:#{1,6}\s*)?方案\s*[1-5]\b/i);
+  return firstOption > 0 ? text.slice(0, firstOption).trim() : '';
+}
+function renderAgentPromptOptionCard(message, option, recommended) {
+  const messageId = esc(message.id);
+  const optionIndex = esc(option.index);
+  const isRecommended = recommended?.index === option.index;
+  return `<article class="agent-prompt-option-card ${isRecommended ? 'recommended' : ''}">
+    <div class="agent-prompt-option-head">
+      <span>方案 ${esc(option.index)}${isRecommended ? ' · 推荐' : ''}</span>
+      <strong>${esc(option.title || `方案 ${option.index}`)}</strong>
+    </div>
+    <div class="agent-prompt-option-meta">
+      ${option.modelHint ? `<span>适合模型：${esc(option.modelHint)}</span>` : ''}
+      ${option.reason ? `<span>理由：${esc(option.reason)}</span>` : ''}
+    </div>
+    <div class="agent-prompt-box positive">
+      <div><strong>正向 Prompt</strong><button type="button" data-action="copy-agent-prompt" data-message-id="${messageId}" data-option-index="${optionIndex}" data-prompt-kind="positive">复制</button></div>
+      <p>${esc(option.prompt)}</p>
+    </div>
+    <div class="agent-prompt-box negative">
+      <div><strong>负面 Prompt</strong><button type="button" data-action="copy-agent-prompt" data-message-id="${messageId}" data-option-index="${optionIndex}" data-prompt-kind="negative">复制</button></div>
+      <p>${esc(option.negativePrompt || '无')}</p>
+    </div>
+    <button class="toolbar-button agent-option-generate" data-action="confirm-agent-image" data-message-id="${messageId}" data-option-index="${optionIndex}">${isRecommended ? '生成推荐方案' : '生成该方案'}</button>
+  </article>`;
+}
+function renderAgentPromptOptions(message, options) {
+  if (!options.length) return '';
+  const recommended = recommendedAgentPromptOption(options);
+  return `<div class="agent-prompt-options">
+    <div class="agent-recommended-action">
+      <button class="generate-button" data-action="confirm-agent-image" data-message-id="${esc(message.id)}" data-option-index="${esc(recommended?.index || options[0].index)}">生成推荐方案</button>
+    </div>
+    <div class="agent-option-grid">${options.map((option) => renderAgentPromptOptionCard(message, option, recommended)).join('')}</div>
+    <div class="agent-option-shortcuts" aria-label="快捷选择方案">
+      ${options.map((option) => `<button type="button" data-action="agent-option-shortcut" data-message-id="${esc(message.id)}" data-option-index="${esc(option.index)}">${esc(option.index)}</button>`).join('')}
+    </div>
+  </div>`;
+}
 function renderAgentMessage(message) {
   const canRetry = message.role !== 'user' && message.errorDetail && message.retryInput;
-  return `<div class="agent-message ${message.role === 'user' ? 'user' : ''} ${message.pending ? 'pending' : ''}">
+  const options = message.role === 'assistant' ? agentPromptOptionsForMessage(message) : [];
+  const imagePrompt = message.role === 'assistant' && !options.length ? (inferAgentImagePrompt('', message.text || '') || cleanAgentImagePrompt(message.imagePrompt || '')) : '';
+  const displayText = agentMessageDisplayText(message, options);
+  const canCollapse = displayText.length > 1600 || displayText.split(/\n/).length > 28;
+  const expanded = !!state.agent?.expandedMessageIds?.[message.id];
+  const collapsed = canCollapse && !expanded;
+  return `<div class="agent-message ${message.role === 'user' ? 'user' : ''} ${message.pending ? 'pending' : ''} ${collapsed ? 'is-collapsed' : ''}" data-agent-message-id="${esc(message.id)}">
     <div class="agent-message-head">
       <span>${esc(message.role === 'user' ? '你' : 'Agent')}</span>
       <button class="agent-message-menu-button" data-action="open-agent-message-menu" data-id="${esc(message.id)}" aria-label="消息操作">···</button>
     </div>
-    <div>${esc(message.text || '')}</div>
+    ${displayText ? `<div class="agent-prose-wrap ${collapsed ? 'is-collapsed' : ''}"><div class="agent-prose">${renderSafeMarkdown(displayText)}</div>${canCollapse ? `<button type="button" class="agent-expand-button" data-action="toggle-agent-message-expanded" data-message-id="${esc(message.id)}">${expanded ? '收起' : '展开全部'}</button>` : ''}</div>` : ''}
+    ${message.attachments?.length ? renderAgentAttachmentTray(message.attachments, false) : ''}
     ${canRetry ? `<button class="toolbar-button agent-retry-button" data-action="retry-agent-message" data-id="${esc(message.id)}">重试</button>` : ''}
-    ${message.imagePrompt ? `<button class="toolbar-button" data-action="confirm-agent-image" data-prompt="${esc(message.imagePrompt)}">生成图片</button>` : ''}
+    ${options.length ? renderAgentPromptOptions(message, options) : ''}
+    ${imagePrompt ? `<button class="toolbar-button" data-action="confirm-agent-image" data-message-id="${esc(message.id)}">生成图片</button>` : ''}
+    ${renderAgentTaskCards(message)}
     ${message.errorDetail ? `<details class="agent-error-detail"><summary>查看详情</summary><pre>${esc(message.errorDetail)}</pre></details>` : ''}
     <time>${esc(formatTime(message.createdAt || Date.now()))}</time>
   </div>`;
+}
+function renderAgentTaskCards(message) {
+  const ids = Array.isArray(message?.taskIds) ? message.taskIds : message?.taskId ? [message.taskId] : [];
+  const tasks = ids.map((id) => state.tasks.find((task) => task.id === id)).filter(Boolean);
+  if (!tasks.length) return '';
+  return `<div class="agent-task-strip">${tasks.map(renderAgentTaskCard).join('')}</div>`;
+}
+function renderAgentTaskCard(task) {
+  const image = (task.images || [])[0];
+  const count = taskCountInfo(task);
+  const status = count.label || (task.status === 'running' ? '生成中' : task.status === 'success' ? '完成' : task.status === 'partial_success' ? '部分完成' : '失败');
+  const expected = Math.max(1, Number(count.expected || task.expectedCount || task.count || 1));
+  const actual = Math.max(0, Number(count.actual || task.actualCount || task.images?.length || 0));
+  const percent = task.status === 'success' ? 100 : Math.max(0, Math.min(100, Math.round((actual / expected) * 100)));
+  const statusClass = task.status === 'running' || task.status === 'queued' ? 'running' : task.status === 'success' ? 'success' : task.status === 'partial_success' ? 'partial' : 'error';
+  const progressText = `${actual}/${expected}`;
+  return `<button class="agent-task-card ${esc(statusClass)}" data-action="open-detail" data-id="${esc(task.id)}" title="点击查看完整生图详情">
+    <div class="agent-task-preview">
+      ${image ? `<img data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="0" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(image.url || image.remoteUrl || '')}" alt="">` : '<span class="spinner"></span>'}
+    </div>
+    <div class="agent-task-meta">
+      <strong>${esc(status)}</strong>
+      <span class="agent-task-process">${esc(progressText)} · ${esc(formatElapsed(task))}</span>
+      <span class="agent-task-progress" aria-hidden="true"><i style="width:${esc(percent)}%"></i></span>
+    </div>
+  </button>`;
 }
 
 function renderWorkflowEditorModal(workflow) {
@@ -2426,6 +3442,16 @@ async function copyConfirmDialogValue() {
     toast('链接已复制');
   } catch {
     toast('复制失败，请手动复制');
+  }
+}
+async function copyTextValue(value, successText = '已复制') {
+  const text = String(value || '').trim();
+  if (!text) return toast('没有可复制的内容');
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(successText);
+  } catch {
+    openCopyLinkDialog({ title: '复制文本', message: '当前浏览器不允许直接写入剪贴板，请手动复制。', value: text });
   }
 }
 function renderWorkflowEditor(workflow) {
@@ -2565,7 +3591,7 @@ function renderDetailModal(taskId) {
             <span>${esc(imageSizeLabel || requested.resolution || 'auto')}</span>
           </div>
           ${image ? `<img data-action="open-viewer" data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="${esc(imageIndex)}" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(image.url || image.remoteUrl || '')}" alt="">` : '<div class="asset-placeholder"><div class="progress-ring"></div></div>'}
-          ${isTransparentPng && image ? `<button class="detail-download original" data-action="download-image" data-task-id="${esc(task.id)}" data-index="${esc(imageIndex)}">下载原图</button><button class="detail-download orig" data-action="download-image" data-task-id="${esc(task.id)}" data-index="${esc(imageIndex)}">ORIG</button>` : ''}
+          ${isTransparentPng && image ? `<button class="detail-download original" data-action="download-image" data-task-id="${esc(task.id)}" data-index="${esc(imageIndex)}">下载原图</button><button class="detail-download orig" data-action="download-image" data-task-id="${esc(task.id)}" data-index="${esc(imageIndex)}" data-original="true">ORIG</button>` : ''}
           ${renderReferenceBadge(task, 'detail')}
           ${images.length > 1 ? `
             <button class="detail-image-nav prev" data-action="detail-image-prev" data-id="${esc(task.id)}" aria-label="上一张">‹</button>
@@ -2735,7 +3761,12 @@ async function downloadImageFromMenuOrTarget(target = null) {
     const task = state.tasks.find((item) => item.id === target.dataset.taskId);
     const index = Number(target.dataset.index) || 0;
     const image = task?.images?.[index] || {};
-    source = { blobId: image.blobId, remoteUrl: image.url || image.remoteUrl, name: `${task?.id || 'image'}-${index + 1}.png` };
+    const wantsOriginal = target.dataset.original === 'true';
+    source = {
+      blobId: wantsOriginal ? (image.originalBlobId || image.blobId) : image.blobId,
+      remoteUrl: image.url || image.remoteUrl,
+      name: `${task?.id || 'image'}-${index + 1}${wantsOriginal ? '-orig' : ''}.png`
+    };
   } else {
     source = currentImageMenuSource();
   }
@@ -3010,18 +4041,71 @@ async function hydrateProResult(data, prompt) {
 
 function renderPopover(pop) {
   if (pop.type === 'model-config') return renderModelConfigMenu(pop);
+  if (pop.type === 'agent-model-config') return renderAgentModelConfigMenu(pop);
   if (pop.type === 'size') return renderSizeModal();
   if (pop.type === 'resolution') return renderSizeModal();
+  if (pop.type === 'agent-size') return renderAgentSizeModal('ratio');
+  if (pop.type === 'agent-resolution') return renderAgentSizeModal('resolution');
   if (pop.type === 'agent-message-menu') return renderAgentMessageMenu(pop);
+  if (pop.type === 'agent-project-menu') return renderAgentProjectMenu(pop);
+  if (pop.type === 'agent-thread-menu') return renderAgentThreadMenu(pop);
   const options = {
     quality: ['auto', 'low', 'medium', 'high'],
     format: ['png', 'jpeg', 'webp'],
-    compression: state.settings.output_format === 'png' ? ['是', '否'] : ['100', '95', '90', '80', '70']
+    compression: state.settings.output_format === 'png' ? ['是', '否'] : ['100', '95', '90', '80', '70'],
+    'agent-quality': ['auto', 'low', 'medium', 'high'],
+    'agent-format': ['png', 'jpeg', 'webp'],
+    'agent-compression': agentImageSettings().output_format === 'png' ? ['是', '否'] : ['100', '95', '90', '80', '70']
   }[pop.type] || [];
   const rect = pop.rect || { left: 40, top: 40, bottom: 100 };
   return `
     <div class="popover up-popover" style="${popoverStyle(rect, 250, Math.min(320, 48 + options.length * 38))}">
-      ${options.map((value) => `<button class="${isPopoverValueActive(pop.type, value) ? 'active' : ''}" data-action="set-popover-value" data-type="${esc(pop.type)}" data-value="${esc(value)}">${esc(value)}</button>`).join('')}
+      ${options.map((value) => `<button class="${isPopoverValueActive(pop.type, value) ? 'active' : ''}" data-action="${String(pop.type || '').startsWith('agent-') ? 'set-agent-popover-value' : 'set-popover-value'}" data-type="${esc(pop.type)}" data-value="${esc(value)}">${esc(value)}</button>`).join('')}
+    </div>
+  `;
+}
+function renderAgentProjectMenu(pop) {
+  const rect = pop.rect || { left: 40, top: 40, bottom: 80 };
+  const activeId = state.agent.activeProjectId;
+  return `
+    <div class="popover up-popover agent-top-menu agent-project-menu" style="${popoverStyle(rect, 290, 380)}">
+      <div class="popover-title">项目菜单</div>
+      <div class="agent-menu-list">
+        ${state.agent.projects.map((project) => `
+          <button class="${project.id === activeId ? 'active' : ''}" data-action="agent-project-switch" data-id="${esc(project.id)}">
+            <strong>${esc(project.name || '默认项目')}</strong>
+            <small>${esc(project.prompt || '未设置项目提示词')}</small>
+          </button>
+        `).join('')}
+      </div>
+      <div class="agent-menu-divider"></div>
+      <button class="agent-project-menu-action" data-action="agent-project-new">新建项目</button>
+      <button class="agent-project-menu-action" data-action="agent-project-rename">修改项目名称</button>
+      <button class="agent-project-menu-action" data-action="agent-project-edit-prompt">修改提示词</button>
+      <button class="agent-project-menu-action danger" data-action="agent-project-delete">删除项目</button>
+    </div>
+  `;
+}
+function renderAgentThreadMenu(pop) {
+  const rect = pop.rect || { left: 40, top: 40, bottom: 80 };
+  const project = state.agent.projects.find((item) => item.id === state.agent.activeProjectId) || state.agent.projects[0];
+  const activeId = activeAgentThreadId(project?.id);
+  const threads = projectThreads(project?.id);
+  return `
+    <div class="popover up-popover agent-top-menu agent-thread-menu-popover" style="${popoverStyle(rect, 300, 380)}">
+      <div class="popover-title">对话列表</div>
+      <button class="agent-menu-create" data-action="agent-thread-new">新建会话</button>
+      <div class="agent-menu-list">
+        ${threads.map((thread) => `
+          <div class="agent-thread-menu-row">
+            <button class="${thread.id === activeId ? 'active' : ''}" data-action="agent-thread-select" data-id="${esc(thread.id)}">
+              <strong>${esc(thread.title || '主对话')}</strong>
+              <small>${esc(formatTime(thread.updatedAt || thread.createdAt))}</small>
+            </button>
+            <button class="agent-thread-delete-button" data-action="agent-thread-delete" data-id="${esc(thread.id)}" title="删除会话" aria-label="删除会话">×</button>
+          </div>
+        `).join('')}
+      </div>
     </div>
   `;
 }
@@ -3038,6 +4122,12 @@ function popoverStyle(rect, width = 280, height = 320) {
   return `left:${left}px;top:${top}px;width:${width}px;max-height:${safeHeight}px`;
 }
 function isPopoverValueActive(type, value) {
+  if (type === 'agent-quality') return agentImageSettings().quality === value;
+  if (type === 'agent-format') return agentImageSettings().output_format === value;
+  if (type === 'agent-compression') {
+    const settings = agentImageSettings();
+    return settings.output_format === 'png' ? (settings.transparent_output ? '是' : '否') === value : String(settings.output_compression) === String(value);
+  }
   if (type === 'quality') return state.settings.quality === value;
   if (type === 'format') return state.settings.output_format === value;
   if (type === 'compression') return state.settings.output_format === 'png' ? (state.settings.transparent_output ? '是' : '否') === value : String(state.settings.output_compression) === String(value);
@@ -3052,6 +4142,22 @@ function renderModelConfigMenu(pop) {
       <div class="popover-title">模型配置</div>
       ${profiles.length ? profiles.map((profile) => `
         <button class="${profileId(profile) === profileId(imageProfile()) ? 'active' : ''}" data-action="switch-profile" data-value="${esc(profileId(profile))}">
+          <strong>${esc(profile.name || profileId(profile))}</strong>
+        </button>
+      `).join('') : `<div class="popover-empty">暂无生图模型，请到后台添加 Images API 配置。</div>`}
+    </div>
+  `;
+}
+function renderAgentModelConfigMenu(pop) {
+  const profiles = imageProfiles();
+  const current = profileId(agentImageProfile());
+  const rect = pop.rect || { left: 40, top: window.innerHeight - 160 };
+  const height = Math.min(340, 52 + Math.max(1, profiles.length) * 42);
+  return `
+    <div class="popover up-popover model-menu" style="${popoverStyle(rect, 300, height)}">
+      <div class="popover-title">Agent 生图模型</div>
+      ${profiles.length ? profiles.map((profile) => `
+        <button class="${profileId(profile) === current ? 'active' : ''}" data-action="set-agent-image-param" data-field="profileId" data-value="${esc(profileId(profile))}">
           <strong>${esc(profile.name || profileId(profile))}</strong>
         </button>
       `).join('') : `<div class="popover-empty">暂无生图模型，请到后台添加 Images API 配置。</div>`}
@@ -3086,6 +4192,30 @@ function renderSizeModal() {
     </div>
   `;
 }
+function renderAgentSizeModal(mode = 'ratio') {
+  const profile = agentImageProfile();
+  const key = providerKey(profile);
+  const settings = agentImageSettings();
+  const rect = state.popover?.rect || { left: 40, top: window.innerHeight - 160 };
+  let body = '';
+  if (mode === 'resolution') {
+    body = agentImageResolutionOptions(profile).map((value) => {
+      const active = String(value).toLowerCase() === String(agentImageResolutionValue(profile, settings)).toLowerCase();
+      return `<button class="${active ? 'active' : ''}" data-action="set-agent-image-param" data-field="resolution" data-value="${esc(value)}">${esc(value)}</button>`;
+    }).join('');
+  } else {
+    body = agentImageAspectOptions(profile).map((value) => {
+      const active = String(value).toLowerCase() === String(agentImageAspectValue(profile, settings)).toLowerCase();
+      return `<button class="${active ? 'active' : ''}" data-action="set-agent-image-param" data-field="aspectRatio" data-value="${esc(value)}">${esc(value === 'auto' ? '自动比例' : value)}</button>`;
+    }).join('');
+  }
+  return `
+    <div class="popover up-popover ratio-menu" style="${popoverStyle(rect, 280, 360)}">
+      <div class="popover-title">Agent ${mode === 'resolution' ? '分辨率' : '比例'} · ${esc(PROVIDER[key]?.name || key)}</div>
+      ${body}
+    </div>
+  `;
+}
 function renderAgentMessageMenu(pop) {
   const rect = pop.rect || { left: 40, top: 40, bottom: 80 };
   const message = agentMessages().find((item) => item.id === pop.messageId);
@@ -3098,10 +4228,21 @@ function renderAgentMessageMenu(pop) {
 }
 
 function renderPromptRepo() {
+  if (state.promptRepo.open && !String(state.promptRepo.query || '').trim() && !state.promptRepo.items?.length && promptBootstrapCache) {
+    const pageData = pageDataFromPromptBootstrap(state.promptRepo.category || 'all');
+    if (pageData) {
+      applyPromptPageData(pageData, 1);
+      state.promptRepo.loading = false;
+      state.promptRepo.loadingLabel = '';
+    }
+  }
   const categories = state.promptRepo.categories?.length ? state.promptRepo.categories : ['all'];
   const activeCategory = state.promptRepo.category || 'all';
   const promptWindow = promptRepoVirtualWindow(state.promptRepo.items.length);
   const promptItems = state.promptRepo.items.slice(promptWindow.startIndex, promptWindow.endIndex);
+  const isInitialLoading = !!state.promptRepo.loading && !state.promptRepo.items.length;
+  const isAppending = !!state.promptRepo.loading && !!state.promptRepo.items.length;
+  const loadingLabel = state.promptRepo.loadingLabel || (state.promptRepo.query ? '搜索提示词中...' : '加载提示词中...');
   return `
     <div class="modal-layer prompt-repo-layer">
       <div class="prompt-modal" role="dialog" aria-modal="true" aria-label="提示词仓库" tabindex="-1" data-stop>
@@ -3111,23 +4252,76 @@ function renderPromptRepo() {
           <button class="toolbar-button" data-action="close-prompt-repo">关闭</button>
         </div>
         <div class="prompt-repo-body">
-          <aside class="prompt-categories" aria-label="提示词分类">
+          <aside class="prompt-categories" id="promptCategories" aria-label="提示词分类">
             ${categories.map((cat) => `<button class="${cat === activeCategory ? 'active' : ''}" data-action="prompt-category" data-cat="${esc(cat)}">${esc(cat === 'all' ? '全部' : cat)}</button>`).join('')}
             ${state.promptRepo.categoriesLoading ? '<div class="prompt-category-loading">分类加载中...</div>' : ''}
           </aside>
           <div class="prompt-list ${promptWindow.shouldVirtualize ? 'is-virtual' : ''}" id="promptList" data-virtual="${promptWindow.shouldVirtualize ? '1' : '0'}">
             ${promptWindow.topPad ? `<div class="prompt-spacer" style="height:${esc(promptWindow.topPad)}px"></div>` : ''}
-            ${promptItems.map(renderPromptCard).join('')}
-            ${state.promptRepo.loading ? '<div class="prompt-card prompt-loading">加载中...</div>' : ''}
+            ${isInitialLoading ? `<div class="prompt-status-row">${esc(loadingLabel)}</div>${renderPromptSkeletonCards()}` : promptItems.map((item, index) => renderPromptCard(item, promptWindow.startIndex + index)).join('')}
+            ${isAppending ? '<div class="prompt-loading-row">继续加载提示词...</div>' : ''}
             ${(!state.promptRepo.loading && !state.promptRepo.items.length) ? '<div class="prompt-empty">没有匹配的提示词</div>' : ''}
             ${promptWindow.bottomPad ? `<div class="prompt-spacer" style="height:${esc(promptWindow.bottomPad)}px"></div>` : ''}
           </div>
         </div>
       </div>
-      ${state.promptRepo.detail ? renderPromptDetail(state.promptRepo.detail) : ''}
-      ${state.promptRepo.imageViewer ? `<div class="viewer-layer" role="dialog" aria-modal="true" aria-label="提示词大图" data-action="prompt-image-close"><button class="viewer-close" aria-label="关闭" data-action="prompt-image-close">×</button><img class="viewer-image" src="${esc(state.promptRepo.imageViewer)}" alt=""></div>` : ''}
+      <div id="promptRepoOverlays">${renderPromptRepoOverlays()}</div>
     </div>
   `;
+}
+function renderPromptRepoOverlays() {
+  return `
+    ${state.promptRepo.detail ? renderPromptDetail(state.promptRepo.detail) : ''}
+    ${state.promptRepo.imageViewer ? `<div class="viewer-layer" role="dialog" aria-modal="true" aria-label="提示词大图" data-action="prompt-image-close"><button class="viewer-close" aria-label="关闭" data-action="prompt-image-close">×</button><img class="viewer-image" src="${esc(state.promptRepo.imageViewer)}" alt=""></div>` : ''}
+  `;
+}
+function syncPromptRepoView() {
+  if (!state.promptRepo?.open) return false;
+  const mount = $('#promptRepoMount');
+  if (!mount) return false;
+  const focusState = captureFocusState();
+  const viewportSnapshot = capturePromptRepoViewportSnapshot();
+  mount.innerHTML = renderPromptRepo();
+  bindPromptRepoTransientEvents();
+  restoreFocusState(focusState);
+  restorePromptRepoViewportSnapshot({
+    ...viewportSnapshot,
+    categoryScrollTop: state.promptRepo.categoryScrollTop || viewportSnapshot.categoryScrollTop || 0
+  });
+  return true;
+}
+function syncPromptRepoOverlays() {
+  if (!state.promptRepo?.open) return false;
+  const host = $('#promptRepoOverlays');
+  if (!host) return false;
+  host.innerHTML = renderPromptRepoOverlays();
+  return true;
+}
+function focusPromptRepoOverlay() {
+  nextRenderFrame(() => {
+    const target = $('.size-modal') || $('.viewer-close') || $('#promptRepoOverlays');
+    if (target?.focus) {
+      try { target.focus({ preventScroll: true }); } catch { target.focus(); }
+    }
+  });
+}
+function focusPromptRepoShell() {
+  nextRenderFrame(() => {
+    const target = $('.prompt-modal') || $('#promptRepoSearch') || $('#promptList');
+    if (target?.focus) {
+      try { target.focus({ preventScroll: true }); } catch { target.focus(); }
+    }
+  });
+}
+function renderPromptSkeletonCards(count = 12) {
+  return Array.from({ length: count }, () => `
+    <div class="prompt-card prompt-skeleton" aria-hidden="true">
+      <span class="prompt-skeleton-media"></span>
+      <span class="prompt-skeleton-line strong"></span>
+      <span class="prompt-skeleton-line"></span>
+      <span class="prompt-skeleton-line short"></span>
+    </div>
+  `).join('');
 }
 function promptRepoVirtualWindow(totalItems) {
   const width = typeof window !== 'undefined' ? window.innerWidth || 1280 : 1280;
@@ -3149,22 +4343,57 @@ function promptRepoVirtualWindow(totalItems) {
     bottomPad: Math.max(0, (totalRows - endRow) * rowHeight)
   };
 }
-function renderPromptCard(item) {
+function promptItemImageSource(item) {
+  const images = Array.isArray(item?.images) ? item.images : [];
+  const nestedImage = images.map((image) => firstDefined(image?.url, image?.image_url, image?.imageUrl, image?.src, image?.href)).find(Boolean);
+  return firstDefined(item?.i, item?.image_url, item?.imageUrl, item?.src, nestedImage) || '';
+}
+function normalizePromptImageUrl(url) {
+  const value = String(url || '').trim();
+  if (!value) return '';
+  try {
+    const parsed = new URL(value, window.location.href);
+    return parsed.href;
+  } catch {}
+  try { return encodeURI(value); } catch { return value; }
+}
+function promptThumbUrl(originalUrl) {
+  const normalized = normalizePromptImageUrl(originalUrl);
+  if (!normalized) return '';
+  try {
+    const parsed = new URL(normalized, window.location.href);
+    const isLeaderOss = parsed.hostname === 'cdn.leaderai.top' && parsed.pathname.includes('/oss/');
+    if (!isLeaderOss || parsed.search.includes('x-oss-process=')) return normalized;
+    return `${normalized}${normalized.includes('?') ? '&' : '?'}x-oss-process=image/resize,w_420/quality,q_75/format,webp`;
+  } catch {
+    return normalized;
+  }
+}
+function renderPromptCard(item, index = 0) {
+  const originalUrl = normalizePromptImageUrl(promptItemImageSource(item));
+  const imageUrl = promptThumbUrl(originalUrl);
+  const fetchPriority = index < 12 ? 'high' : 'low';
   return `
-    <button class="prompt-card" data-action="prompt-detail" data-id="${esc(item.id)}">
-      ${item.i ? `<img src="${esc(item.i)}" alt="">` : ''}
+    <button class="prompt-card" data-action="prompt-detail" data-id="${esc(item.id)}" data-index="${esc(index)}">
+      ${imageUrl ? `
+        <span class="prompt-card-media">
+          <img src="${esc(imageUrl)}" data-original-src="${esc(originalUrl)}" referrerpolicy="no-referrer" loading="${index < 12 ? 'eager' : 'lazy'}" decoding="sync" fetchpriority="${fetchPriority}" width="420" height="263" alt="" onerror="var f=this.dataset.originalSrc;if(f&&this.src!==f){this.src=f;this.dataset.originalSrc='';return;}var c=this.closest('.prompt-card');if(c)c.classList.add('image-failed');this.remove();">
+          <span class="prompt-image-fallback">预览图加载失败</span>
+        </span>
+      ` : ''}
       <strong>${esc(item.t || '未命名提示词')}</strong>
       <p>${esc(item.p || '')}</p>
     </button>
   `;
 }
 function renderPromptDetail(item) {
+  const imageUrl = normalizePromptImageUrl(promptItemImageSource(item));
   return `
     <div class="modal-layer" style="background:rgba(0,0,0,.18)" data-action="prompt-detail-close">
       <div class="size-modal" role="dialog" aria-modal="true" aria-label="提示词详情" tabindex="-1" data-stop>
         <button class="modal-close" aria-label="关闭" data-action="prompt-detail-close">×</button>
         <h2>${esc(item.t || '提示词详情')}</h2>
-        ${item.i ? `<img src="${esc(item.i)}" data-action="prompt-image-view" style="width:100%;max-height:320px;object-fit:contain;border-radius:18px;background:rgba(0,0,0,.05)" alt="">` : ''}
+        ${imageUrl ? `<img src="${esc(imageUrl)}" referrerpolicy="no-referrer" loading="eager" decoding="async" data-action="prompt-image-view" style="width:100%;max-height:320px;object-fit:contain;border-radius:18px;background:rgba(0,0,0,.05)" alt="">` : ''}
         <p style="line-height:1.7;white-space:pre-wrap">${esc(item.p || '')}</p>
         <div class="detail-actions"><button class="reuse" data-action="use-prompt" data-id="${esc(item.id)}">使用提示词</button></div>
       </div>
@@ -3287,6 +4516,13 @@ function bindTransientEvents() {
       workflowRefInput.value = '';
     });
   }
+  const agentAttachmentInput = $('#agentAttachmentInput');
+  if (agentAttachmentInput) {
+    agentAttachmentInput.addEventListener('change', async () => {
+      await addAgentAttachments([...agentAttachmentInput.files]);
+      agentAttachmentInput.value = '';
+    });
+  }
   const composer = $('#composer');
   if (composer) {
     composer.addEventListener('dragover', (event) => { event.preventDefault(); composer.classList.add('dragging'); });
@@ -3297,26 +4533,7 @@ function bindTransientEvents() {
       await addFilesAsReferences([...event.dataTransfer.files].filter((file) => file.type.startsWith('image/')));
     });
   }
-  const promptList = $('#promptList');
-  if (promptList) {
-    promptList.addEventListener('scroll', () => {
-      state.promptRepo.scrollTop = promptList.scrollTop;
-      state.promptRepo.viewportHeight = promptList.clientHeight || state.promptRepo.viewportHeight || 620;
-      if (Date.now() < (state.promptRepo.scrollLockUntil || 0)) return;
-      if (promptList.scrollTop + promptList.clientHeight > promptList.scrollHeight - 320) loadPromptPage();
-    }, { passive: true });
-  }
-  const promptRepoSearch = $('#promptRepoSearch');
-  if (promptRepoSearch) {
-    promptRepoSearch.addEventListener('compositionstart', () => {
-      state.promptRepo.composing = true;
-    });
-    promptRepoSearch.addEventListener('compositionend', (event) => {
-      state.promptRepo.composing = false;
-      state.promptRepo.query = event.target.value;
-      debouncedPromptSearch(360);
-    });
-  }
+  bindPromptRepoTransientEvents();
   const gallerySearch = $('[data-action="search-gallery"]');
   if (gallerySearch) {
     gallerySearch.addEventListener('compositionstart', () => { state.gallerySearchComposing = true; });
@@ -3346,7 +4563,11 @@ function bindTransientEvents() {
   const agentInput = $('#agentInput');
   if (agentInput) {
     autoGrow(agentInput);
-    agentInput.addEventListener('input', (event) => autoGrow(event.target));
+    agentInput.addEventListener('input', (event) => {
+      state.agent.inputDraft = event.target.value;
+      autoGrow(event.target);
+    });
+    agentInput.addEventListener('paste', handlePaste);
     agentInput.addEventListener('keydown', (event) => {
       const submit = state.preferences?.enterSubmit ? event.key === 'Enter' && !event.shiftKey : event.key === 'Enter' && (event.ctrlKey || event.metaKey);
       if (!submit) return;
@@ -3354,8 +4575,80 @@ function bindTransientEvents() {
       sendAgentChat();
     });
   }
+  const agentComposer = $('#agentComposer');
+  if (agentComposer) {
+    agentComposer.addEventListener('dragover', (event) => {
+      if (!event.dataTransfer?.files?.length) return;
+      event.preventDefault();
+      state.agent.attachmentDragActive = true;
+      agentComposer.classList.add('is-dragging');
+    });
+    agentComposer.addEventListener('dragleave', (event) => {
+      if (agentComposer.contains(event.relatedTarget)) return;
+      state.agent.attachmentDragActive = false;
+      agentComposer.classList.remove('is-dragging');
+    });
+    agentComposer.addEventListener('drop', async (event) => {
+      if (!event.dataTransfer?.files?.length) return;
+      event.preventDefault();
+      state.agent.attachmentDragActive = false;
+      agentComposer.classList.remove('is-dragging');
+      await addAgentAttachments([...event.dataTransfer.files]);
+    });
+  }
   const agentLog = $('.agent-log');
   if (agentLog) agentLog.addEventListener('scroll', captureAgentScrollState, { passive: true });
+}
+function bindPromptRepoTransientEvents() {
+  const promptList = $('#promptList');
+  if (promptList && !promptList.dataset.boundPromptRepo) {
+    promptList.dataset.boundPromptRepo = '1';
+    promptList.addEventListener('pointerdown', (event) => {
+      if (!event.target.closest('.prompt-card')) return;
+      state.promptRepo.pointerOpenSnapshot = capturePromptRepoViewportSnapshot();
+    }, { passive: true });
+    promptList.addEventListener('mousedown', (event) => {
+      if (!event.target.closest('.prompt-card')) return;
+      state.promptRepo.pointerOpenSnapshot = capturePromptRepoViewportSnapshot();
+      event.preventDefault();
+    });
+    promptList.addEventListener('scroll', () => {
+      state.promptRepo.scrollTop = promptList.scrollTop;
+      state.promptRepo.viewportHeight = promptList.clientHeight || state.promptRepo.viewportHeight || 620;
+      if (Date.now() < (state.promptRepo.scrollLockUntil || 0)) return;
+      if (promptList.scrollTop + promptList.clientHeight > promptList.scrollHeight - 320) loadPromptPage();
+    }, { passive: true });
+  }
+  const promptCategories = $('#promptCategories');
+  if (promptCategories) {
+    promptCategories.scrollTop = state.promptRepo.categoryScrollTop || 0;
+    if (!promptCategories.dataset.boundPromptRepo) {
+      promptCategories.dataset.boundPromptRepo = '1';
+      const captureCategoryScroll = (event) => {
+        if (!event.target.closest('[data-action="prompt-category"]')) return;
+        state.promptRepo.pendingCategoryScrollTop = promptCategories.scrollTop || 0;
+        state.promptRepo.categoryScrollTop = promptCategories.scrollTop || 0;
+      };
+      promptCategories.addEventListener('pointerdown', captureCategoryScroll, { passive: true });
+      promptCategories.addEventListener('mousedown', captureCategoryScroll, { passive: true });
+      promptCategories.addEventListener('scroll', () => {
+        state.promptRepo.categoryScrollTop = promptCategories.scrollTop;
+      }, { passive: true });
+    }
+  }
+  const promptRepoSearch = $('#promptRepoSearch');
+  if (promptRepoSearch && !promptRepoSearch.dataset.boundPromptRepo) {
+    promptRepoSearch.dataset.boundPromptRepo = '1';
+    promptRepoSearch.addEventListener('compositionstart', () => {
+      state.promptRepo.composing = true;
+    });
+    promptRepoSearch.addEventListener('compositionend', (event) => {
+      state.promptRepo.composing = false;
+      state.promptRepo.query = event.target.value;
+      debouncedPromptSearch(360);
+    });
+  }
+  flushPromptRepoViewportRestore();
 }
 
 document.addEventListener('contextmenu', (event) => {
@@ -3407,6 +4700,63 @@ document.addEventListener('click', async (event) => {
   if (action === 'set-mode') { state.mode = target.dataset.mode; if (state.mode === 'workflow') state.agent.view = 'workflows'; persistRender(); return; }
   if (action === 'agent-view') { state.agent.view = target.dataset.view || 'chat'; persistRender(); return; }
   if (action === 'toggle-project-prompt') { state.agent.promptOpen = !state.agent.promptOpen; persistRender(); return; }
+  if (action === 'open-agent-project-menu') {
+    state.popover = { type: 'agent-project-menu', rect: target.getBoundingClientRect() };
+    render();
+    return;
+  }
+  if (action === 'agent-project-switch') {
+    state.agent.activeProjectId = target.dataset.id;
+    ensureAgentProjectThread(target.dataset.id);
+    state.popover = null;
+    state.agentScrollIntent = 'force-bottom';
+    persistRender();
+    return;
+  }
+  if (action === 'agent-project-new') {
+    state.popover = null;
+    await newProject();
+    return;
+  }
+  if (action === 'agent-project-rename') {
+    state.popover = null;
+    await renameActiveProject();
+    return;
+  }
+  if (action === 'agent-project-edit-prompt') {
+    state.popover = null;
+    await editActiveProjectPrompt();
+    return;
+  }
+  if (action === 'agent-project-delete') {
+    state.popover = null;
+    deleteProject();
+    return;
+  }
+  if (action === 'open-agent-thread-menu') {
+    state.popover = { type: 'agent-thread-menu', rect: target.getBoundingClientRect() };
+    render();
+    return;
+  }
+  if (action === 'agent-thread-select') {
+    setActiveAgentThread(state.agent.activeProjectId, target.dataset.id);
+    state.popover = null;
+    state.agentScrollIntent = 'force-bottom';
+    persistRender();
+    return;
+  }
+  if (action === 'agent-thread-new') {
+    createAgentThread(state.agent.activeProjectId, newAgentThreadTitle());
+    state.popover = null;
+    state.agentScrollIntent = 'force-bottom';
+    persistRender();
+    return;
+  }
+  if (action === 'agent-thread-delete') {
+    state.popover = null;
+    confirmDeleteAgentThread(target.dataset.id);
+    return;
+  }
   if (action === 'switch-agent-thread') {
     setActiveAgentThread(state.agent.activeProjectId, target.value);
     state.agentScrollIntent = 'force-bottom';
@@ -3481,6 +4831,8 @@ document.addEventListener('click', async (event) => {
     persistRender();
     return;
   }
+  if (action === 'set-agent-image-param') { setAgentImageParam(target.dataset.field, target.dataset.value); return; }
+  if (action === 'open-agent-image-advanced') { state.entryAdvancedModal = 'agent'; render(); return; }
   if (action === 'theme') { toggleTheme(); return; }
   if (action === 'account-menu') { state.accountMenuOpen = !state.accountMenuOpen; render(); return; }
   if (action === 'leave') { leavePage(target.dataset.url); return; }
@@ -3508,8 +4860,12 @@ document.addEventListener('click', async (event) => {
   if (action === 'toggle-mobile-params') { state.mobileParamsOpen = !state.mobileParamsOpen; persistRender(); return; }
   if (action === 'open-popover') { state.popover = { type: target.dataset.popover, rect: target.getBoundingClientRect() }; render(); return; }
   if (action === 'set-popover-value') { setPopoverValue(target.dataset.type, target.dataset.value); return; }
+  if (action === 'open-agent-popover') { state.popover = { type: target.dataset.popover, rect: target.getBoundingClientRect() }; render(); return; }
+  if (action === 'set-agent-popover-value') { setAgentPopoverValue(target.dataset.type, target.dataset.value); return; }
   if (action === 'open-size-modal') { state.popover = { type: 'size', rect: target.getBoundingClientRect() }; render(); return; }
   if (action === 'open-resolution-modal') { state.popover = { type: 'resolution', rect: target.getBoundingClientRect() }; render(); return; }
+  if (action === 'open-agent-size-modal') { state.popover = { type: 'agent-size', rect: target.getBoundingClientRect() }; render(); return; }
+  if (action === 'open-agent-resolution-modal') { state.popover = { type: 'agent-resolution', rect: target.getBoundingClientRect() }; render(); return; }
   if (action === 'close-popover') { state.popover = null; render(); return; }
   if (action === 'set-size') { state.settings.openaiSize = target.dataset.value; state.popover = null; writeComposerSessionSettings(); persistRender(); return; }
   if (action === 'set-openai-ratio') { state.settings.openaiAspectRatio = target.dataset.value; state.popover = null; writeComposerSessionSettings(); persistRender(); return; }
@@ -3518,6 +4874,7 @@ document.addEventListener('click', async (event) => {
   if (action === 'set-xai-resolution') { state.settings.xaiResolution = target.dataset.value; state.popover = null; writeComposerSessionSettings(); persistRender(); return; }
   if (action === 'set-xai-ratio') { state.settings.xaiAspectRatio = target.dataset.value; state.popover = null; writeComposerSessionSettings(); persistRender(); return; }
   if (action === 'open-model-config') { state.popover = { type: 'model-config', rect: target.getBoundingClientRect() }; render(); return; }
+  if (action === 'open-agent-model-config') { state.popover = { type: 'agent-model-config', rect: target.getBoundingClientRect() }; render(); return; }
   if (action === 'generate') { await generateImageTask(); return; }
   if (action === 'pro-pick-file') { state.proFileTarget = target.dataset.slot || 'base'; $('#proFileInput')?.click(); return; }
   if (action === 'pro-remove-ref') { await removeProReference(target.dataset.id); return; }
@@ -3571,17 +4928,53 @@ document.addEventListener('click', async (event) => {
   if (action === 'open-prompt-repo') { openPromptRepo(); return; }
   if (action === 'close-prompt-repo') { state.promptRepo.open = false; state.promptRepo.detail = null; render(); return; }
   if (action === 'prompt-category') { setPromptCategory(target.dataset.cat || 'all'); return; }
-  if (action === 'prompt-detail') { state.promptRepo.detail = state.promptRepo.items.find((p) => String(p.id) === String(target.dataset.id)); render(); return; }
-  if (action === 'prompt-detail-close') { state.promptRepo.detail = null; render(); return; }
-  if (action === 'use-prompt') { usePrompt(target.dataset.id); return; }
-  if (action === 'prompt-image-view') { state.promptRepo.imageViewer = target.src; render(); return; }
-  if (action === 'prompt-image-close') { state.promptRepo.imageViewer = null; render(); return; }
+  if (action === 'prompt-detail') {
+    const index = Number(target.dataset.index);
+    const item = Number.isFinite(index) ? state.promptRepo.items[index] : state.promptRepo.items.find((p) => String(p.id) === String(target.dataset.id));
+    if (!item) return;
+    const snapshot = consumePromptRepoPointerSnapshot() || capturePromptRepoViewportSnapshot();
+    state.promptRepo.detailReturnSnapshot = snapshot;
+    state.promptRepo.detail = item;
+    if (!syncPromptRepoOverlays()) render();
+    focusPromptRepoOverlay();
+    stabilizePromptRepoViewport(snapshot);
+    if (item?.partial) hydratePromptDetailItem(item);
+    return;
+  }
+  if (action === 'prompt-detail-close') { closePromptRepoDetailOverlay(); return; }
+  if (action === 'use-prompt') { await usePrompt(target.dataset.id); return; }
+  if (action === 'prompt-image-view') { state.promptRepo.imageViewer = target.currentSrc || target.src; if (!syncPromptRepoOverlays()) render(); return; }
+  if (action === 'prompt-image-close') { closePromptRepoImageViewerOverlay(); return; }
+  if (action === 'agent-pick-attachment') { $('#agentAttachmentInput')?.click(); return; }
+  if (action === 'agent-remove-attachment') { await removeAgentAttachment(target.dataset.id); return; }
   if (action === 'agent-chat') { await sendAgentChat(); return; }
-  if (action === 'confirm-agent-image') {
-    state.composerPrompt = target.dataset.prompt || '';
-    state.mode = 'gallery';
+  if (action === 'copy-agent-code') {
+    await copyTextValue(target.dataset.copyText || '', '代码已复制');
+    return;
+  }
+  if (action === 'copy-agent-prompt') {
+    const message = agentMessageById(target.dataset.messageId);
+    const option = agentPromptOptionForMessage(message, target.dataset.optionIndex);
+    const value = target.dataset.promptKind === 'negative' ? option?.negativePrompt : option?.prompt;
+    await copyTextValue(value || '', target.dataset.promptKind === 'negative' ? '负面 Prompt 已复制' : '正向 Prompt 已复制');
+    return;
+  }
+  if (action === 'toggle-agent-message-expanded') {
+    state.agent.expandedMessageIds = state.agent.expandedMessageIds && typeof state.agent.expandedMessageIds === 'object' ? state.agent.expandedMessageIds : {};
+    const id = target.dataset.messageId;
+    if (state.agent.expandedMessageIds[id]) delete state.agent.expandedMessageIds[id];
+    else state.agent.expandedMessageIds[id] = true;
     persistRender();
-    await generateImageTask();
+    return;
+  }
+  if (action === 'agent-option-shortcut') {
+    const scrollAnchor = freezeAgentScrollForRender();
+    await generateAgentImageFromMessage(target.dataset.messageId, '', { optionIndex: Number(target.dataset.optionIndex) || 0, scrollAnchor });
+    return;
+  }
+  if (action === 'confirm-agent-image') {
+    const scrollAnchor = freezeAgentScrollForRender();
+    await generateAgentImageFromMessage(target.dataset.messageId, '', { optionIndex: Number(target.dataset.optionIndex) || 0, scrollAnchor });
     return;
   }
   if (action === 'agent-workflow' || action === 'agent-run') { await generateWorkflowFromAgent(); return; }
@@ -3719,9 +5112,10 @@ document.addEventListener('keydown', (event) => {
   }
   if (event.key === 'Escape') {
     if (state.imageContextMenu) { state.imageContextMenu = null; render(); return; }
+    if (state.popover) { state.popover = null; render(); return; }
     if (state.viewer) { state.viewer = null; render(); return; }
-    if (state.promptRepo.imageViewer) { state.promptRepo.imageViewer = null; render(); return; }
-    if (state.promptRepo.detail) { state.promptRepo.detail = null; render(); return; }
+    if (state.promptRepo.imageViewer) { closePromptRepoImageViewerOverlay(); return; }
+    if (state.promptRepo.detail) { closePromptRepoDetailOverlay(); return; }
     if (state.modal) { state.modal = null; render(); return; }
     if (state.workflowInvoke) { state.workflowInvoke = null; render(); return; }
     if (state.workflowDraft) { state.workflowDraft = null; render(); return; }
@@ -3750,23 +5144,99 @@ function setPopoverValue(type, value) {
   writeComposerSessionSettings();
   persistRender();
 }
-function toggleTheme() {
-  const current = localStorage.getItem(THEME_KEY) || 'system';
-  const next = current === 'system' ? 'light' : current === 'light' ? 'dark' : 'system';
-  localStorage.setItem(THEME_KEY, next);
-  applyTheme();
-  toast(next === 'system' ? '主题跟随系统' : `主题已切换为 ${next}`);
+function nextFromList(list, current) {
+  const values = Array.isArray(list) && list.length ? list : [];
+  if (!values.length) return current;
+  const idx = values.findIndex((item) => String(item).toLowerCase() === String(current).toLowerCase());
+  return values[(idx + 1 + values.length) % values.length];
 }
-function applyTheme() {
-  const value = localStorage.getItem(THEME_KEY) || state?.preferences?.themeMode || 'light';
+function setAgentImageParam(field, value) {
+  const settings = agentImageSettings();
+  const profile = agentImageProfile();
+  if (field === 'profileId') {
+    const profiles = imageProfiles();
+    const specified = findImageProfileById(value);
+    const currentId = settings.profileId || profileId(profile);
+    const idx = profiles.findIndex((item) => profileId(item) === currentId);
+    const next = specified || (profiles.length ? profiles[(idx + 1 + profiles.length) % profiles.length] : null);
+    if (next) settings.profileId = profileId(next);
+  } else if (field === 'resolution') {
+    const key = providerKey(profile);
+    const next = value || nextFromList(agentImageResolutionOptions(profile), agentImageResolutionValue(profile, settings));
+    if (key === 'google') settings.googleBaseResolution = next;
+    else if (key === 'xai') settings.xaiResolution = next;
+    else settings.openaiSize = next;
+  } else if (field === 'aspectRatio') {
+    const key = providerKey(profile);
+    const next = value || nextFromList(agentImageAspectOptions(profile), agentImageAspectValue(profile, settings));
+    if (key === 'google') settings.googleAspectRatio = next;
+    else if (key === 'xai') settings.xaiAspectRatio = next;
+    else settings.openaiAspectRatio = next;
+  } else if (field === 'quality') {
+    settings.quality = value || nextFromList(['auto', 'low', 'medium', 'high'], settings.quality || 'high');
+  } else if (field === 'output_format') {
+    settings.output_format = value || nextFromList(['png', 'jpeg', 'webp'], settings.output_format || 'png');
+  } else if (field === 'transparent_output') {
+    settings.transparent_output = value === undefined ? !settings.transparent_output : value === 'true' || value === '是';
+    settings.output_format = 'png';
+  } else if (field === 'n') {
+    settings.n = value ? Math.max(1, Math.min(8, Number(value) || 1)) : ((Number(settings.n) || 1) % 8) + 1;
+  }
+  state.agent.imageSettings = settings;
+  writeStore();
+  render();
+}
+function setAgentPopoverValue(type, value) {
+  const settings = agentImageSettings();
+  if (type === 'agent-quality') settings.quality = value;
+  if (type === 'agent-format') settings.output_format = value;
+  if (type === 'agent-compression' && settings.output_format === 'png') settings.transparent_output = value === '是';
+  else if (type === 'agent-compression') settings.output_compression = Number(value);
+  state.agent.imageSettings = settings;
+  state.popover = null;
+  writeStore();
+  render();
+}
+function toggleTheme() {
+  const result = window.GptShellTheme?.toggleTheme?.({
+    onChange: ({ mode }) => {
+      if (state?.preferences) state.preferences.themeMode = mode;
+      fetchJson('/api/settings/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { themeMode: mode } })
+      }).catch(() => {});
+    }
+  }) || (() => {
+    const current = localStorage.getItem(THEME_KEY) || 'system';
+    const next = current === 'system' ? 'light' : current === 'light' ? 'dark' : 'system';
+    localStorage.setItem(THEME_KEY, next);
+    return applyTheme(next);
+  })();
+  if (state?.preferences) state.preferences.themeMode = result.mode;
+  toast(result.mode === 'system' ? '主题跟随系统' : `主题已切换为 ${result.mode}`);
+}
+function applyTheme(mode = state?.preferences?.themeMode || 'light') {
+  if (window.GptShellTheme?.applyTheme) {
+    const applied = window.GptShellTheme.applyTheme(mode);
+    if (state?.preferences) state.preferences.themeMode = applied.mode;
+    return applied;
+  }
+  const value = localStorage.getItem(THEME_KEY) || mode || 'light';
   const resolved = value === 'system' ? systemTheme() : value;
   document.documentElement.dataset.themeMode = value;
   document.documentElement.setAttribute('data-theme', resolved);
+  return { mode: value, resolved };
 }
 function systemTheme() {
   return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 }
 function watchSystemTheme() {
+  if (window.GptShellTheme?.bind) {
+    window.GptShellTheme.bind();
+    nextRenderFrame(() => window.GptShellTheme?.syncButtons?.(document));
+    return;
+  }
   const media = window.matchMedia?.('(prefers-color-scheme: dark)');
   if (!media) return;
   const onChange = () => {
@@ -3818,6 +5288,7 @@ async function loadRuntime() {
   ]);
   state.user = me?.user || me || null;
   state.runtime = runtime || {};
+  const runtimeHas = (key) => Object.prototype.hasOwnProperty.call(state.runtime || {}, key);
   state.preferences = {
     ...DEFAULT_PREFERENCES,
     ...state.preferences,
@@ -3842,8 +5313,8 @@ async function loadRuntime() {
     model: runtime?.defaultModel || 'gpt-image-2',
     apiMode: runtime?.apiMode || 'images'
   }];
-  state.activeProfileId = state.activeProfileId || runtime?.activeProfileId || state.profiles[0].id;
-  state.activeImageProfileId = state.activeImageProfileId || imageProfiles().find((p) => profileId(p) === runtime?.activeProfileId)?.id || imageProfiles()[0]?.id || state.activeProfileId;
+  state.activeProfileId = runtime?.activeProfileId || state.activeProfileId || state.profiles[0].id;
+  state.activeImageProfileId = imageProfiles().find((p) => profileId(p) === runtime?.activeImageProfileId)?.id || imageProfiles().find((p) => profileId(p) === runtime?.activeProfileId)?.id || state.activeImageProfileId || imageProfiles()[0]?.id || state.activeProfileId;
   state.agentConfig = {
     mode: runtime?.agentApiConfigMode || 'off',
     textProfileId: runtime?.agentTextProfileId || null,
@@ -3852,14 +5323,15 @@ async function loadRuntime() {
     scrollAfterSubmit: runtime?.agentScrollToBottomAfterSubmit !== false
   };
   if (!state.agentConfig.webSearchEnabled) state.agent.webMode = 'off';
-  Object.assign(state.settings, {
-    quality: state.settings.quality || runtime?.quality || 'high',
-    output_format: state.settings.output_format || runtime?.output_format || 'png',
-    output_compression: state.settings.output_compression ?? runtime?.output_compression ?? 90,
-    n: state.settings.n || runtime?.n || 1,
-    transparent_output: state.settings.transparent_output ?? !!runtime?.transparent_output,
-    moderation: state.settings.moderation || runtime?.moderation || 'auto'
-  });
+  const nextSettings = { ...state.settings };
+  if (runtimeHas('quality')) nextSettings.quality = runtime.quality || 'high';
+  if (runtimeHas('output_format')) nextSettings.output_format = runtime.output_format || 'png';
+  if (runtimeHas('output_compression')) nextSettings.output_compression = runtime.output_compression === null ? null : runtime.output_compression ?? 90;
+  if (runtimeHas('n')) nextSettings.n = Number(runtime.n) || 1;
+  if (runtimeHas('transparent_output')) nextSettings.transparent_output = !!runtime.transparent_output;
+  if (runtimeHas('moderation')) nextSettings.moderation = runtime.moderation || 'auto';
+  Object.assign(state.settings, nextSettings);
+  writeComposerSessionSettings();
 }
 async function fetchJson(url, options) {
   const res = await fetch(url, { credentials: 'same-origin', cache: 'no-store', ...options });
@@ -3879,6 +5351,154 @@ async function fetchJson(url, options) {
     err.raw = data;
     throw err;
   }
+  return data;
+}
+function responseStreamTextFromPayload(payload) {
+  const type = String(payload?.type || '');
+  const delta = firstDefined(
+    type.includes('delta') ? payload?.delta : '',
+    payload?.output_text_delta,
+    payload?.outputTextDelta,
+    payload?.text_delta,
+    payload?.textDelta,
+    payload?.content_delta,
+    payload?.contentDelta
+  );
+  if (delta) return delta;
+  if (/\.completed$|completed$|done|final/i.test(type)) {
+    const completed = extractResponseText(payload, '');
+    if (completed && !/^\{[\s\S]*\}$/.test(completed.trim())) return completed;
+  }
+  return firstDefined(
+    payload?.output_text,
+    payload?.outputText,
+    payload?.text,
+    payload?.delta,
+    payload?.content,
+    payload?.message
+  ) || '';
+}
+function parseSseDataBlock(block) {
+  const dataLines = [];
+  for (const line of String(block || '').split(/\r?\n/)) {
+    if (!line || line.startsWith(':')) continue;
+    if (line.startsWith('data:')) dataLines.push(line.slice(5).replace(/^ /, ''));
+  }
+  const data = dataLines.join('\n').trim();
+  if (!data || data === '[DONE]') return null;
+  return data;
+}
+function streamEventErrorMessage(payload) {
+  const type = String(payload?.type || '');
+  const error = payload?.error;
+  if (error && typeof error === 'object') return error.message || error.code || error.type || null;
+  if (typeof error === 'string' && error.trim()) return error.trim();
+  if (/\.failed$/i.test(type)) return payload?.message || 'Agent 流式请求失败';
+  return null;
+}
+function responsePayloadFromStreamEvent(payload) {
+  if (payload?.response && typeof payload.response === 'object') return payload.response;
+  if (payload?.item && typeof payload.item === 'object') return { output: [payload.item] };
+  if (Array.isArray(payload?.output)) return payload;
+  return null;
+}
+function mergeOutputItems(current, items, indices = []) {
+  const out = [...current];
+  for (let i = 0; i < items.length; i += 1) {
+    const item = items[i];
+    const outputIndex = indices[i];
+    let index = item?.id ? out.findIndex((existing) => existing?.id === item.id) : -1;
+    if (index < 0 && typeof outputIndex === 'number' && outputIndex >= 0 && outputIndex < out.length && out[outputIndex]?.type === item?.type) index = outputIndex;
+    if (index < 0 && item?.type) {
+      const sameType = out.map((existing, idx) => existing?.type === item.type ? idx : -1).filter((idx) => idx >= 0);
+      if (sameType.length === 1) index = sameType[0];
+    }
+    if (index >= 0) out[index] = item;
+    else out.push(item);
+  }
+  return out;
+}
+async function consumeResponseTextStream(response, options = {}) {
+  const reader = response?.body?.getReader?.();
+  if (!reader) throw new Error('Agent 流式响应不可读取');
+  const decoder = new TextDecoder();
+  let buffer = '';
+  const events = [];
+  const chunks = [];
+  let completedPayload = null;
+  let outputItems = [];
+  let hasDataLine = false;
+  let shouldStop = false;
+  const cancelReader = () => { try { reader.cancel(); } catch {} };
+  options.signal?.addEventListener?.('abort', cancelReader, { once: true });
+  const handleEvent = (chunk) => {
+    if (String(chunk || '').split(/\r?\n/).some((line) => line.startsWith('data:'))) hasDataLine = true;
+    let data = parseSseDataBlock(chunk);
+    if (!data && String(chunk || '').trim().startsWith('{')) data = String(chunk).trim();
+    if (!data) return;
+    let payload = null;
+    try { payload = JSON.parse(data); } catch { throw new Error(`Agent 流式响应不是有效 JSON：${String(data).slice(0, 240)}`); }
+    events.push(payload);
+    const errorMessage = streamEventErrorMessage(payload);
+    if (errorMessage) throw new Error(errorMessage);
+    const type = String(payload?.type || '');
+    if (type === 'response.output_text.delta') {
+      const delta = typeof payload.delta === 'string' ? payload.delta : '';
+      if (delta) chunks.push(delta);
+      return;
+    }
+    if (/response\.web_search_call\./.test(type)) return;
+    const streamPayload = responsePayloadFromStreamEvent(payload);
+    if (Array.isArray(streamPayload?.output)) {
+      const indices = type === 'response.completed' ? streamPayload.output.map((_, idx) => idx) : streamPayload.output.map(() => Number(payload.output_index));
+      outputItems = mergeOutputItems(outputItems, streamPayload.output, indices);
+    }
+    if (type === 'response.completed' || payload?.response) {
+      completedPayload = streamPayload || payload.response || payload;
+      const text = extractResponseText(completedPayload, '');
+      if (text) shouldStop = true;
+      return;
+    }
+    const text = responseStreamTextFromPayload(payload);
+    if (text && !type.includes('delta')) chunks.push(chunks.length ? `\n${text}` : text);
+  };
+  try {
+    while (true) {
+      if (options.signal?.aborted) throw new DOMException('请求已停止', 'AbortError');
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let separatorIndex = buffer.search(/\r?\n\r?\n/);
+      while (separatorIndex >= 0) {
+        const separator = buffer.match(/\r?\n\r?\n/)?.[0] || '\n\n';
+        const part = buffer.slice(0, separatorIndex);
+        buffer = buffer.slice(separatorIndex + separator.length);
+        handleEvent(part);
+        if (shouldStop) {
+          cancelReader();
+          break;
+        }
+        separatorIndex = buffer.search(/\r?\n\r?\n/);
+      }
+      if (shouldStop) break;
+    }
+    buffer += decoder.decode();
+    if (!shouldStop && buffer.trim()) handleEvent(buffer);
+  } finally {
+    options.signal?.removeEventListener?.('abort', cancelReader);
+  }
+  if (!hasDataLine && !events.length) throw new Error('未从 Agent 流式响应中解析到有效 data 事件');
+  const finalPayload = completedPayload || (outputItems.length ? { output: outputItems } : null);
+  const finalText = finalPayload ? extractResponseText(finalPayload, '') : '';
+  if (finalText) return { ...finalPayload, output_text: finalText, streamEvents: events };
+  const outputText = chunks.join('').trim();
+  if (outputText) return { output_text: outputText, streamEvents: events };
+  const fallback = extractResponseText({ streamEvents: events }, '');
+  if (fallback) return { output_text: fallback, streamEvents: events };
+  throw new Error('Agent 流式响应结束但没有返回可解析文本');
+}
+async function resolveResponsePayload(data) {
+  if (data?.__stream) return consumeResponseTextStream(data.response, data);
   return data;
 }
 async function saveActiveProfile() {
@@ -3947,6 +5567,16 @@ async function hydrateImages() {
     }
     if (state.refUrls.has(key)) img.src = state.refUrls.get(key);
   }
+  for (const img of $$('img[data-agent-attachment-id]')) {
+    const attachment = (state.agent.attachments || []).find((item) => item.id === img.dataset.agentAttachmentId);
+    if (!attachment?.blobId) continue;
+    const key = `agent:${attachment.id}:${attachment.blobId}`;
+    if (!state.refUrls.has(key)) {
+      const blob = await getBlob(attachment.blobId).catch(() => null);
+      if (blob) state.refUrls.set(key, URL.createObjectURL(blob));
+    }
+    if (state.refUrls.has(key)) img.src = state.refUrls.get(key);
+  }
   for (const img of $$('img[data-task-ref-task-id]')) {
     const task = state.tasks.find((item) => item.id === img.dataset.taskRefTaskId);
     const refs = task ? taskReferenceSnapshots(task) : [];
@@ -3978,9 +5608,20 @@ async function addFilesAsReferences(files) {
   }
   persistRender();
 }
+function clipboardImageFiles(clipboardData) {
+  const byFiles = Array.from(clipboardData?.files || []).filter((file) => file?.type?.startsWith('image/'));
+  if (byFiles.length) return byFiles;
+  return Array.from(clipboardData?.items || [])
+    .filter((item) => item?.kind === 'file' && String(item.type || '').startsWith('image/'))
+    .map((item) => item.getAsFile?.())
+    .filter((file) => file?.type?.startsWith('image/'));
+}
 async function handlePaste(event) {
-  const files = [...(event.clipboardData?.files || [])].filter((file) => file.type.startsWith('image/'));
-  if (files.length) await addFilesAsReferences(files);
+  const files = clipboardImageFiles(event.clipboardData);
+  if (!files.length) return;
+  event.preventDefault?.();
+  if (state.mode === 'agent') await addAgentAttachments(files);
+  else await addFilesAsReferences(files);
 }
 async function removeReference(id) {
   const ref = state.references.find((r) => r.id === id);
@@ -4087,6 +5728,12 @@ async function generateImageTask(seedTask = null) {
   if (!validateReferenceCountForProfile(profile, references)) return null;
   const referenceSnapshots = await cloneReferenceSnapshots(references);
   const params = seedTask?.requestedParams || requestedParams(profile);
+  const transparentOutput = wantsTransparentOutput(params);
+  const effectiveParams = transparentOutput ? getTransparentRequestParams(params) : params;
+  if (providerKey(profile) === 'openai' && String(firstDefined(params.format, params.output_format, state.settings.output_format) || '').toLowerCase() === 'png' && firstDefined(params.transparent, params.transparent_background, state.settings.transparent_output, false) && !openAiTransparentBackgroundSupported(profile)) {
+    toast(transparentBackgroundUnsupportedMessage(profile));
+    return null;
+  }
   const meta = seedTask?.workflowMeta || {};
   const task = {
     id: uid('task'),
@@ -4103,12 +5750,19 @@ async function generateImageTask(seedTask = null) {
     referenceCount: referenceSnapshots.length,
     referenceSnapshots,
     requestedParams: params,
+    transparentOutput,
+    transparentSource: transparentOutput ? 'local-key-color' : '',
+    transparentPrompt: transparentOutput ? buildTransparentKeyPrompt(prompt) : '',
     workflowId: meta.workflowId || seedTask?.workflowId || '',
     workflowRunId: meta.workflowRunId || seedTask?.workflowRunId || '',
     workflowNodeId: meta.workflowNodeId || seedTask?.workflowNodeId || '',
     batchRowId: meta.batchRowId || seedTask?.batchRowId || '',
     batchLabel: meta.batchLabel || seedTask?.batchLabel || '',
     workflowName: meta.workflowName || seedTask?.workflowName || '',
+    agentMessageId: meta.agentMessageId || seedTask?.agentMessageId || '',
+    agentOption: meta.agentOption || seedTask?.agentOption || '',
+    agentOptionTitle: meta.agentOptionTitle || seedTask?.agentOptionTitle || '',
+    editedFromOption: meta.editedFromOption || seedTask?.editedFromOption || '',
     returnedParams: {},
     createdAt: Date.now(),
     startedAt: Date.now(),
@@ -4121,10 +5775,11 @@ async function generateImageTask(seedTask = null) {
   if (meta.onCreated) meta.onCreated(task);
   try {
     const apiStartedAt = Date.now();
-    const result = await collectGenerationResult(prompt, params, {
+    const result = await collectGenerationResult(prompt, effectiveParams, {
       profile,
       references,
       entry: meta.entry || 'gallery',
+      transparentOutput,
       onPartialImage: (url) => {
         task.streamPreviewUrl = url;
         renderGalleryListOnly();
@@ -4152,7 +5807,16 @@ async function generateImageTask(seedTask = null) {
     task.partialErrors = result.partialErrors || [];
     task.rawResponse = summarizeResponse(response);
     task.returnedPrompt = returnedPromptFromResponse(response);
-    task.returnedParams = extractReturnedParams(response, params, images);
+    task.returnedParams = extractReturnedParams(response, { ...params, transparent: transparentOutput || params.transparent }, images);
+    if (transparentOutput) {
+      task.returnedParams.transparent = true;
+      task.returnedParams.transparentBackground = true;
+      task.returnedParams.background = 'local-key-color';
+      if (result.transparentPostProcessError) {
+        task.transparentPostProcessError = result.transparentPostProcessError;
+        task.errorDetail = [task.errorDetail, `透明背景后处理失败，已保留原图：${result.transparentPostProcessError}`].filter(Boolean).join('\n');
+      }
+    }
     task.error = task.failedCount ? `部分图片生成失败：${task.failedCount} 张未完成` : '';
     task.errorDetail = task.partialErrors.map((item, idx) => `${idx + 1}. ${item.detail || item.summary || item.error || item}`).join('\n');
     task.status = task.failedCount ? 'partial_success' : 'success';
@@ -4167,7 +5831,7 @@ async function generateImageTask(seedTask = null) {
     task.elapsedMs = task.finishedAt - task.startedAt;
     task.apiElapsedMs = task.apiElapsedMs || task.elapsedMs;
     if ((task.images || []).length) {
-      const expected = Number(task.expectedCount || params.count || task.images.length);
+      const expected = Number(task.expectedCount || effectiveParams.count || task.images.length);
       task.actualCount = task.images.length;
       task.failedCount = Math.max(0, expected - task.images.length);
       task.error = task.failedCount ? `部分图片生成失败：${task.failedCount} 张未完成` : '';
@@ -4200,6 +5864,7 @@ async function collectGenerationResult(prompt, params, options = {}) {
   let lastError = null;
   let apiElapsedMs = 0;
   let persistElapsedMs = 0;
+  let transparentPostProcessError = '';
   for (let attempt = 0; attempt < maxAttempts && images.length < expected; attempt++) {
     const remaining = Math.max(1, expected - images.length);
     const requestParams = forceSingleRequests ? { ...params, count: 1 } : (attempt === 0 ? params : { ...params, count: remaining });
@@ -4209,7 +5874,14 @@ async function collectGenerationResult(prompt, params, options = {}) {
       apiElapsedMs += Date.now() - apiStartedAt;
       responses.push(response);
       const persistStartedAt = Date.now();
-      const batch = await persistResponseImages(response);
+      let batch = await persistResponseImages(response);
+      if (options.transparentOutput) {
+        try {
+          batch = await postProcessTransparentImages(batch);
+        } catch (postErr) {
+          transparentPostProcessError = normalizeError(postErr, '透明背景后处理失败').summary;
+        }
+      }
       persistElapsedMs += Date.now() - persistStartedAt;
       images.push(...batch);
       if (typeof options.onPersistedImages === 'function') {
@@ -4244,7 +5916,32 @@ async function collectGenerationResult(prompt, params, options = {}) {
     images: responses.flatMap((item) => Array.isArray(item?.images) ? item.images : []),
     count: images.length
   };
-  return { response, images, partialErrors, expectedCount: expected, actualCount: images.length, failedCount: Math.max(0, expected - images.length), apiElapsedMs, persistElapsedMs };
+  return { response, images, partialErrors, expectedCount: expected, actualCount: images.length, failedCount: Math.max(0, expected - images.length), apiElapsedMs, persistElapsedMs, transparentPostProcessError };
+}
+async function postProcessTransparentImages(images = []) {
+  const processed = [];
+  for (const image of images) {
+    const originalBlob = await getBlob(image.blobId);
+    if (!originalBlob) {
+      processed.push(image);
+      continue;
+    }
+    const transparentBlob = await removeKeyedBackgroundFromBlob(originalBlob);
+    const blobId = await putBlob(transparentBlob);
+    const info = await imageInfoFromBlob(transparentBlob).catch(async () => ({ ...(await imageSizeFromBlob(transparentBlob).catch(() => ({}))), type: transparentBlob.type, hasAlpha: true }));
+    processed.push({
+      ...image,
+      blobId,
+      originalBlobId: image.originalBlobId || image.blobId,
+      width: info.width || image.width,
+      height: info.height || image.height,
+      type: info.type || 'image/png',
+      transparent: true,
+      transparentOutput: true,
+      transparentSource: 'local-key-color'
+    });
+  }
+  return processed;
 }
 async function sendGenerationRequest(prompt, params = {}, options = {}) {
   const profile = options.profile || imageProfile();
@@ -4263,6 +5960,7 @@ async function sendGenerationRequest(prompt, params = {}, options = {}) {
     fd.append('prompt', requestPrompt);
     appendProviderParams(fd, provider, requestParams);
     appendImageOutputParams(fd, requestParams);
+    appendNegativePromptParams(fd, requestParams);
     fd.append('n', String(provider === 'google' ? 1 : (requestParams.count || state.settings.n || 1)));
     const imageFieldName = provider === 'google' ? 'image[]' : 'image';
     refs.forEach(({ ref, blob }, idx) => { if (blob) fd.append(imageFieldName, blob, ref.name || `reference-${idx}.png`); });
@@ -4277,6 +5975,7 @@ async function sendGenerationRequest(prompt, params = {}, options = {}) {
     n: provider === 'google' ? 1 : (Number(requestParams.count || state.settings.n) || 1)
   };
   appendImageOutputParams(body, requestParams);
+  appendNegativePromptParams(body, requestParams);
   Object.assign(body, providerPayload(provider, requestParams));
   applyAdvancedToJsonBody(body, entry, profile);
   const headers = appendAdvancedHeaders({ 'Content-Type': 'application/json' }, entry, profile);
@@ -4362,7 +6061,9 @@ function imageOutputParams(params = {}) {
     moderation: firstDefined(requestParams.moderation, state.settings.moderation)
   };
   if (format === 'png') {
-    out.transparent_background = !!firstDefined(requestParams.transparent, requestParams.transparent_background, state.settings.transparent_output, false);
+    const transparent = !!firstDefined(requestParams.transparent, requestParams.transparent_background, state.settings.transparent_output, false);
+    out.transparent_background = transparent;
+    out.background = transparent ? 'transparent' : 'auto';
   } else {
     out.output_compression = Number(firstDefined(requestParams.compression, requestParams.output_compression, state.settings.output_compression, 90)) || 90;
   }
@@ -4374,6 +6075,17 @@ function appendImageOutputParams(target, params = {}) {
     if (target instanceof FormData) target.append(key, String(value));
     else target[key] = value;
   });
+}
+function appendNegativePromptParams(target, params = {}) {
+  const negativePrompt = String(firstDefined(params.negativePrompt, params.negative_prompt, params.negative) || '').trim();
+  if (!negativePrompt) return;
+  if (target instanceof FormData) {
+    target.append('negative_prompt', negativePrompt);
+    target.append('negativePrompt', negativePrompt);
+  } else {
+    target.negative_prompt = negativePrompt;
+    target.negativePrompt = negativePrompt;
+  }
 }
 async function persistResponseImages(response) {
   const candidates = collectImageCandidates(response);
@@ -4399,8 +6111,8 @@ async function persistResponseImages(response) {
     else if (remoteUrl) blob = await fetch(remoteUrl).then((res) => res.blob()).catch(() => null);
     if (!blob) return null;
     const blobId = await putBlob(blob);
-    const size = await imageSizeFromBlob(blob).catch(() => ({}));
-    return { blobId, remoteUrl: /^data:/i.test(String(remoteUrl || '')) ? '' : remoteUrl, width: size.width, height: size.height, type: blob.type };
+    const info = await imageInfoFromBlob(blob).catch(async () => ({ ...(await imageSizeFromBlob(blob).catch(() => ({}))), type: blob.type }));
+    return { blobId, remoteUrl: /^data:/i.test(String(remoteUrl || '')) ? '' : remoteUrl, width: info.width, height: info.height, type: info.type || blob.type, transparent: info.hasAlpha === undefined ? undefined : !!info.hasAlpha };
   }))).filter(Boolean);
   if (!images.length) throw new Error('上游未返回可解析图片');
   return images;
@@ -4487,7 +6199,12 @@ function extractReturnedParams(response, params, images = []) {
     firstImage.type
   );
   const returnedCompression = readDeepAlias(response, ['compression', 'output_compression', 'outputCompression', 'compressionQuality', 'compression_quality']);
-  const returnedTransparent = readDeepAlias(response, ['transparent', 'transparent_background', 'transparentBackground', 'transparent_output', 'transparentOutput']);
+  const returnedBackground = readDeepAlias(response, ['background']);
+  const returnedTransparent = firstDefined(
+    readDeepAlias(response, ['transparent', 'transparent_background', 'transparentBackground', 'transparent_output', 'transparentOutput']),
+    returnedBackground === 'transparent' ? true : returnedBackground === 'opaque' ? false : undefined,
+    firstImage.transparent
+  );
   const responseCount = readDeepAlias(response, ['n', 'count', 'imageCount', 'image_count']);
   const normalized = {
     source: readDeepAlias(response, ['source', 'provider', 'model']) || response?.source,
@@ -4501,6 +6218,7 @@ function extractReturnedParams(response, params, images = []) {
     outputCompression: returnedCompression,
     transparent: returnedTransparent,
     transparentBackground: returnedTransparent,
+    background: returnedBackground,
     moderation: readDeepAlias(response, ['moderation', 'moderation_level', 'moderationLevel', 'safety', 'safety_filter', 'safetyFilter']),
     count: images.length || Number(responseCount) || params.count
   };
@@ -4513,6 +6231,8 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     collectGenerationResult,
     sendGenerationRequest,
     persistResponseImages,
+    imageInfoFromBlob,
+    detectImageMimeFromBytes,
     resolveTaskProfile,
     retryTask,
     collectImageCandidates,
@@ -4527,6 +6247,10 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     taskReferenceSnapshots,
     renderReferenceBadge,
     renderTaskReferenceStrip,
+    captureAgentScrollAnchor,
+    restoreAgentScrollAnchor,
+    freezeAgentScrollForRender,
+    releaseAgentScrollFreezeAfterRender,
     galleryVirtualWindow,
     maskCanvasHasPaint,
     shouldCloseModalFromClick,
@@ -4534,7 +6258,17 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     normalizeComparableValue,
     computeParamMismatches,
     providerPayload,
+    promptWithCanvasConstraint,
+    buildTransparentKeyPrompt,
+    getTransparentRequestParams,
+    wantsTransparentOutput,
+    detectKeyColorFromPixels,
+    removeKeyedBackgroundFromPixels,
+    removeKeyedBackgroundFromBlob,
+    postProcessTransparentImages,
     openAiSizePayload,
+    imageOutputParams,
+    openAiTransparentBackgroundSupported,
     googleOfficialImageSize,
     expectedProviderResolution,
     isTierResolutionMatch,
@@ -4543,17 +6277,47 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     cardParamSummary,
     renderImageContextMenu,
     summarizeResponse,
+    responseStreamTextFromPayload,
+    consumeResponseTextStream,
+    resolveResponsePayload,
+    extractResponseText,
     agentTextProfile,
+    configuredAgentTextProfile,
+    agentTextProfileInvalidReason,
     agentWebSearchSupported,
     agentRequestTimeoutSeconds,
     agentFailureDetail,
     activeAgentHasPending,
     buildAgentRequestPayload,
+    renderSafeMarkdown,
+    extractAgentPromptOptions,
+    recommendedAgentPromptOption,
+    parseAgentOptionSelection,
+    renderAgentMessage,
+    buildWorkflowAgentRequestPayload,
+    postAgentResponsesRequest,
+    workflowImageParams,
+    extractImagePromptFromAgentText,
+    extractAgentImagePrompts,
+    cleanAgentImagePrompt,
+    cleanNegativeAgentPrompt,
     migrateAgentThreads,
+    createAgentThread,
+    deleteAgentThread,
+    clipboardImageFiles,
+    handlePaste,
     branchAgentThreadFromMessage,
     clearAgentThreadMessages,
+    agentImageSettings,
+    agentImageParams,
+    agentImageProfile,
+    setAgentImageParam,
+    renderSidebar,
     renderAgentStage,
     renderAgentComposer,
+    renderWorkflowWorkspace,
+    renderPopover,
+    loadRuntime,
     writeStore,
     setTestTasks: (tasks) => { state.tasks = Array.isArray(tasks) ? tasks : []; },
     setTestState: (patch = {}) => {
@@ -4563,6 +6327,7 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
       if (patch.agentConfig) state.agentConfig = { ...state.agentConfig, ...patch.agentConfig };
       if (patch.agent) state.agent = migrateAgentThreads({ ...state.agent, ...patch.agent });
       if (patch.preferences) state.preferences = { ...state.preferences, ...patch.preferences };
+      if (patch.settings) state.settings = { ...state.settings, ...patch.settings };
       if (patch.confirmDialog !== undefined) state.confirmDialog = patch.confirmDialog;
       if (patch.mode !== undefined) state.mode = patch.mode;
       if (patch.references) state.references = patch.references;
@@ -4574,9 +6339,14 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
       activeImageProfileId: state.activeImageProfileId,
       agentConfig: state.agentConfig,
       agent: state.agent,
+      preferences: state.preferences,
+      settings: state.settings,
+      runtime: state.runtime,
       tasks: state.tasks,
       references: state.references,
       galleryVirtual: state.galleryVirtual,
+      agentScrollLock: state.agentScrollLock,
+      agentScrollState: state.agentScrollState,
       confirmDialog: state.confirmDialog,
       mode: state.mode
     }))
@@ -4754,6 +6524,12 @@ async function runConfirmDialog() {
     persistRender();
     return;
   }
+  if (dialog.kind === 'delete-agent-thread') {
+    state.agent = deleteAgentThread(state.agent, dialog.payload?.projectId, dialog.payload?.threadId);
+    state.agentScrollIntent = 'force-bottom';
+    persistRender();
+    return;
+  }
   if (dialog.kind === 'reference-action') {
     openMaskEditor(dialog.payload?.refId);
   }
@@ -4910,25 +6686,483 @@ function formatTime(ts) {
   return new Date(ts).toLocaleString('zh-CN', { hour12: false });
 }
 
+let promptBootstrapCache = null;
+let promptBootstrapPromise = null;
+let promptPreviewCache = null;
+let promptPreviewPromise = null;
+let promptSearchCache = null;
+let promptSearchPromise = null;
+const promptCategoryPagePromises = new Map();
+const promptDetailChunkPromises = new Map();
+const promptPageCache = new Map();
+function applyLoadedPromptBootstrap(data) {
+  if (!data || !Array.isArray(data.categories)) throw new Error('invalid prompt bootstrap');
+  promptBootstrapCache = data;
+  if (data.categoryPreviewPages && !promptPreviewCache) {
+    promptPreviewCache = {
+      generatedAt: data.generatedAt,
+      pageSize: data.pageSize || PROMPT_PAGE_SIZE,
+      categoryPreviewPages: data.categoryPreviewPages
+    };
+  }
+  primePromptBootstrapCache(data);
+  return data;
+}
+function readInlinePromptBootstrap() {
+  if (promptBootstrapCache) return promptBootstrapCache;
+  const node = typeof document !== 'undefined' ? document.getElementById('promptFastBootstrap') : null;
+  if (!node?.textContent) return null;
+  try {
+    return applyLoadedPromptBootstrap(JSON.parse(node.textContent));
+  } catch (err) {
+    console.warn('[home-v3] inline prompt bootstrap invalid', err);
+    return null;
+  }
+}
+function promptRepoPageCacheKey(page, overrides = {}) {
+  return JSON.stringify({
+    page: Number(page) || 1,
+    limit: overrides.limit || PROMPT_PAGE_SIZE,
+    category: overrides.category || state.promptRepo.category || 'all',
+    query: overrides.query !== undefined ? overrides.query : (state.promptRepo.query || '')
+  });
+}
+function rememberPromptPageCache(key, data) {
+  if (!key || !data) return;
+  promptPageCache.delete(key);
+  promptPageCache.set(key, data);
+  while (promptPageCache.size > PROMPT_REPO_CACHE_LIMIT) {
+    const oldest = promptPageCache.keys().next().value;
+    promptPageCache.delete(oldest);
+  }
+}
+function applyPromptPageData(data, page) {
+  const prompts = Array.isArray(data?.prompts) ? data.prompts : [];
+  state.promptRepo.page = data?.page || page;
+  state.promptRepo.pages = data?.pages || 1;
+  state.promptRepo.total = data?.total || 0;
+  if (page <= 1) state.promptRepo.items = prompts;
+  else state.promptRepo.items.push(...prompts);
+}
+async function loadPromptBootstrap() {
+  const inline = readInlinePromptBootstrap();
+  if (inline) return inline;
+  if (promptBootstrapCache) return promptBootstrapCache;
+  if (!promptBootstrapPromise) {
+    promptBootstrapPromise = fetch(PROMPT_FAST_BOOTSTRAP_URL, {
+      credentials: 'same-origin',
+      cache: 'force-cache'
+    }).then(async (res) => {
+      if (!res.ok) throw new Error(`prompt bootstrap ${res.status}`);
+      const data = await res.json();
+      return applyLoadedPromptBootstrap(data);
+    }).catch((err) => {
+      promptBootstrapPromise = null;
+      throw err;
+    });
+  }
+  return promptBootstrapPromise;
+}
+function warmPromptBootstrap() {
+  loadPromptBootstrap()
+    .then(() => warmPromptPreviewBundle())
+    .catch((err) => console.warn('[home-v3] prompt bootstrap unavailable', err));
+}
+async function loadPromptPreviewBundle() {
+  if (promptPreviewCache) return promptPreviewCache;
+  if (!promptPreviewPromise) {
+    promptPreviewPromise = fetch(PROMPT_FAST_PREVIEWS_URL, {
+      credentials: 'same-origin',
+      cache: 'force-cache'
+    }).then(async (res) => {
+      if (!res.ok) throw new Error(`prompt previews ${res.status}`);
+      const data = await res.json();
+      if (!data || !data.categoryPreviewPages) throw new Error('invalid prompt previews');
+      promptPreviewCache = data;
+      return data;
+    }).catch((err) => {
+      promptPreviewPromise = null;
+      throw err;
+    });
+  }
+  return promptPreviewPromise;
+}
+function warmPromptPreviewBundle() {
+  loadPromptPreviewBundle().catch((err) => console.warn('[home-v3] prompt previews unavailable', err));
+}
+async function loadPromptSearchIndex() {
+  if (promptSearchCache) return promptSearchCache;
+  if (!promptSearchPromise) {
+    promptSearchPromise = fetch(PROMPT_FAST_SEARCH_URL, {
+      credentials: 'same-origin',
+      cache: 'force-cache'
+    }).then(async (res) => {
+      if (!res.ok) throw new Error(`prompt search ${res.status}`);
+      const data = await res.json();
+      const prompts = Array.isArray(data?.prompts) ? data.prompts : [];
+      if (!prompts.length) throw new Error('invalid prompt search index');
+      promptSearchCache = { ...data, prompts };
+      return promptSearchCache;
+    }).catch((err) => {
+      promptSearchPromise = null;
+      throw err;
+    });
+  }
+  return promptSearchPromise;
+}
+function warmPromptSearchIndex() {
+  loadPromptSearchIndex().catch((err) => console.warn('[home-v3] prompt search unavailable', err));
+}
+function schedulePromptSearchWarmup(delay = 6000) {
+  if (promptSearchCache || promptSearchPromise) return;
+  setTimeout(() => {
+    if (state.promptRepo?.open && state.promptRepo.loading) return;
+    warmPromptSearchIndex();
+  }, delay);
+}
+function normalizePromptSearchText(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+function promptSearchTokens(query) {
+  const normalized = normalizePromptSearchText(query);
+  return normalized ? normalized.split(' ').filter(Boolean) : [];
+}
+function promptSearchHaystack(item) {
+  return normalizePromptSearchText(`${item?.q || ''} ${item?.p || ''}`);
+}
+function searchPromptIndex(query, category = 'all', limit = PROMPT_PAGE_SIZE) {
+  const tokens = promptSearchTokens(query);
+  if (!tokens.length || !promptSearchCache?.prompts?.length) return null;
+  const cleanCategory = category || 'all';
+  const ranked = [];
+  promptSearchCache.prompts.forEach((item, index) => {
+    if (cleanCategory !== 'all' && item.c !== cleanCategory) return;
+    const haystack = promptSearchHaystack(item);
+    if (!tokens.every((token) => haystack.includes(token))) return;
+    const title = normalizePromptSearchText(item.t || '');
+    const categoryText = normalizePromptSearchText(item.c || '');
+    let score = 0;
+    tokens.forEach((token) => {
+      if (title.includes(token)) score += 8;
+      if (categoryText.includes(token)) score += 3;
+      if (haystack.startsWith(token)) score += 2;
+    });
+    ranked.push({ item: { ...item, partial: false }, index, score });
+  });
+  ranked.sort((a, b) => b.score - a.score || a.index - b.index);
+  const prompts = ranked.slice(0, limit).map((entry) => entry.item);
+  return {
+    prompts,
+    total: ranked.length,
+    page: 1,
+    limit,
+    pages: 1,
+    source: 'prebuilt-search-index'
+  };
+}
+function promptPreviewSearchPool() {
+  const seen = new Set();
+  const prompts = [];
+  const addItems = (items) => {
+    (Array.isArray(items) ? items : []).forEach((item) => {
+      const key = String(item?.id || '');
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      prompts.push(item);
+    });
+  };
+  addItems(promptBootstrapCache?.allFirstPage?.prompts);
+  const pages = promptPreviewCache?.categoryPreviewPages || promptBootstrapCache?.categoryPreviewPages || {};
+  Object.values(pages).forEach((page) => addItems(page?.prompts));
+  return prompts;
+}
+function searchPromptPreviews(query, category = 'all', limit = PROMPT_PAGE_SIZE) {
+  const tokens = promptSearchTokens(query);
+  if (!tokens.length) return null;
+  const cleanCategory = category || 'all';
+  const ranked = [];
+  promptPreviewSearchPool().forEach((item, index) => {
+    if (cleanCategory !== 'all' && item.c !== cleanCategory) return;
+    const haystack = promptSearchHaystack(item);
+    if (!tokens.every((token) => haystack.includes(token))) return;
+    const title = normalizePromptSearchText(item.t || '');
+    let score = 0;
+    tokens.forEach((token) => {
+      if (title.includes(token)) score += 8;
+      if (haystack.startsWith(token)) score += 2;
+    });
+    ranked.push({ item, index, score });
+  });
+  ranked.sort((a, b) => b.score - a.score || a.index - b.index);
+  return {
+    prompts: ranked.slice(0, limit).map((entry) => ({ ...entry.item, partial: true })),
+    total: ranked.length,
+    page: 1,
+    limit,
+    pages: 1,
+    source: 'prebuilt-preview-search'
+  };
+}
+function pageDataFromPromptBootstrap(category, limit = PROMPT_PAGE_SIZE) {
+  const bootstrap = promptBootstrapCache;
+  if (!bootstrap || (bootstrap.pageSize || PROMPT_PAGE_SIZE) < limit) return null;
+  const cleanCategory = category || 'all';
+  if (cleanCategory !== 'all') {
+    const cached = promptPageCache.get(promptRepoPageCacheKey(1, { category: cleanCategory, query: '' }));
+    if (cached) return cached;
+  }
+  const source = cleanCategory === 'all'
+    ? bootstrap.allFirstPage
+    : (promptPreviewCache?.categoryPreviewPages?.[cleanCategory] || bootstrap.categoryPreviewPages?.[cleanCategory]);
+  if (!source || !Array.isArray(source.prompts)) return null;
+  return {
+    prompts: source.prompts.slice(0, limit),
+    total: source.total || 0,
+    page: 1,
+    limit,
+    pages: Math.ceil((source.total || 0) / limit),
+    source: source.source || 'prebuilt-bootstrap'
+  };
+}
+async function loadPromptCategoryPage(category) {
+  const cleanCategory = category || 'all';
+  const cached = pageDataFromPromptBootstrap(cleanCategory);
+  if (cached) return cached;
+  const bootstrap = await loadPromptBootstrap();
+  const file = bootstrap?.categoryFiles?.[cleanCategory];
+  if (!file || String(file).includes('..')) return null;
+  if (!promptCategoryPagePromises.has(cleanCategory)) {
+    promptCategoryPagePromises.set(cleanCategory, fetch(`/prompts_fast/${file}?v=${PROMPT_FAST_VERSION}`, {
+      credentials: 'same-origin',
+      cache: 'force-cache'
+    }).then(async (res) => {
+      if (!res.ok) throw new Error(`prompt category ${res.status}`);
+      const data = await res.json();
+      rememberPromptPageCache(promptRepoPageCacheKey(1, { category: cleanCategory, query: '' }), data);
+      return data;
+    }).catch((err) => {
+      promptCategoryPagePromises.delete(cleanCategory);
+      throw err;
+    }));
+  }
+  return promptCategoryPagePromises.get(cleanCategory);
+}
+async function loadPromptDetailChunk(file) {
+  const cleanFile = String(file || '');
+  if (!cleanFile || cleanFile.includes('..') || !cleanFile.startsWith('details/')) return null;
+  if (!promptDetailChunkPromises.has(cleanFile)) {
+    promptDetailChunkPromises.set(cleanFile, fetch(`/prompts_fast/${cleanFile}?v=${PROMPT_FAST_VERSION}`, {
+      credentials: 'same-origin',
+      cache: 'force-cache'
+    }).then(async (res) => {
+      if (!res.ok) throw new Error(`prompt detail ${res.status}`);
+      return res.json();
+    }).catch((err) => {
+      promptDetailChunkPromises.delete(cleanFile);
+      throw err;
+    }));
+  }
+  return promptDetailChunkPromises.get(cleanFile);
+}
+function primePromptBootstrapCache(data) {
+  if (!data || !Array.isArray(data.categories)) return;
+  const categories = data.categories.length ? data.categories : ['all'];
+  const allData = data.allFirstPage;
+  if (allData) rememberPromptPageCache(promptRepoPageCacheKey(1, { category: 'all', query: '' }), allData);
+}
+function applyPromptBootstrapToRepo(data, requestSeq) {
+  if (!state.promptRepo.open) return false;
+  promptBootstrapCache = data;
+  primePromptBootstrapCache(data);
+  state.promptRepo.categories = data.categories?.length ? data.categories : ['all'];
+  state.promptRepo.categoriesLoading = false;
+  if (String(state.promptRepo.query || '').trim()) return false;
+  const pageData = pageDataFromPromptBootstrap(state.promptRepo.category || 'all');
+  if (!pageData) return false;
+  applyPromptPageData(pageData, 1);
+  state.promptRepo.loading = false;
+  state.promptRepo.loadingLabel = '';
+  return true;
+}
+function restorePromptRepoScroll(scrollTop) {
+  if (scrollTop === null || scrollTop === undefined) return;
+  state.promptRepo.scrollLockUntil = Date.now() + 240;
+  requestAnimationFrame(() => {
+    const nextList = $('#promptList');
+    if (!nextList) return;
+    nextList.scrollTop = Math.min(scrollTop, Math.max(0, nextList.scrollHeight - nextList.clientHeight));
+    state.promptRepo.scrollTop = nextList.scrollTop;
+  });
+}
+function restorePromptCategoryScroll(scrollTop) {
+  if (scrollTop === null || scrollTop === undefined) return;
+  const restore = () => {
+    const categories = $('#promptCategories');
+    if (!categories) return;
+    categories.scrollTop = Math.min(scrollTop, Math.max(0, categories.scrollHeight - categories.clientHeight));
+    state.promptRepo.categoryScrollTop = categories.scrollTop;
+  };
+  requestAnimationFrame(() => {
+    restore();
+    requestAnimationFrame(restore);
+    setTimeout(restore, 80);
+  });
+}
+function capturePromptRepoViewportSnapshot() {
+  const promptList = $('#promptList');
+  const promptCategories = $('#promptCategories');
+  const snapshot = {
+    scrollTop: state.promptRepo.scrollTop || 0,
+    categoryScrollTop: state.promptRepo.categoryScrollTop || 0,
+    anchorIndex: '',
+    anchorOffset: 0
+  };
+  if (promptList) {
+    state.promptRepo.scrollTop = promptList.scrollTop;
+    state.promptRepo.viewportHeight = promptList.clientHeight || state.promptRepo.viewportHeight || 620;
+    snapshot.scrollTop = state.promptRepo.scrollTop || 0;
+    const listTop = promptList.getBoundingClientRect().top;
+    const cards = [...promptList.querySelectorAll('.prompt-card:not(.prompt-skeleton)')];
+    const anchor = cards.find((card) => {
+      const rect = card.getBoundingClientRect();
+      return rect.bottom > listTop + 8;
+    }) || cards[0];
+    if (anchor) {
+      snapshot.anchorIndex = anchor.dataset.index || '';
+      snapshot.anchorOffset = anchor.getBoundingClientRect().top - listTop;
+    }
+  }
+  if (promptCategories) {
+    state.promptRepo.categoryScrollTop = promptCategories.scrollTop;
+    snapshot.categoryScrollTop = promptCategories.scrollTop;
+  }
+  return snapshot;
+}
+function restorePromptRepoViewportSnapshot(snapshot) {
+  if (!snapshot) return;
+  state.promptRepo.scrollLockUntil = Date.now() + 240;
+  requestAnimationFrame(() => {
+    const nextList = $('#promptList');
+    if (nextList) {
+      const maxTop = Math.max(0, nextList.scrollHeight - nextList.clientHeight);
+      nextList.scrollTop = Math.min(snapshot.scrollTop || 0, maxTop);
+      if (snapshot.anchorIndex) {
+        const anchor = nextList.querySelector(`.prompt-card[data-index="${snapshot.anchorIndex}"]`);
+        if (anchor) {
+          const listTop = nextList.getBoundingClientRect().top;
+          const delta = (anchor.getBoundingClientRect().top - listTop) - (snapshot.anchorOffset || 0);
+          if (Math.abs(delta) > 1) {
+            nextList.scrollTop = Math.min(Math.max(0, nextList.scrollTop + delta), Math.max(0, nextList.scrollHeight - nextList.clientHeight));
+          }
+        }
+      }
+      state.promptRepo.scrollTop = nextList.scrollTop;
+    }
+    const categories = $('#promptCategories');
+    if (categories) {
+      categories.scrollTop = Math.min(snapshot.categoryScrollTop || 0, Math.max(0, categories.scrollHeight - categories.clientHeight));
+      state.promptRepo.categoryScrollTop = categories.scrollTop;
+    }
+  });
+}
+function consumePromptRepoPointerSnapshot() {
+  const snapshot = state.promptRepo?.pointerOpenSnapshot || null;
+  delete state.promptRepo.pointerOpenSnapshot;
+  return snapshot;
+}
+function stabilizePromptRepoViewport(snapshot) {
+  if (!snapshot) return;
+  restorePromptRepoViewportSnapshot(snapshot);
+  nextRenderFrame(() => restorePromptRepoViewportSnapshot(snapshot));
+  nextRenderFrame(() => nextRenderFrame(() => restorePromptRepoViewportSnapshot(snapshot)));
+}
+function closePromptRepoDetailOverlay() {
+  const snapshot = state.promptRepo.detailReturnSnapshot || state.promptRepo.pointerOpenSnapshot || capturePromptRepoViewportSnapshot();
+  delete state.promptRepo.pointerOpenSnapshot;
+  delete state.promptRepo.detailReturnSnapshot;
+  state.promptRepo.detail = null;
+  if (!syncPromptRepoOverlays()) render();
+  focusPromptRepoShell();
+  stabilizePromptRepoViewport(snapshot);
+}
+function closePromptRepoImageViewerOverlay() {
+  const snapshot = capturePromptRepoViewportSnapshot();
+  state.promptRepo.imageViewer = null;
+  if (!syncPromptRepoOverlays()) render();
+  focusPromptRepoShell();
+  stabilizePromptRepoViewport(snapshot);
+}
+function queuePromptRepoViewportRestore() {
+  if (!state.promptRepo?.open) return;
+  state.promptRepo.restoreAfterRender = capturePromptRepoViewportSnapshot();
+}
+function flushPromptRepoViewportRestore() {
+  const snapshot = state.promptRepo?.restoreAfterRender;
+  if (!snapshot) return;
+  delete state.promptRepo.restoreAfterRender;
+  restorePromptRepoViewportSnapshot(snapshot);
+}
 function openPromptRepo() {
   state.promptRepo = {
     open: true,
     page: 0,
     pages: 1,
     total: 0,
-    loading: false,
+    loading: true,
     items: [],
     query: state.promptRepo.query || '',
     category: state.promptRepo.category || 'all',
     categories: state.promptRepo.categories || ['all'],
     categoriesLoading: !state.promptRepo.categories?.length || state.promptRepo.categories.length <= 1,
+    loadingLabel: state.promptRepo.query ? '搜索索引加载中...' : '加载提示词中...',
     detail: null,
     imageViewer: null,
     composing: false,
-    requestSeq: state.promptRepo.requestSeq || 0
+    requestSeq: (state.promptRepo.requestSeq || 0) + 1,
+    scrollTop: 0,
+    categoryScrollTop: state.promptRepo.categoryScrollTop || 0,
+    viewportHeight: state.promptRepo.viewportHeight || 620
   };
   render();
-  loadPromptCategories().then(() => loadPromptPage());
+  const requestSeq = state.promptRepo.requestSeq;
+  warmPromptPreviewBundle();
+  setTimeout(() => {
+    if (!state.promptRepo.open || state.promptRepo.requestSeq !== requestSeq || !state.promptRepo.loading || state.promptRepo.items.length) return;
+    loadPromptCategories();
+    loadPromptPage({ force: true });
+  }, 4500);
+  loadPromptBootstrap().then((data) => {
+    warmPromptPreviewBundle();
+    schedulePromptSearchWarmup(5000);
+    if (applyPromptBootstrapToRepo(data, requestSeq)) {
+      if (!syncPromptRepoView()) render();
+      restorePromptCategoryScroll(state.promptRepo.categoryScrollTop || 0);
+    } else if (state.promptRepo.query) {
+      loadPromptSearchResults(requestSeq, state.promptRepo.categoryScrollTop || 0);
+    } else if (!state.promptRepo.query && (state.promptRepo.category || 'all') !== 'all') {
+      loadPromptPreviewBundle().then(() => {
+        if (applyPromptCategoryPreview(state.promptRepo.category, requestSeq, state.promptRepo.categoryScrollTop || 0)) return;
+        return loadPromptCategoryPage(state.promptRepo.category).then((pageData) => {
+          if (!pageData || !state.promptRepo.open || state.promptRepo.requestSeq !== requestSeq) return;
+          applyPromptPageData(pageData, 1);
+          state.promptRepo.loading = false;
+          state.promptRepo.loadingLabel = '';
+          if (!syncPromptRepoView()) render();
+          restorePromptCategoryScroll(state.promptRepo.categoryScrollTop || 0);
+        });
+      }).catch(() => loadPromptPage({ force: true }));
+    } else if (state.promptRepo.open && state.promptRepo.requestSeq === requestSeq) {
+      loadPromptPage({ force: true });
+    }
+  }).catch(() => {
+    loadPromptCategories();
+    if (state.promptRepo.query) loadPromptSearchResults(requestSeq, state.promptRepo.categoryScrollTop || 0);
+    else loadPromptPage({ force: true });
+  });
 }
 let promptSearchTimer = null;
 function debouncedPromptSearch(delay = 260) {
@@ -4937,19 +7171,138 @@ function debouncedPromptSearch(delay = 260) {
     resetPromptRepoList();
   }, delay);
 }
-function resetPromptRepoList() {
+function applyPromptSearchResults(data, requestSeq, categoryScrollTop) {
+  if (!data || !state.promptRepo.open || state.promptRepo.requestSeq !== requestSeq) return false;
+  applyPromptPageData(data, 1);
+  state.promptRepo.loading = false;
+  state.promptRepo.loadingLabel = '';
+  if (!syncPromptRepoView()) render();
+  restorePromptCategoryScroll(categoryScrollTop);
+  return true;
+}
+function loadPromptSearchResults(requestSeq, categoryScrollTop) {
+  const runSearch = () => {
+    const data = searchPromptIndex(state.promptRepo.query, state.promptRepo.category || 'all');
+    if (data) {
+      applyPromptSearchResults(data, requestSeq, categoryScrollTop);
+      return;
+    }
+    if (!state.promptRepo.open || state.promptRepo.requestSeq !== requestSeq) return;
+    state.promptRepo.loading = false;
+    state.promptRepo.loadingLabel = '';
+    applyPromptPageData({ prompts: [], total: 0, page: 1, limit: PROMPT_PAGE_SIZE, pages: 1, source: 'prebuilt-search-empty' }, 1);
+    if (!syncPromptRepoView()) render();
+    restorePromptCategoryScroll(categoryScrollTop);
+  };
+  if (promptSearchCache) {
+    runSearch();
+    return;
+  }
+  loadPromptSearchIndex()
+    .then(runSearch)
+    .catch(() => {
+      if (!state.promptRepo.open || state.promptRepo.requestSeq !== requestSeq) return;
+      state.promptRepo.loadingLabel = '搜索索引不可用，正在使用兼容接口...';
+      if (!syncPromptRepoView()) render();
+      restorePromptCategoryScroll(categoryScrollTop);
+      loadPromptPage({ force: true, skipCache: true });
+    });
+}
+function applyPromptCategoryPreview(category, requestSeq, categoryScrollTop) {
+  const pageData = pageDataFromPromptBootstrap(category || 'all');
+  if (!pageData || !state.promptRepo.open || state.promptRepo.requestSeq !== requestSeq) return false;
+  applyPromptPageData(pageData, 1);
+  state.promptRepo.loading = false;
+  state.promptRepo.loadingLabel = '';
+  if (!syncPromptRepoView()) render();
+  restorePromptCategoryScroll(categoryScrollTop);
+  return true;
+}
+function resetPromptRepoList(options = {}) {
+  const categoryScrollTop = options.categoryScrollTop ?? state.promptRepo.categoryScrollTop ?? 0;
+  const keepExistingUntilLoaded = !!options.keepExistingUntilLoaded && state.promptRepo.items.length > 0;
   state.promptRepo.page = 0;
   state.promptRepo.pages = 1;
-  state.promptRepo.total = 0;
-  state.promptRepo.items = [];
+  if (!keepExistingUntilLoaded) {
+    state.promptRepo.total = 0;
+    state.promptRepo.items = [];
+  }
   state.promptRepo.requestSeq = (state.promptRepo.requestSeq || 0) + 1;
-  render();
-  loadPromptPage();
+  state.promptRepo.scrollTop = 0;
+  state.promptRepo.categoryScrollTop = categoryScrollTop;
+  const requestSeq = state.promptRepo.requestSeq;
+  if (state.promptRepo.query) {
+    const searchData = promptSearchCache ? searchPromptIndex(state.promptRepo.query, state.promptRepo.category || 'all') : null;
+    if (searchData) {
+      applyPromptSearchResults(searchData, requestSeq, categoryScrollTop);
+      return;
+    }
+    let previewSearchData = searchPromptPreviews(state.promptRepo.query, state.promptRepo.category || 'all');
+    if (!previewSearchData?.prompts?.length && (state.promptRepo.category || 'all') !== 'all') {
+      previewSearchData = searchPromptPreviews(state.promptRepo.query, 'all');
+    }
+    if (previewSearchData && previewSearchData.prompts.length) {
+      applyPromptSearchResults(previewSearchData, requestSeq, categoryScrollTop);
+      loadPromptSearchIndex().then(() => {
+        if (!state.promptRepo.open || state.promptRepo.requestSeq !== requestSeq || !String(state.promptRepo.query || '').trim()) return;
+        const fullSearchData = searchPromptIndex(state.promptRepo.query, state.promptRepo.category || 'all');
+        if (fullSearchData) applyPromptSearchResults(fullSearchData, requestSeq, categoryScrollTop);
+      }).catch((err) => console.warn('[home-v3] prompt search index unavailable', err));
+      return;
+    }
+    state.promptRepo.loading = true;
+    state.promptRepo.loadingLabel = promptSearchPromise || promptSearchCache ? '搜索提示词中...' : '搜索索引加载中...';
+    if (!syncPromptRepoView()) render();
+    restorePromptCategoryScroll(categoryScrollTop);
+    loadPromptSearchResults(requestSeq, categoryScrollTop);
+    return;
+  }
+  const prebuilt = !state.promptRepo.query ? pageDataFromPromptBootstrap(state.promptRepo.category || 'all') : null;
+  if (prebuilt) {
+    applyPromptPageData(prebuilt, 1);
+    state.promptRepo.loading = false;
+    state.promptRepo.loadingLabel = '';
+    if (!syncPromptRepoView()) render();
+    restorePromptCategoryScroll(categoryScrollTop);
+    return;
+  }
+  state.promptRepo.loading = true;
+  state.promptRepo.loadingLabel = (state.promptRepo.category || 'all') === 'all' ? '加载提示词中...' : `加载 ${state.promptRepo.category} 分类...`;
+  if (!syncPromptRepoView()) render();
+  restorePromptCategoryScroll(categoryScrollTop);
+  if (!state.promptRepo.query) {
+    loadPromptBootstrap().then((data) => {
+      if (applyPromptBootstrapToRepo(data, requestSeq)) {
+        if (!syncPromptRepoView()) render();
+        restorePromptCategoryScroll(categoryScrollTop);
+      } else if ((state.promptRepo.category || 'all') !== 'all') {
+        loadPromptPreviewBundle().then(() => {
+          if (applyPromptCategoryPreview(state.promptRepo.category, requestSeq, categoryScrollTop)) return;
+          return loadPromptCategoryPage(state.promptRepo.category).then((pageData) => {
+            if (!pageData || !state.promptRepo.open || state.promptRepo.requestSeq !== requestSeq) return;
+            applyPromptPageData(pageData, 1);
+            state.promptRepo.loading = false;
+            state.promptRepo.loadingLabel = '';
+            if (!syncPromptRepoView()) render();
+            restorePromptCategoryScroll(categoryScrollTop);
+          });
+        }).catch(() => loadPromptPage({ force: true }));
+      } else if (state.promptRepo.open && state.promptRepo.requestSeq === requestSeq) {
+        loadPromptPage({ force: true });
+      }
+    }).catch(() => loadPromptPage({ force: true }));
+    return;
+  }
+  loadPromptPage({ force: true });
 }
 function setPromptCategory(category) {
+  const categoriesEl = $('#promptCategories');
+  const pendingCategoryScrollTop = Number.isFinite(state.promptRepo.pendingCategoryScrollTop) ? state.promptRepo.pendingCategoryScrollTop : null;
+  const categoryScrollTop = pendingCategoryScrollTop !== null ? pendingCategoryScrollTop : (categoriesEl ? categoriesEl.scrollTop : (state.promptRepo.categoryScrollTop || 0));
+  delete state.promptRepo.pendingCategoryScrollTop;
   state.promptRepo.category = category || 'all';
   state.promptRepo.detail = null;
-  resetPromptRepoList();
+  resetPromptRepoList({ categoryScrollTop, keepExistingUntilLoaded: false });
 }
 async function loadPromptCategories() {
   state.promptRepo.categoriesLoading = true;
@@ -4957,51 +7310,88 @@ async function loadPromptCategories() {
     const data = await fetchJson('/api/prompts?categories=1');
     if (!state.promptRepo.open) return;
     state.promptRepo.categories = data.categories?.length ? data.categories : ['all'];
-    state.promptRepo.total = data.total || state.promptRepo.total || 0;
+    if ((state.promptRepo.category || 'all') === 'all') state.promptRepo.total = data.total || state.promptRepo.total || 0;
     state.promptRepo.categoriesLoading = false;
-    render();
+    if (!syncPromptRepoView()) render();
   } catch (err) {
     if (!state.promptRepo.categories?.length) state.promptRepo.categories = ['all'];
     state.promptRepo.categoriesLoading = false;
   }
 }
-async function loadPromptPage() {
-  if (!state.promptRepo.open || state.promptRepo.loading || state.promptRepo.page >= state.promptRepo.pages) return;
+async function loadPromptPage(options = {}) {
+  const force = !!options.force;
+  const background = !!options.background;
+  if (!state.promptRepo.open || (!force && state.promptRepo.loading) || state.promptRepo.page >= state.promptRepo.pages) return;
   const requestSeq = state.promptRepo.requestSeq || 0;
   const promptList = $('#promptList');
   const restoreScrollTop = promptList ? promptList.scrollTop : null;
-  state.promptRepo.loading = true;
+  const page = state.promptRepo.page + 1;
+  const cacheKey = promptRepoPageCacheKey(page);
+  const cached = promptPageCache.get(cacheKey);
+  if (cached && !options.skipCache) {
+    applyPromptPageData(cached, page);
+    state.promptRepo.loading = false;
+    state.promptRepo.loadingLabel = '';
+    if (!syncPromptRepoView()) render();
+    restorePromptRepoScroll(restoreScrollTop);
+    restorePromptCategoryScroll(state.promptRepo.categoryScrollTop || 0);
+    if (page > 1) return;
+  } else {
+    if (!background) {
+      state.promptRepo.loading = true;
+      state.promptRepo.loadingLabel = state.promptRepo.query ? '搜索提示词中...' : '加载提示词中...';
+      if (!syncPromptRepoView()) render();
+      restorePromptRepoScroll(restoreScrollTop);
+      restorePromptCategoryScroll(state.promptRepo.categoryScrollTop || 0);
+    }
+  }
+  let stale = false;
   try {
-    const page = state.promptRepo.page + 1;
     const q = encodeURIComponent(state.promptRepo.query || '');
     const cat = state.promptRepo.category && state.promptRepo.category !== 'all' ? `&cat=${encodeURIComponent(state.promptRepo.category)}` : '';
     const data = await fetchJson(`/api/prompts?page=${page}&limit=${PROMPT_PAGE_SIZE}${cat}&q=${q}`);
-    if ((state.promptRepo.requestSeq || 0) !== requestSeq) return;
-    state.promptRepo.page = data.page || page;
-    state.promptRepo.pages = data.pages || 1;
-    state.promptRepo.total = data.total || 0;
-    state.promptRepo.items.push(...(data.prompts || []));
-  } catch (err) {
-    toast('提示词仓库加载失败');
-  } finally {
-    state.promptRepo.loading = false;
-    render();
-    if (restoreScrollTop !== null) {
-      state.promptRepo.scrollLockUntil = Date.now() + 240;
-      requestAnimationFrame(() => {
-        const nextList = $('#promptList');
-        if (nextList) {
-          nextList.scrollTop = Math.min(restoreScrollTop, Math.max(0, nextList.scrollHeight - nextList.clientHeight));
-          state.promptRepo.scrollTop = nextList.scrollTop;
-        }
-      });
+    if ((state.promptRepo.requestSeq || 0) !== requestSeq) {
+      stale = true;
+      return;
     }
+    rememberPromptPageCache(cacheKey, data);
+    applyPromptPageData(data, page);
+    state.promptRepo.loadingLabel = '';
+  } catch (err) {
+    if (!cached) toast('提示词仓库加载失败');
+  } finally {
+    if (stale || (state.promptRepo.requestSeq || 0) !== requestSeq) return;
+    if (background) return;
+    state.promptRepo.loading = false;
+    state.promptRepo.loadingLabel = '';
+    if (!syncPromptRepoView()) render();
+    restorePromptRepoScroll(restoreScrollTop);
+    restorePromptCategoryScroll(state.promptRepo.categoryScrollTop || 0);
   }
 }
-function usePrompt(id) {
+async function fullPromptItem(item) {
+  if (!item?.partial) return item;
+  if (item.d) {
+    const chunkData = await loadPromptDetailChunk(item.d).catch(() => null);
+    const full = chunkData?.prompts?.find((prompt) => String(prompt.id) === String(item.id));
+    if (full) return { ...full, partial: false };
+  }
+  const pageData = await loadPromptCategoryPage(item.c || state.promptRepo.category || 'all').catch(() => null);
+  const full = pageData?.prompts?.find((prompt) => String(prompt.id) === String(item.id));
+  return full || item;
+}
+async function hydratePromptDetailItem(item) {
+  const full = await fullPromptItem(item);
+  if (!state.promptRepo.open || !state.promptRepo.detail || String(state.promptRepo.detail.id) !== String(item.id)) return;
+  state.promptRepo.detail = full;
+  state.promptRepo.items = state.promptRepo.items.map((prompt) => String(prompt.id) === String(full.id) ? full : prompt);
+  if (!syncPromptRepoOverlays()) render();
+}
+async function usePrompt(id) {
   const item = state.promptRepo.items.find((p) => String(p.id) === String(id));
   if (!item) return;
-  state.composerPrompt = item.p || '';
+  const full = await fullPromptItem(item);
+  state.composerPrompt = full?.p || item.p || '';
   state.promptRepo.open = false;
   state.promptRepo.detail = null;
   persistRender();
@@ -5022,19 +7412,43 @@ function buildAgentRequestPayload(input, options = {}) {
     .slice(-12)
     .map((message) => `${message.role === 'user' ? '用户' : 'Agent'}：${message.text}`)
     .join('\n');
+  const attachmentSummary = options.attachmentSummary || '';
+  const attachmentText = options.attachmentText || '';
+  const userInputBlock = [
+    `用户新消息：${input}`,
+    attachmentSummary ? `本次附件：\n${attachmentSummary}` : '',
+    attachmentText ? `本次文本附件内容：\n${attachmentText}` : ''
+  ].filter(Boolean).join('\n\n');
+  const inputText = [
+    `当前项目：${project.name || '默认项目'}`,
+    `项目专属提示词：${project.prompt || '无'}`,
+    `当前文本模型 slug：${currentModelSlug || '未配置'}`,
+    currentBeijingTime,
+    `联网状态：${webSearchEnabled ? '已开启' : (!state.agentConfig?.webSearchEnabled ? '后台关闭' : agentWebSearchSupported(textProfile) ? '已关闭' : '当前模型不支持')}`,
+    `对话历史：\n${history || '无'}`,
+    userInputBlock
+  ].join('\n');
+  const imageParts = Array.isArray(options.attachmentImageParts) ? options.attachmentImageParts : [];
   const payload = {
     model: currentModelSlug,
-    reasoning: { effort: state.agent.reasoning || 'medium' },
-    input: [
+    instructions: [
+      '你是当前项目的 Agent，负责直接、清晰地回答用户问题。',
+      '不要生成 workflow JSON，除非用户明确要求。',
+      '普通问答保持简洁；只有生图、工作流、参数建议场景才必须方案化。',
+      '遇到生图、图片修改、工作流或参数建议时，必须输出 5 个方案，固定字段为：方案 N、适合模型、推荐理由、正向 Prompt、负面 Prompt。',
+      '只把可直接生图的内容写进正向 Prompt；说明、免责声明、选择建议不得混入 Prompt。',
+      '负面 Prompt 必须单独给出；如果没有明确禁用项，也要给出简短的避免项。',
+      '最终推荐方案请在标题中标记“（推荐）”；用户点击生成图片时只会使用该推荐方案的正向和负面 Prompt。',
+      '高影响不确定项先问，最多 3 个问题；低影响不确定项直接采用合理默认，并用一句话注明假设。',
+      '涉及版权角色或受保护风格时，先用一句话说明不可复刻，再直接给原创替代 Prompt，不要长篇免责声明。',
+      'Prompt 以中文为主；如英文表达更稳定，可在正向 Prompt 内附英文原文。',
       `当前项目：${project.name || '默认项目'}`,
       `项目专属提示词：${project.prompt || '无'}`,
       `当前文本模型 slug：${currentModelSlug || '未配置'}`,
       currentBeijingTime,
-      `联网状态：${webSearchEnabled ? '已开启' : (!state.agentConfig?.webSearchEnabled ? '后台关闭' : agentWebSearchSupported(textProfile) ? '已关闭' : '当前模型不支持')}`,
-      `对话历史：\n${history || '无'}`,
-      `用户新消息：${input}`,
-      '请作为项目 Agent 正常对话，直接回答用户问题。若用户询问当前模型或时间，优先使用上面的运行时上下文。不要生成 workflow JSON，除非用户明确要求。'
+      `联网状态：${webSearchEnabled ? '已开启' : (!state.agentConfig?.webSearchEnabled ? '后台关闭' : agentWebSearchSupported(textProfile) ? '已关闭' : '当前模型不支持')}`
     ].join('\n'),
+    input: imageParts.length ? [{ role: 'user', content: [{ type: 'input_text', text: inputText }, ...imageParts] }] : inputText,
     currentBeijingTime,
     currentModelSlug,
     webSearchEnabled
@@ -5042,23 +7456,103 @@ function buildAgentRequestPayload(input, options = {}) {
   if (webSearchEnabled) payload.tools = [{ type: 'web_search' }];
   return payload;
 }
+function buildWorkflowAgentRequestPayload(input, options = {}) {
+  const project = options.project || activeProject() || {};
+  const textProfile = options.textProfile || agentTextProfile();
+  const mode = options.mode || 'planner';
+  const currentBeijingTime = formatBeijingTimeLabel();
+  const currentModelSlug = textProfile?.model || '';
+  const webSearchEnabled = agentWebSearchEnabled(textProfile);
+  const payload = {
+    model: currentModelSlug,
+    instructions: mode === 'rewrite'
+      ? [
+        '你是 NexGen 工作流的提示词改写器。只输出最终生图提示词，不要解释。',
+        '不要输出 Markdown、标题、JSON 或额外说明；如果包含负面约束，用“负面提示词：...”另起一行。'
+      ].join('\n')
+      : [
+        '你是 NexGen 工作流规划器。只返回合法 workflow JSON，不要解释。',
+        'JSON 必须包含 name, description, nodes, edges, variables.columns, variables.rows, config.promptTemplate。',
+        '如用户提出禁用项或避免项，把它们写入 config.negativePrompt。'
+      ].join('\n'),
+    input: mode === 'rewrite'
+      ? [
+        `项目提示词：${project.prompt || '无'}`,
+        `工作流：${options.workflow?.name || '未命名工作流'} / ${options.workflow?.description || '无描述'}`,
+        `变量：${JSON.stringify(options.rowValues || {})}`,
+        `原始模板结果：${input}`,
+        currentBeijingTime,
+        `当前文本模型 slug：${currentModelSlug || '未配置'}`,
+        '要求：保留变量含义，提升画面可执行性、主体清晰度、风格一致性和生成模型可理解度。'
+      ].join('\n')
+      : [
+        `项目专属提示词：${project.prompt || '无'}`,
+        `用户任务：${input}`,
+        currentBeijingTime,
+        `当前文本模型 slug：${currentModelSlug || '未配置'}`,
+        `联网：${webSearchEnabled ? '已开启' : '未开启'}`,
+        '请返回一个可复用批量生图 workflow JSON。只返回 JSON。'
+      ].join('\n'),
+    currentBeijingTime,
+    currentModelSlug,
+    webSearchEnabled
+  };
+  if (webSearchEnabled) payload.tools = [{ type: 'web_search' }];
+  return payload;
+}
+async function postAgentResponsesRequest(payload, textProfile) {
+  const controller = new AbortController();
+  const timeoutSeconds = agentRequestTimeoutSeconds(textProfile);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutSeconds * 1000);
+  try {
+    const { currentBeijingTime, currentModelSlug, webSearchEnabled, ...requestBody } = payload || {};
+    const responsePayload = await fetchJson('/api-proxy/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-GPT-Image-Profile-Id': profileId(textProfile) },
+      body: JSON.stringify(requestBody),
+      signal: controller.signal
+    });
+    return await resolveResponsePayload(responsePayload?.__stream ? { ...responsePayload, signal: controller.signal } : responsePayload);
+  } catch (err) {
+    if (err?.name === 'AbortError') throw new Error(`Agent 请求超过 ${timeoutSeconds} 秒未返回`);
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+async function handleAgentOptionSelectionInput(input, inputEl, project) {
+  const optionIndex = parseAgentOptionSelection(input);
+  if (!optionIndex) return false;
+  const sourceMessage = latestAgentPromptOptionsMessage(project?.id);
+  if (!sourceMessage) return false;
+  state.agent.inputDraft = '';
+  if (inputEl) inputEl.value = '';
+  writeStore();
+  await generateAgentImageFromMessage(sourceMessage.id, '', { optionIndex });
+  return true;
+}
 async function sendAgentChat() {
   const inputEl = $('#agentInput');
   const input = inputEl?.value.trim();
-  if (!input) return toast('请输入要发送给 Agent 的内容');
+  const attachments = Array.isArray(state.agent.attachments) ? state.agent.attachments.map((item) => ({ ...item })) : [];
+  const effectiveInput = input || (attachments.length ? '请分析这些附件。' : '');
+  if (!effectiveInput) return toast('请输入要发送给 Agent 的内容或上传附件');
   if (activeAgentHasPending()) return toast('当前对话仍在思考中，请等待返回后再发送');
   const project = activeProject();
   if (!project) return toast('请先创建或选择项目');
+  if (!attachments.length && await handleAgentOptionSelectionInput(input, inputEl, project)) return;
   const textProfile = agentTextProfile();
-  if (!textProfile || profileMode(textProfile) !== 'responses') return toast('当前 Agent 文本模型配置无效，请到后台 Agent 配置选择 Responses API 文本模型');
+  if (!textProfile || profileMode(textProfile) !== 'responses') return toast(agentTextProfileInvalidReason() || '当前 Agent 文本模型配置无效，请到后台 Agent 配置选择 Responses API 文本模型');
   const thread = ensureAgentProjectThread(project.id);
   const messages = agentMessages(project.id);
-  const userMessage = { id: uid('msg'), threadId: thread.id, projectId: project.id, role: 'user', text: input, createdAt: Date.now() };
+  const attachmentPayload = attachments.length ? await agentAttachmentParts(attachments) : { imageParts: [], textNote: '' };
+  const userMessage = { id: uid('msg'), threadId: thread.id, projectId: project.id, role: 'user', text: effectiveInput, attachments, createdAt: Date.now() };
   const pendingId = uid('msg');
   messages.push(userMessage);
-  messages.push({ id: pendingId, threadId: thread.id, projectId: project.id, role: 'assistant', text: '正在思考...', createdAt: Date.now(), pending: true, retryInput: input });
+  messages.push({ id: pendingId, threadId: thread.id, projectId: project.id, role: 'assistant', text: '正在思考...', createdAt: Date.now(), pending: true, retryInput: effectiveInput });
   state.agent.messagesByThread[thread.id] = messages;
   state.agent.activeThreadIdByProject[project.id] = thread.id;
+  state.agent.attachments = [];
   state.agent.inputDraft = state.preferences?.clearInputAfterSubmit ? '' : input;
   if (inputEl && state.preferences?.clearInputAfterSubmit) inputEl.value = '';
   state.agentScrollIntent = (state.agentConfig?.scrollAfterSubmit ?? true) ? 'force-bottom' : '';
@@ -5069,17 +7563,36 @@ async function sendAgentChat() {
   const timeoutId = setTimeout(() => controller.abort(), timeoutSeconds * 1000);
   const requestStartedAt = Date.now();
   try {
-    const payload = buildAgentRequestPayload(input, { project, history: messages, textProfile });
+    const payload = buildAgentRequestPayload(effectiveInput, {
+      project,
+      history: messages,
+      textProfile,
+      attachmentSummary: agentAttachmentSummary(attachments),
+      attachmentText: attachmentPayload.textNote,
+      attachmentImageParts: attachmentPayload.imageParts
+    });
     const { currentBeijingTime, currentModelSlug, webSearchEnabled, ...requestBody } = payload;
-    const data = await fetchJson('/api-proxy/responses', {
+    const responsePayload = await fetchJson('/api-proxy/responses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-GPT-Image-Profile-Id': profileId(textProfile) },
       body: JSON.stringify(requestBody),
       signal: controller.signal
     });
+    const data = await resolveResponsePayload(responsePayload?.__stream ? { ...responsePayload, signal: controller.signal } : responsePayload);
     const text = extractResponseText(data, 'Agent 已返回，但没有可显示文本。');
-    const imagePrompt = inferAgentImagePrompt(input, text);
-    state.agent.messagesByThread[thread.id] = agentMessages(project.id).map((msg) => msg.id === pendingId ? { ...msg, pending: false, text, imagePrompt, retryInput: '', profileId: profileId(textProfile), model: textProfile.model || '', requestMs: Date.now() - requestStartedAt } : msg);
+    const promptOptions = extractAgentPromptOptions(text);
+    const recommendedOption = recommendedAgentPromptOption(promptOptions);
+    const imagePromptBundle = promptOptions.length ? { prompt: recommendedOption?.prompt || '', negativePrompt: recommendedOption?.negativePrompt || '' } : extractAgentImagePrompts(text);
+    const imagePrompt = promptOptions.length ? imagePromptBundle.prompt : inferAgentImagePrompt(input, text);
+    const negativePrompt = imagePromptBundle.negativePrompt || '';
+    const currentMessages = Array.isArray(state.agent.messagesByThread?.[thread.id]) ? state.agent.messagesByThread[thread.id] : messages;
+    let matchedPending = false;
+    state.agent.messagesByThread[thread.id] = currentMessages.map((msg) => {
+      if (msg.id !== pendingId) return msg;
+      matchedPending = true;
+      return { ...msg, pending: false, text, promptOptions, imagePrompt, negativePrompt, retryInput: '', profileId: profileId(textProfile), model: textProfile.model || '', requestMs: Date.now() - requestStartedAt };
+    });
+    if (!matchedPending) throw new Error('Agent 响应已返回，但当前会话 pending 消息未找到');
   } catch (err) {
     const normalized = normalizeError(err?.name === 'AbortError' ? `Agent 请求超过 ${timeoutSeconds} 秒未返回` : err, '对话失败');
     const detail = agentFailureDetail({
@@ -5090,7 +7603,8 @@ async function sendAgentChat() {
       upstreamStatus: err?.upstreamStatus || err?.status || err?.raw?.upstreamStatus,
       code: err?.code || normalized.code
     });
-    state.agent.messagesByThread[thread.id] = agentMessages(project.id).map((msg) => msg.id === pendingId ? { ...msg, pending: false, text: `对话失败：${normalized.summary}`, errorDetail: detail, retryInput: input, profileId: profileId(textProfile), model: textProfile.model || '', requestMs: Date.now() - requestStartedAt, upstreamStatus: err?.upstreamStatus || err?.status || err?.raw?.upstreamStatus } : msg);
+    const currentMessages = Array.isArray(state.agent.messagesByThread?.[thread.id]) ? state.agent.messagesByThread[thread.id] : messages;
+    state.agent.messagesByThread[thread.id] = currentMessages.map((msg) => msg.id === pendingId ? { ...msg, pending: false, text: `对话失败：${normalized.summary}`, errorDetail: detail, retryInput: effectiveInput, profileId: profileId(textProfile), model: textProfile.model || '', requestMs: Date.now() - requestStartedAt, upstreamStatus: err?.upstreamStatus || err?.status || err?.raw?.upstreamStatus } : msg);
   } finally {
     clearTimeout(timeoutId);
   }
@@ -5106,16 +7620,279 @@ async function retryAgentMessage(messageId) {
   state.agent.inputDraft = retryInput;
   await sendAgentChat();
 }
+function agentMessageImagePrompts(message, fallback = '', options = {}) {
+  if (!message) return { prompt: cleanAgentImagePrompt(fallback), negativePrompt: '' };
+  const option = agentPromptOptionForMessage(message, options.optionIndex);
+  if (option) return { prompt: option.prompt, negativePrompt: option.negativePrompt || '', option };
+  const extracted = extractAgentImagePrompts(message.text || '');
+  return {
+    prompt: extracted.prompt || cleanAgentImagePrompt(fallback || message.imagePrompt || ''),
+    negativePrompt: extracted.negativePrompt || cleanNegativeAgentPrompt(message.negativePrompt || '')
+  };
+}
+function agentMessageImagePrompt(message, fallback = '') {
+  return agentMessageImagePrompts(message, fallback).prompt;
+}
+async function generateAgentImageFromMessage(messageId, prompt = '', options = {}) {
+  const project = activeProject();
+  const thread = activeAgentThread(project?.id);
+  const threadId = thread?.id;
+  const messages = Array.isArray(state.agent.messagesByThread?.[threadId]) ? state.agent.messagesByThread[threadId] : [];
+  const sourceMessage = messages.find((message) => message.id === messageId);
+  const promptBundle = agentMessageImagePrompts(sourceMessage, prompt, options);
+  const cleanPrompt = promptBundle.prompt;
+  const negativePrompt = promptBundle.negativePrompt;
+  const option = promptBundle.option || null;
+  if (!cleanPrompt) return toast('没有可用于生图的提示词');
+  if (!threadId) return toast('当前 Agent 会话无效');
+  const scrollAnchor = options.scrollAnchor || freezeAgentScrollForRender();
+  const params = agentImageParams();
+  if (negativePrompt) {
+    params.negativePrompt = negativePrompt;
+    params.negative_prompt = negativePrompt;
+  }
+  const task = await generateImageTask({
+    prompt: cleanPrompt,
+    requestedParams: params,
+    referenceSnapshots: cloneReferenceSnapshotsForAgent(),
+    agentMessageId: messageId,
+    agentOption: option?.index || '',
+    agentOptionTitle: option?.title || '',
+    editedFromOption: options.editedFromOption || '',
+    workflowMeta: {
+      entry: 'agent',
+      agentMessageId: messageId,
+      agentOption: option?.index || '',
+      agentOptionTitle: option?.title || '',
+      editedFromOption: options.editedFromOption || '',
+      onCreated: (createdTask) => {
+        attachAgentTaskToMessage(threadId, messageId, createdTask.id, cleanPrompt, { renderNow: true, option });
+        releaseAgentScrollFreezeAfterRender();
+      }
+    }
+  });
+  if (!task) {
+    state.agentScrollLock = null;
+    return;
+  }
+  attachAgentTaskToMessage(threadId, messageId, task.id, cleanPrompt, { option });
+  if (scrollAnchor?.id) state.agentScrollState = { ...(state.agentScrollState || {}), nearBottom: false, anchor: scrollAnchor };
+  persistRender();
+}
+function attachAgentTaskToMessage(threadId, messageId, taskId, imagePrompt, options = {}) {
+  if (!threadId || !messageId || !taskId) return;
+  const messages = Array.isArray(state.agent.messagesByThread?.[threadId]) ? state.agent.messagesByThread[threadId] : [];
+  state.agent.messagesByThread[threadId] = messages.map((message) => {
+    if (message.id !== messageId) return message;
+    const taskIds = Array.from(new Set([...(Array.isArray(message.taskIds) ? message.taskIds : message.taskId ? [message.taskId] : []), taskId]));
+    return {
+      ...message,
+      taskId,
+      taskIds,
+      imagePrompt: imagePrompt || message.imagePrompt || '',
+      agentOption: options.option?.index || message.agentOption || '',
+      agentOptionTitle: options.option?.title || message.agentOptionTitle || ''
+    };
+  });
+  writeStore();
+  if (options.renderNow) render();
+}
+function cloneReferenceSnapshotsForAgent() {
+  return (state.references || []).map((ref) => ({
+    id: ref.id,
+    name: ref.name,
+    type: ref.type,
+    blobId: ref.compositedBlobId || ref.blobId,
+    originalBlobId: ref.originalBlobId || ref.blobId,
+    width: ref.width,
+    height: ref.height
+  }));
+}
 function inferAgentImagePrompt(userInput, assistantText) {
   const source = `${userInput}\n${assistantText}`;
   if (!/(生成|出图|生图|图片|海报|渲染|视觉|封面|主图|poster|image|render)/i.test(source)) return '';
   if (/(不要生成|不用生成|只聊天|只分析|不出图)/.test(source)) return '';
-  const prompt = String(assistantText || userInput || '').replace(/```[\s\S]*?```/g, '').trim();
-  return prompt.length > 900 ? prompt.slice(0, 900) : prompt;
+  const prompt = extractImagePromptFromAgentText(assistantText);
+  return prompt.length > 1200 ? prompt.slice(0, 1200) : prompt;
+}
+function stripPromptMarkdown(text) {
+  return String(text || '')
+    .replace(/```(?:[\w-]+)?\n?([\s\S]*?)```/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/^[\s>*\-•]+/gm, '')
+    .replace(/[“”]/g, '"')
+    .trim();
+}
+function cleanAgentImagePrompt(text) {
+  let prompt = stripPromptMarkdown(text)
+    .replace(/^(?:#{1,6}\s*)?(?:[^。\n]{0,80}?\bPrompt\b[^。\n]*|[^。\n]{0,80}?(?:中文版|中文提示词|出图提示词|图像提示词)[^。\n]*)\n+/i, '')
+    .replace(/^(中文提示词|英文提示词|出图提示词|图像提示词|提示词|prompt)\s*[:：]\s*/i, '')
+    .replace(/^(可以|当然|好的)[，,。\s]*/i, '')
+    .replace(/^我不能直接[^，。；;]*[，。；;]\s*/i, '')
+    .replace(/^但可以(?:立刻)?(?:给你|为你)?(?:一份|一个)?/i, '')
+    .replace(/^(?:可直接出图的|表情包夸张风|原创|原创提示词|原创新提示词)\s*/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const stop = prompt.search(/(?:负面提示词|negative prompt|如果你想|如果你愿意|我还可以|以下任一种|适合图像模型|Midjourney|SD\s*\/\s*Flux|直接改成|可复制粘贴)/i);
+  if (stop > 20) prompt = prompt.slice(0, stop).trim();
+  return prompt.replace(/^[：:，,。.["'“”\s]+|[：:，,。.["'“”\s]+$/g, '').trim();
+}
+function extractImagePromptFromAgentText(text) {
+  const source = stripPromptMarkdown(text);
+  const markdownSection = extractMarkdownPromptSection(source);
+  if (markdownSection) return markdownSection;
+  const labelPattern = /(中文提示词|英文提示词|出图提示词|图像提示词|(?:可直接(?:出图|使用)的)?(?:原创)?提示词|prompt)\s*[:：]\s*/ig;
+  let match;
+  const candidates = [];
+  while ((match = labelPattern.exec(source))) {
+    const start = labelPattern.lastIndex;
+    const rest = source.slice(start);
+    const nextLabel = rest.search(/\n\s*(?:负面提示词|negative prompt|中文提示词|英文提示词|出图提示词|图像提示词|提示词|prompt)\s*[:：]/i);
+    const nextOption = rest.search(/\n\s*(?:\d+[.、]|-|•)\s*(?:适合图像模型|Midjourney|SD\s*\/\s*Flux|直接改成)/i);
+    const stops = [nextLabel, nextOption].filter((idx) => idx >= 0);
+    const end = stops.length ? Math.min(...stops) : rest.length;
+    const candidate = cleanAgentImagePrompt(rest.slice(0, end));
+    if (looksLikeUsableImagePrompt(candidate)) candidates.push(candidate);
+  }
+  if (candidates.length) return candidates.sort((a, b) => b.length - a.length)[0];
+  const compact = extractCompactQuotedVisualPrompt(source);
+  if (compact) return compact;
+  const quoted = source.match(/[「“"]([^「」“”"]{24,1200})[」”"]/);
+  if (quoted) {
+    const quotedPrompt = cleanAgentImagePrompt(quoted[1]);
+    if (looksLikeUsableImagePrompt(quotedPrompt)) return quotedPrompt;
+  }
+  const sentencePrompt = extractPromptFromAgentSentences(source);
+  if (sentencePrompt) return sentencePrompt;
+  const lines = source.split(/\n+/).map(cleanAgentImagePrompt).filter(looksLikeUsableImagePrompt);
+  return lines[0] || '';
+}
+function extractAgentImagePrompts(text) {
+  const source = stripPromptMarkdown(text);
+  return {
+    prompt: extractImagePromptFromAgentText(source),
+    negativePrompt: extractNegativePromptFromAgentText(source)
+  };
+}
+function extractMarkdownPromptSection(source) {
+  const text = String(source || '').replace(/\r\n?/g, '\n');
+  const headingPattern = /(?:^|\n)\s*(?:-{3,}\s*)?#{1,6}\s*([^\n]{0,180}?(?:中文提示词|中文版|出图提示词|图像提示词|直接可用\s*Prompt|可直接(?:出图|使用)|Prompt)[^\n]*)\n/ig;
+  const candidates = [];
+  let match;
+  while ((match = headingPattern.exec(text))) {
+    const title = String(match[1] || '');
+    if (/(负面提示词|negative prompt|英文版|English|超短版|Midjourney|SDXL|Flux|反向提示词)/i.test(title)) continue;
+    const rest = text.slice(headingPattern.lastIndex);
+    const stops = [
+      rest.search(/\n\s*(?:-{3,}\s*)?#{1,6}\s+/),
+      rest.search(/\n\s*(?:负面提示词|negative prompt|英文版|English|超短版)\s*[:：]?/i),
+      rest.search(/\n\s*(?:-{3,}\s*)?(?:##|###)\s*(?:英文版|English|负面提示词|negative prompt|超短版)/i),
+      rest.search(/\n\s*(?:如果你想|如果你要|如果你愿意|我可以继续|我还可以|以下任一种|你回复)\b/i)
+    ].filter((idx) => idx >= 0);
+    const end = stops.length ? Math.min(...stops) : rest.length;
+    const candidate = cleanAgentImagePrompt(rest.slice(0, end));
+    if (looksLikeUsableImagePrompt(candidate)) candidates.push(candidate);
+  }
+  return candidates.sort((a, b) => b.length - a.length)[0] || '';
+}
+function cleanNegativeAgentPrompt(text) {
+  let prompt = stripPromptMarkdown(text)
+    .replace(/^(?:#{1,6}\s*)?(?:负面提示词|negative prompt|反向提示词|negative)\s*[:：]?\s*/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const stop = prompt.search(/(?:英文版|English|超短版|Midjourney|SDXL|Flux|如果你想|如果你要|如果你愿意|我可以继续|我还可以|以下任一种|你回复)/i);
+  if (stop > 8) prompt = prompt.slice(0, stop).trim();
+  return prompt.replace(/^[：:，,。.["'“”\s]+|[：:，,。.["'“”\s]+$/g, '').trim();
+}
+function looksLikeUsableNegativePrompt(prompt) {
+  const value = String(prompt || '').trim();
+  if (value.length < 8) return false;
+  if (/我不能|说明一点|可以继续|你回复/.test(value.slice(0, 80))) return false;
+  return /(不要|避免|无|禁止|not|no|without|avoid|exclude)/i.test(value);
+}
+function extractNegativePromptFromAgentText(source) {
+  const text = String(source || '').replace(/\r\n?/g, '\n');
+  const sectionPattern = /(?:^|\n)\s*(?:-{3,}\s*)?#{0,6}\s*(负面提示词|negative prompt|反向提示词|negative)\s*[:：]?\s*/ig;
+  const candidates = [];
+  let match;
+  while ((match = sectionPattern.exec(text))) {
+    const rest = text.slice(sectionPattern.lastIndex);
+    const stops = [
+      rest.search(/\n\s*(?:-{3,}\s*)?#{1,6}\s+/),
+      rest.search(/\n\s*(?:英文版|English|超短版|Midjourney|SDXL|Flux)\s*[:：]?/i),
+      rest.search(/\n\s*(?:如果你想|如果你要|如果你愿意|我可以继续|我还可以|以下任一种|你回复)\b/i)
+    ].filter((idx) => idx >= 0);
+    const end = stops.length ? Math.min(...stops) : rest.length;
+    const candidate = cleanNegativeAgentPrompt(rest.slice(0, end));
+    if (looksLikeUsableNegativePrompt(candidate)) candidates.push(candidate);
+  }
+  return candidates.sort((a, b) => b.length - a.length)[0] || '';
+}
+function extractCompactQuotedVisualPrompt(source) {
+  const quoted = Array.from(String(source || '').matchAll(/[“"']([^“”"']{4,160})[”"']/g)).map((match) => cleanAgentImagePrompt(match[1]));
+  const visuals = quoted.filter((item) => /(猫|男孩|女孩|人|角色|背景|透明|追|跑|表情|风格|构图|画面|机器人|机器猫)/.test(item));
+  if (!visuals.length) return '';
+  const unique = Array.from(new Set(visuals));
+  const constraints = [];
+  if (/后面追的是人，不是熊|后面追的是人不是熊|追的是人，不是熊/.test(source)) constraints.push('后面追赶者是人类男孩，不是熊，不是动物');
+  if (/透明背景|透明底|PNG/i.test(source)) constraints.push('PNG 透明背景');
+  const subject = unique.join('，');
+  const prompt = cleanAgentImagePrompt([subject, ...constraints].join('，'));
+  return looksLikeUsableImagePrompt(prompt) ? prompt : '';
+}
+function looksLikeUsableImagePrompt(prompt) {
+  const value = String(prompt || '').trim();
+  if (value.length < 24) return false;
+  if (/我不能|不能直接|版权|受版权保护|但可以|你可以|如果你想|我还可以|以下|说明一点/.test(value.slice(0, 80))) return false;
+  const hits = ['角色', '画面', '背景', '构图', '风格', '透明', 'PNG', '插画', '海报', '表情', '追', '全身', '色彩', '线条', 'portrait', 'background', 'style'].filter((word) => value.includes(word)).length;
+  return hits >= 2;
+}
+function extractPromptFromAgentSentences(source) {
+  const normalized = stripPromptMarkdown(source)
+    .replace(/\s+/g, ' ')
+    .replace(/效果会非常接近你要的[^，。；;]*[，。；;]?\s*/g, '')
+    .replace(/同时保留你强调的[：:]\s*/g, '')
+    .trim();
+  const startPatterns = [
+    /(?:可直接(?:出图|使用)的(?:原创)?提示词|(?:原创)?提示词|原创新提示词|直接用(?:这个|下面)?(?:提示词)?(?:生成)?|立刻给你一份)\s*[：:，,]?\s*/i,
+    /(?:一份|一个)\s*(?:表情包夸张风|原创|可直接出图)[^，。；;]*[，。；;]\s*/i
+  ];
+  for (const pattern of startPatterns) {
+    const match = normalized.match(pattern);
+    if (!match) continue;
+    const raw = normalized.slice((match.index || 0) + match[0].length);
+    const candidate = cleanAgentImagePrompt(raw);
+    if (looksLikeUsableImagePrompt(candidate)) return candidate;
+  }
+  const segments = normalized.split(/[。；;]\s*/).map(cleanAgentImagePrompt).filter(looksLikeUsableImagePrompt);
+  if (segments.length) return segments.slice(0, 4).join('；');
+  return '';
 }
 function workflowPromptTemplate(workflow) {
   const imageNode = (workflow.nodes || []).find((node) => node.type === 'image') || {};
   return workflow.config?.promptTemplate || imageNode.promptTemplate || workflow.templateBindings?.imagePrompt || '{{subject}}，{{style}}，高质量商业生图';
+}
+function workflowImageParams(workflow, profile, countPerRow) {
+  const config = workflow?.config || {};
+  const params = { ...requestedParams(profile), count: Math.max(1, Number(countPerRow) || Number(config.count) || 1) };
+  const quality = String(config.quality || '').trim();
+  const outputFormat = String(config.outputFormat || config.output_format || '').trim().toLowerCase();
+  const outputCompression = String(config.outputCompression || config.output_compression || '').trim();
+  const negativePrompt = cleanNegativeAgentPrompt(config.negativePrompt || config.negative_prompt || config.negative || '');
+  if (quality) params.quality = quality;
+  if (outputFormat) {
+    params.format = outputFormat;
+    params.output_format = outputFormat;
+  }
+  if (outputCompression) {
+    params.compression = outputCompression;
+    params.outputCompression = outputCompression;
+    params.output_compression = outputCompression;
+  }
+  if (negativePrompt) {
+    Object.assign(params, { negativePrompt, negative_prompt: negativePrompt });
+  }
+  return params;
 }
 function newWorkflowDraft() {
   const project = activeProject();
@@ -5142,22 +7919,7 @@ async function generateWorkflowFromAgent() {
   state.agent.logs.push({ id: pendingId, projectId: project.id, role: 'assistant', text: '正在生成可复用工作流草稿...', createdAt: Date.now(), pending: true });
   persistRender();
   try {
-    const data = await fetchJson('/api-proxy/responses', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-GPT-Image-Profile-Id': profileId(textProfile) },
-      body: JSON.stringify({
-        model: textProfile.model,
-        reasoning: { effort: state.agent.reasoning || 'medium' },
-        input: [
-          `项目专属提示词：${project?.prompt || '无'}`,
-          `用户任务：${input}`,
-          formatBeijingTimeLabel(),
-          `当前文本模型 slug：${textProfile.model || '未配置'}`,
-          `联网：${agentWebSearchEnabled(textProfile) ? '已开启' : '未开启'}；推理：${state.agent.reasoning || 'medium'}`,
-          '请返回一个可复用批量生图 workflow JSON，包含 name, nodes, edges, variables.columns, variables.rows, image promptTemplate。只返回 JSON。'
-        ].join('\n')
-      })
-    });
+    const data = await postAgentResponsesRequest(buildWorkflowAgentRequestPayload(input, { project, textProfile, mode: 'planner' }), textProfile);
     const text = extractResponseText(data, JSON.stringify(data));
     state.workflowDraft = normalizeWorkflowDraft(parseWorkflowJson(text), input, project.id);
     state.agent.logs = state.agent.logs.map((log) => log.id === pendingId ? { ...log, pending: false, text: `已生成工作流草稿：${state.workflowDraft.name}` } : log);
@@ -5390,6 +8152,40 @@ async function newProject() {
   saveAgentProjects();
   persistRender();
 }
+async function renameActiveProject() {
+  const project = state.agent.projects.find((item) => item.id === state.agent.activeProjectId);
+  if (!project) return toast('当前项目不存在');
+  const value = await openTextInputDialog({
+    kicker: '修改项目名称',
+    title: '修改项目名称',
+    message: '项目名称只影响本地 Agent/工作流分组显示。',
+    value: project.name || '',
+    placeholder: '项目名称'
+  });
+  const name = String(value || '').trim();
+  if (!name) return;
+  project.name = name;
+  project.updatedAt = Date.now();
+  await saveAgentProjects();
+  persistRender();
+}
+async function editActiveProjectPrompt() {
+  const project = state.agent.projects.find((item) => item.id === state.agent.activeProjectId);
+  if (!project) return toast('当前项目不存在');
+  const value = await openTextInputDialog({
+    kicker: '修改项目提示词',
+    title: '修改项目提示词',
+    message: '这里会作为 Agent 对话和工作流规划的项目上下文，不会直接替换你的生图提示词。',
+    value: project.prompt || '',
+    multiline: true,
+    placeholder: '项目专属提示词...'
+  });
+  if (value === null) return;
+  project.prompt = String(value || '').trim();
+  project.updatedAt = Date.now();
+  await saveAgentProjects();
+  persistRender();
+}
 function deleteProject() {
   if (state.agent.projects.length <= 1) return toast('至少保留一个项目');
   const id = state.agent.activeProjectId;
@@ -5438,14 +8234,14 @@ async function runAgent() {
   state.agent.logs.push({ id: uid('log'), projectId, role: 'assistant', text: '已开始自动规划：将进行提示词改写与生图回填。', createdAt: Date.now(), pending: true });
   persistRender();
   try {
-    const data = await fetchJson('/api-proxy/responses', {
+    const data = await resolveResponsePayload(await fetchJson('/api-proxy/responses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-GPT-Image-Profile-Id': profileId(textProfile) },
       body: JSON.stringify({
         input: `项目专属提示词：${(state.agent.projects.find((p) => p.id === projectId)?.prompt || '无')}\n请规划并改写适合生图的提示词。任务：${input}`,
         model: textProfile.model
       })
-    });
+    }));
     const text = data.output_text || data.text || JSON.stringify(data).slice(0, 1200);
     state.agent.logs = state.agent.logs.map((log) => log.pending ? { ...log, pending: false, text } : log);
     state.composerPrompt = text;
@@ -5544,23 +8340,13 @@ async function rewriteWorkflowPrompt(run, workflow, row, rawPrompt) {
   const textProfile = agentTextProfile();
   if (!textProfile) throw new Error('未配置 Agent 文本模型');
   const project = state.agent.projects.find((item) => item.id === run.projectId) || activeProject();
-  const data = await fetchJson('/api-proxy/responses', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-GPT-Image-Profile-Id': profileId(textProfile) },
-    body: JSON.stringify({
-      model: textProfile.model,
-      reasoning: run.budget?.reasoning || state.agent.reasoning || 'medium',
-      webMode: run.budget?.webMode || state.agent.webMode || 'task',
-      input: [
-        '你是 NexGen 工作流的提示词改写器。只输出最终生图提示词，不要解释。',
-        `项目提示词：${project?.prompt || '无'}`,
-        `工作流：${workflow.name || '未命名工作流'} / ${workflow.description || '无描述'}`,
-        `变量：${JSON.stringify(row.values || {})}`,
-        `原始模板结果：${rawPrompt}`,
-        '要求：保留变量含义，提升画面可执行性、主体清晰度、风格一致性和生成模型可理解度。'
-      ].join('\n')
-    })
-  });
+  const data = await postAgentResponsesRequest(buildWorkflowAgentRequestPayload(rawPrompt, {
+    project,
+    textProfile,
+    mode: 'rewrite',
+    workflow,
+    rowValues: row.values || {}
+  }), textProfile);
   const text = extractResponseText(data, '');
   return String(text || rawPrompt).replace(/```[\s\S]*?```/g, '').trim() || rawPrompt;
 }
@@ -5623,7 +8409,7 @@ async function executeWorkflowRow(run, row, rowIndex) {
   const imageStep = createWorkflowStep(run, row, rowIndex, 'image', imageNode?.title || '批量生图', prompt);
   try {
     const profile = run.profileSnapshot || imageProfile();
-    const params = { ...requestedParams(profile), count: run.budget.countPerRow };
+    const params = workflowImageParams(workflow, profile, run.budget.countPerRow);
     const taskSeed = {
       prompt,
       requestedParams: params,
@@ -6039,6 +8825,8 @@ async function init() {
   });
   writeStore();
   render();
+  setTimeout(warmPromptBootstrap, 300);
+  schedulePromptSearchWarmup(12000);
   await runGalleryMigrationBridge();
   setTimeout(() => cleanupOrphanBlobs().catch((err) => console.warn('[home-v3] blob cleanup skipped', err)), 1200);
   setInterval(updateRunningTimers, 1000);

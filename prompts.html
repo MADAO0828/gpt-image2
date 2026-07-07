@@ -193,10 +193,11 @@ html.dark .prompt-detail-media{background:radial-gradient(circle at 26% 20%,rgba
   .ts{position:fixed;left:50%;bottom:calc(18px + env(safe-area-inset-bottom));transform:translateX(-50%);z-index:90;max-width:min(360px,calc(100vw - 28px));padding:8px 16px;border-radius:8px;font-size:12px;background:var(--toast-bg);color:#22c55e;border:1px solid rgba(34,197,94,0.25);animation:toastIn .22s ease;pointer-events:none;text-align:center;box-shadow:0 10px 30px rgba(15,23,42,.12)}
 @keyframes toastIn{from{transform:translate(-50%,10px);opacity:0}to{transform:translate(-50%,0);opacity:1}}
 </style>
+<script src="/assets/shell-ui.js?v=nexgen-shared-20260705-theme-sync"></script>
 <script>
 (function(){
   try{var ck='gpt-image2-cache-cleaned-mobile-b36';var wx=/MicroMessenger|WeChat|MQQBrowser|TBS|XWEB/i.test(navigator.userAgent||'');if(localStorage.getItem(ck)!=='1'){localStorage.setItem(ck,'1');if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(regs){regs.forEach(function(reg){reg.unregister()})}).catch(function(){})}if(!wx&&window.caches&&caches.keys){caches.keys().then(function(keys){keys.forEach(function(key){caches.delete(key)})}).catch(function(){})}}}catch(e){}
-  window.__themeState={themeKey:'gpt-image2-theme'};
+  window.__themeState={themeKey:(window.GptShellTheme&&window.GptShellTheme.key)||'gpt-image2.theme'};
   function isWeChatBrowser(){try{return /MicroMessenger|WeChat|MQQBrowser|TBS|XWEB/i.test(navigator.userAgent||'')}catch(e){return false}}
   function consumeTokenFromHash(){try{var m=(location.hash||'').match(/(?:^#|[&#])gi2token=([^&]+)/);if(m&&m[1]){sessionStorage.setItem('gpt-image2-session-token',decodeURIComponent(m[1]));history.replaceState(null,document.title,location.pathname+location.search)}}catch(e){}}
   function authFailed(){
@@ -235,34 +236,18 @@ html.dark .prompt-detail-media{background:radial-gradient(circle at 26% 20%,rgba
   function addAuthFallback(opt){opt=opt||{};try{var token=sessionStorage.getItem('gpt-image2-session-token')||'';if(token){var h=new Headers(opt.headers||{});h.set('X-GPT-Image-Session',token);opt.headers=h;opt.credentials=opt.credentials||'same-origin'}}catch(e){}return opt}
   var nativeFetch=window.fetch&&window.fetch.bind(window);
   if(nativeFetch&&!window.__gptImageFetchAuthFallbackInstalled){window.__gptImageFetchAuthFallbackInstalled=true;window.fetch=function(input,opt){return nativeFetch(input,addAuthFallback(opt||{}))}}
-  function watchSystemTheme(cb){try{var mq=window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)');if(!mq)return;if(mq.addEventListener)mq.addEventListener('change',cb);else if(mq.addListener)mq.addListener(cb)}catch(e){}}
-  function safePrefersDark(){try{return !!(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)}catch(e){return false}}
-  window.__applyTheme=function(){
-    var t=localStorage.getItem(window.__themeState.themeKey)||'light';
-    var prefersDark=safePrefersDark();
-    var isDark=t==='dark'||(t==='system'&&prefersDark);
-    document.documentElement.classList.toggle('dark',isDark);
-    document.documentElement.classList.toggle('light',!isDark);
-    var meta=document.getElementById('meta-theme-color');
-    if(meta)meta.content=isDark?'#000':'#fff';
-    var btn=document.getElementById('theme-toggle');
-    if(btn){btn.textContent=t==='light'?'☀️':t==='dark'?'🌙':'💻';btn.title='click to toggle theme';}
-  };
+  window.__applyTheme=function(){return window.GptShellTheme&&window.GptShellTheme.applyTheme?window.GptShellTheme.applyTheme():null};
   window.toggleTheme=function(){
-    var t=localStorage.getItem(window.__themeState.themeKey)||'light';
-    var n=t==='light'?'dark':t==='dark'?'system':'light';
-    localStorage.setItem(window.__themeState.themeKey,n);
-    window.__applyTheme();
-    try{fetch('/api/settings/save',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({settings:{themeMode:n}}),cache:'no-store'}).catch(function(){})}catch(e){}
+    var result=window.GptShellTheme&&window.GptShellTheme.toggleTheme?window.GptShellTheme.toggleTheme():window.__applyTheme();
+    var mode=result&&result.mode||(window.GptShellTheme&&window.GptShellTheme.currentThemeMode?window.GptShellTheme.currentThemeMode('light'):'light');
+    try{fetch('/api/settings/save',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({settings:{themeMode:mode}}),cache:'no-store'}).catch(function(){})}catch(e){}
+    return result;
   };
   window.__applyTheme();
   consumeTokenFromHash();
-  watchSystemTheme(function(){
-    if((localStorage.getItem(window.__themeState.themeKey)||'light')==='system')window.__applyTheme();
-  });
 })();
 </script>
- <link rel="stylesheet" href="/assets/macos-design.css?v=nexgen-shared-20260704"><link rel="stylesheet" href="/assets/shell-ui.css?v=nexgen-shared-20260704"><script src="/assets/shell-ui.js?v=nexgen-shared-20260704" defer></script></head><body>
+ <link rel="stylesheet" href="/assets/macos-design.css?v=nexgen-shared-20260704"><link rel="stylesheet" href="/assets/shell-ui.css?v=nexgen-shared-20260704"></head><body>
 <header class="h prompts-unified"><span class="hl">📚 提示词仓库</span><div class="srch top-srch"><input id="s" placeholder="🔍 搜索提示词..." /></div><div class="nav-actions"><span class="acct" id="promptAccountInfo">&#39564;&#35777;&#20013;...</span>
   <button onclick="toggleTheme()" id="theme-toggle" class="b" title="&#20999;&#25442;&#20027;&#39064;"><span class="nav-ico">&#128187;</span><span class="nav-text">&#20027;&#39064;</span></button>
   <a href="/admin" class="b" title="&#21518;&#21488;"><span class="nav-ico">&#9881;</span><span class="nav-text">&#21518;&#21488;</span></a>

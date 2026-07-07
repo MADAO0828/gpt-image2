@@ -3,6 +3,7 @@ const path = require('path');
 
 const root = path.resolve(__dirname, '..');
 const indexHtml = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+const indexShellHtml = indexHtml.replace(/<script id="promptFastBootstrap" type="application\/json">[\s\S]*?<\/script>/, '');
 const homeJs = fs.readFileSync(path.join(root, 'assets', 'homepage-v3.js'), 'utf8');
 const homeCss = fs.readFileSync(path.join(root, 'assets', 'homepage-v3.css'), 'utf8');
 const promptsData = JSON.parse(fs.readFileSync(path.join(root, 'prompts_data.json'), 'utf8'));
@@ -15,11 +16,11 @@ function ok(cond, msg) {
 ok(indexHtml.includes('id="app"'), 'homepage v3 mount node is missing');
 ok(indexHtml.includes('/assets/homepage-v3.css?v=home-v3-'), 'homepage v3 CSS is missing a cache-busted URL');
 ok(indexHtml.includes('/assets/homepage-v3.js?v=home-v3-'), 'homepage v3 JS is missing a cache-busted URL');
-ok(indexHtml.includes('NexGen') && indexHtml.includes('Nexus Generation'), 'index boot shell must use NexGen / Nexus Generation branding');
-ok(!indexHtml.includes('GPT Image2') && !indexHtml.includes('Mac Studio Workspace'), 'index boot shell must not show legacy GPT Image2 / Mac Studio branding');
-ok(!indexHtml.includes('id="root"'), 'legacy React #root must not be present on /');
-ok(!/assets\/index-[^"']+\.js/.test(indexHtml), 'legacy React homepage bundle must not be loaded on /');
-ok(!/modulepreload[^>]+assets\/index-/.test(indexHtml), 'legacy modulepreload entries must not remain on /');
+ok(indexShellHtml.includes('NexGen') && indexShellHtml.includes('Nexus Generation'), 'index boot shell must use NexGen / Nexus Generation branding');
+ok(!indexShellHtml.includes('GPT Image2') && !indexShellHtml.includes('Mac Studio Workspace'), 'index boot shell must not show legacy GPT Image2 / Mac Studio branding');
+ok(!indexShellHtml.includes('id="root"'), 'legacy React #root must not be present on /');
+ok(!/assets\/index-[^"']+\.js/.test(indexShellHtml), 'legacy React homepage bundle must not be loaded on /');
+ok(!/modulepreload[^>]+assets\/index-/.test(indexShellHtml), 'legacy modulepreload entries must not remain on /');
 
 for (const marker of [
   'class="workspace',

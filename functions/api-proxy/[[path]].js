@@ -2,19 +2,33 @@ const JWT_FALLBACK = 'gpt-image2-jwt-secret-key-2026-secure';
 function secret(env) {
   if (env && env.JWT_SECRET) return env.JWT_SECRET;
   if (env && env.ALLOW_INSECURE_JWT_FALLBACK === 'true') return JWT_FALLBACK;
+  return null;
+}
+function isLocalJwtRequest(request) {
+  try {
+    const hostname = new URL(request && request.url || 'http://invalid').hostname;
+    return hostname === '127.0.0.1' || hostname === 'localhost';
+  } catch (e) {
+    return false;
+  }
+}
+function resolveSecret(env, request) {
+  const value = secret(env);
+  if (value) return value;
+  if (isLocalJwtRequest(request)) return JWT_FALLBACK;
   throw new Error('JWT_SECRET is required');
 }
 function b64urlDecode(str) { str = String(str || '').replace(/-/g, '+').replace(/_/g, '/'); while (str.length % 4) str += '='; return Uint8Array.from(atob(str), c => c.charCodeAt(0)); }
 function getCookie(header, name) { const m = (header || '').match(new RegExp('(?:^|;\\s*)' + name + '=([^;]*)')); return m ? decodeURIComponent(m[1]) : null; }
 async function importHmacKey(value) { return crypto.subtle.importKey('raw', new TextEncoder().encode(value), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']); }
-async function verifyToken(token, env) { const parts = String(token || '').split('.'); if (parts.length !== 3) throw new Error('invalid token'); const key = await importHmacKey(secret(env)); const ok = await crypto.subtle.verify('HMAC', key, b64urlDecode(parts[2]), new TextEncoder().encode(parts[0] + '.' + parts[1])); if (!ok) throw new Error('bad signature'); const payload = JSON.parse(new TextDecoder().decode(b64urlDecode(parts[1]))); if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) throw new Error('expired'); return payload; }
+async function verifyToken(token, env, request) { const parts = String(token || '').split('.'); if (parts.length !== 3) throw new Error('invalid token'); const key = await importHmacKey(resolveSecret(env, request)); const ok = await crypto.subtle.verify('HMAC', key, b64urlDecode(parts[2]), new TextEncoder().encode(parts[0] + '.' + parts[1])); if (!ok) throw new Error('bad signature'); const payload = JSON.parse(new TextDecoder().decode(b64urlDecode(parts[1]))); if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) throw new Error('expired'); return payload; }
 function getRequestToken(request) {
   const cookieToken = getCookie(request.headers.get('Cookie') || '', 'session');
   if (cookieToken) return cookieToken;
   const headerToken = String(request.headers.get('X-GPT-Image-Session') || '').trim();
   return headerToken || null;
 }
-async function currentUser(request, env) { const token = getRequestToken(request); if (!token) return null; try { const payload = await verifyToken(token, env); return await env.gpt_image2_db.prepare('SELECT id, username, role FROM users WHERE id = ?').bind(payload.userId).first(); } catch (e) { return null; } }
+async function currentUser(request, env) { const token = getRequestToken(request); if (!token) return null; try { const payload = await verifyToken(token, env, request); return await env.gpt_image2_db.prepare('SELECT id, username, role FROM users WHERE id = ?').bind(payload.userId).first(); } catch (e) { return null; } }
 function json(data, status = 200, extraHeaders = {}) { return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0', 'Pragma': 'no-cache', 'Expires': '0', ...extraHeaders } }); }
 async function loadSettings(db, userId) { const rows = await db.prepare('SELECT key, value FROM user_settings WHERE user_id = ?').bind(userId).all(); const settings = {}; (rows.results || []).forEach(row => { try { settings[row.key] = JSON.parse(row.value); } catch (e) { settings[row.key] = row.value; } }); return settings; }
 function asBool(value, fallback = false) { return value === undefined || value === null ? fallback : !!value; }
@@ -103,6 +117,7 @@ function sanitizeGoogleImageBody(body) {
     if (format.compression !== undefined && body.output_compression === undefined) body.output_compression = format.compression;
     if (format.transparent_background !== undefined && body.transparent_background === undefined) body.transparent_background = format.transparent_background;
     if (format.transparent !== undefined && body.transparent_background === undefined) body.transparent_background = format.transparent;
+    if (format.background !== undefined && body.background === undefined) body.background = format.background;
     if (format.moderation !== undefined && body.moderation === undefined) body.moderation = format.moderation;
     if (body.googleExactSizeUnsupported || body.legacy_google_size) delete body.response_format;
   }
@@ -192,7 +207,12 @@ async function proxyMultipartBody(request, headers, apiPath, profile) {
   appendIfPresent('output_format', firstValue('output_format', 'format'));
   appendIfPresent('moderation', firstValue('moderation'));
   const format = String(firstValue('output_format', 'format') || '').toLowerCase();
-  if (format === 'png') appendIfPresent('transparent_background', firstValue('transparent_background', 'transparent'));
+  if (format === 'png') {
+    const transparentValue = firstValue('transparent_background', 'transparent');
+    appendIfPresent('transparent_background', transparentValue);
+    const background = firstValue('background') || (/^(1|true|yes|on)$/i.test(String(transparentValue || '')) ? 'transparent' : '');
+    appendIfPresent('background', background);
+  }
   else appendIfPresent('output_compression', firstValue('output_compression', 'compression'));
   for (const [key, value] of input.entries()) {
     if (key === 'image[]' || key === 'image' || key === 'mask') {
@@ -220,9 +240,9 @@ async function proxyBody(request, headers, apiPath, profile) {
     const body = JSON.parse(raw || '{}');
     if (body && typeof body === 'object' && !Array.isArray(body)) {
       if ((isResponsesApiPath(apiPath) || isImageApiPath(apiPath)) && profile && profile.model) body.model = profile.model;
-      if (isResponsesApiPath(apiPath)) {
-        const effort = normalizeReasoningEffort(profile.agentReasoningEffort || profile.reasoningEffort || undefined);
-        body.reasoning = { ...(body.reasoning && typeof body.reasoning === 'object' ? body.reasoning : {}), effort };
+      if (isResponsesApiPath(apiPath) && body.reasoning && typeof body.reasoning === 'object') {
+        const effort = normalizeReasoningEffort(body.reasoning.effort || profile.agentReasoningEffort || profile.reasoningEffort || undefined);
+        body.reasoning = { ...body.reasoning, effort };
       }
       if (isMobileRequest(request) && isImageApiPath(apiPath)) {
         if (body.stream !== undefined) body.stream = false;

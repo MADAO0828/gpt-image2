@@ -5,6 +5,14 @@
 .git
 .wrangler/
 .playwright-cli/
+.dev.vars
+.dev.vars.*
+.env
+.env.*
+.tmp-*/
+.tmp-*
+tmp-*/
+tmp-*
 node_modules/
 tests/node_modules/
 scripts/
@@ -19,7 +27,9 @@ init_db.sql
 .deploy_quality_stage/
 *.log
 *.tmp
+*.bak
 .deploy_tmp_*
+.tmp-models.json
 prompts_data.latest.tmp.json
 leaderai-index-latest.js
 leaderai-lab-*.js

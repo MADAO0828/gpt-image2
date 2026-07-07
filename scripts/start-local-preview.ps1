@@ -5,8 +5,10 @@ $Port = 8788
 $HostName = '127.0.0.1'
 $Url = "http://$HostName`:$Port/"
 $LogDir = Join-Path $ProjectRoot '.wrangler\local-preview'
-$OutLog = Join-Path $LogDir 'wrangler-local.out.log'
-$ErrLog = Join-Path $LogDir 'wrangler-local.err.log'
+$Stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$OutLog = Join-Path $LogDir "wrangler-local-$Stamp.out.log"
+$ErrLog = Join-Path $LogDir "wrangler-local-$Stamp.err.log"
+$DefaultLocalJwtSecret = 'gpt-image2-local-preview-jwt-20260705'
 
 function Test-PortOpen {
   param(
@@ -25,6 +27,17 @@ function Test-PortOpen {
     $client.EndConnect($async)
     $client.Close()
     return $true
+  } catch {
+    return $false
+  }
+}
+
+function Test-HttpReady {
+  param([string]$Url)
+
+  try {
+    $resp = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 5
+    return [int]$resp.StatusCode -ge 200
   } catch {
     return $false
   }
@@ -81,7 +94,8 @@ function Start-WranglerHidden {
   $quotedProject = ConvertTo-PowerShellLiteral -Value $ProjectRoot
   $quotedOut = ConvertTo-PowerShellLiteral -Value $OutLog
   $quotedErr = ConvertTo-PowerShellLiteral -Value $ErrLog
-  $commandLine = "Set-Location -LiteralPath $quotedProject; & $quotedFile $quotedArgs > $quotedOut 2> $quotedErr"
+  $quotedJwt = ConvertTo-PowerShellLiteral -Value $DefaultLocalJwtSecret
+  $commandLine = "if (-not `$env:JWT_SECRET) { `$env:JWT_SECRET = $quotedJwt }; if (-not `$env:ALLOW_INSECURE_JWT_FALLBACK) { `$env:ALLOW_INSECURE_JWT_FALLBACK = 'true' }; Set-Location -LiteralPath $quotedProject; & $quotedFile $quotedArgs > $quotedOut 2> $quotedErr"
 
   Start-Process `
     -FilePath $powershell `
@@ -94,14 +108,14 @@ if (-not (Test-PortOpen -HostName $HostName -Port $Port)) {
   $command = Get-WranglerCommand
   Start-WranglerHidden -Command $command
 
-  $deadline = (Get-Date).AddSeconds(30)
+  $deadline = (Get-Date).AddSeconds(60)
   while ((Get-Date) -lt $deadline) {
-    if (Test-PortOpen -HostName $HostName -Port $Port) { break }
+    if (Test-HttpReady -Url ($Url + 'login')) { break }
     Start-Sleep -Milliseconds 500
   }
 }
 
-if (-not (Test-PortOpen -HostName $HostName -Port $Port)) {
+if (-not (Test-HttpReady -Url ($Url + 'login'))) {
   throw "Local preview did not start on $Url. Check $ErrLog."
 }
 

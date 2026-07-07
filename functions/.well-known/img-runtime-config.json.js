@@ -20,6 +20,7 @@ async function loadSettings(db, userId) { const rows = await db.prepare('SELECT 
 function asBool(value, fallback = false) { return value === undefined || value === null ? fallback : !!value; }
 function asNum(value, fallback) { const n = Number(value); return Number.isFinite(n) ? n : fallback; }
 function firstString() { for (let i = 0; i < arguments.length; i++) { const v = arguments[i]; if (typeof v === 'string' && v.trim()) return v.trim(); } return ''; }
+function firstDefined() { for (let i = 0; i < arguments.length; i++) { if (arguments[i] !== undefined && arguments[i] !== null) return arguments[i]; } return undefined; }
 function normalizeAgentMode(value) { value = String(value || 'off'); if (value === 'same') return 'native'; if (value === 'custom') return 'hybrid'; return value === 'native' || value === 'hybrid' ? value : 'off'; }
 function normalizeBaseUrl(raw) { let value = String(raw || '').trim().replace(/\/+$/, ''); if (!value) return ''; if (!/^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(value)) value = 'https://' + value; try { const url = new URL(value); const parts = url.pathname.split('/').filter(Boolean); if (!parts.includes('v1')) parts.push('v1'); url.pathname = '/' + parts.join('/'); url.search = ''; url.hash = ''; return url.toString().replace(/\/+$/, ''); } catch (e) { return value.replace(/\/+$/, '') + '/v1'; } }
 function selectedProfile(settings) { const profiles = Array.isArray(settings.profiles) ? settings.profiles : []; const activeId = settings.activeProfileId || (profiles[0] && profiles[0].id) || 'default-openai'; const found = profiles.find(p => p && p.id === activeId) || profiles[0] || null; const base = found || {}; return {
@@ -85,6 +86,7 @@ export async function onRequest(ctx) {
     moderation: settings.moderation || 'auto',
     n: asNum(settings.n, 1),
     transparent_output: !!settings.transparent_output,
+    transparentOutput: !!settings.transparent_output,
     clearInputAfterSubmit: !!settings.clearInputAfterSubmit,
     persistInput: settings.persistInput !== undefined ? !!settings.persistInput : !!settings.persistInputOnRestart,
     persistInputOnRestart: settings.persistInputOnRestart !== undefined ? !!settings.persistInputOnRestart : !!settings.persistInput,
@@ -92,10 +94,14 @@ export async function onRequest(ctx) {
     taskCompletionNotification: settings.taskCompletionNotification !== undefined ? !!settings.taskCompletionNotification : !!settings.taskNotification,
     scrollAfterSubmit: !!settings.scrollAfterSubmit,
     alwaysShowRetry: settings.alwaysShowRetry !== undefined ? !!settings.alwaysShowRetry : !!settings.alwaysShowRetryButton,
+    alwaysShowRetryButton: settings.alwaysShowRetryButton !== undefined ? !!settings.alwaysShowRetryButton : !!settings.alwaysShowRetry,
     reuseProfile: settings.reuseProfile !== undefined ? !!settings.reuseProfile : !!settings.reuseTaskApiProfileTemporarily,
-    allowPromptRewrite: !!settings.allowPromptRewrite,
+    reuseTaskApiProfileTemporarily: settings.reuseTaskApiProfileTemporarily !== undefined ? !!settings.reuseTaskApiProfileTemporarily : !!settings.reuseProfile,
+    allowPromptRewrite: firstDefined(settings.allowPromptRewrite, true) !== false,
     mathFormatting: settings.mathFormatting !== undefined ? !!settings.mathFormatting : settings.agentMathFormattingPrompt !== false,
+    agentMathFormattingPrompt: settings.agentMathFormattingPrompt !== undefined ? !!settings.agentMathFormattingPrompt : settings.mathFormatting !== false,
     refEditAction: settings.refEditAction || settings.referenceImageEditAction || 'ask',
+    referenceImageEditAction: settings.referenceImageEditAction || settings.refEditAction || 'ask',
     enterSubmit: !!settings.enterSubmit,
     zipDownloadRoutes: Array.isArray(settings.zipDownloadRoutes) ? settings.zipDownloadRoutes : undefined,
     agentWebSearch: !!settings.agentWebSearch,
@@ -103,6 +109,7 @@ export async function onRequest(ctx) {
     agentMaxRounds: asNum(settings.agentMaxRounds, asNum(settings.agentMaxToolRounds, 15)),
     agentMaxToolRounds: asNum(settings.agentMaxToolRounds, asNum(settings.agentMaxRounds, 15)),
     agentScrollAfterSubmit: settings.agentScrollAfterSubmit !== undefined ? !!settings.agentScrollAfterSubmit : settings.agentScrollToBottomAfterSubmit !== false,
+    agentScrollToBottomAfterSubmit: settings.agentScrollToBottomAfterSubmit !== undefined ? !!settings.agentScrollToBottomAfterSubmit : settings.agentScrollAfterSubmit !== false,
     agentApiConfigMode: normalizeAgentMode(settings.agentApiConfigMode),
     agentTextProfileId: settings.agentTextProfileId || null,
     agentImageProfileId: settings.agentImageProfileId || null,

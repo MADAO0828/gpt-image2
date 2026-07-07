@@ -2,14 +2,28 @@ const JWT_FALLBACK = 'gpt-image2-jwt-secret-key-2026-secure';
 function secret(env) {
   if (env && env.JWT_SECRET) return env.JWT_SECRET;
   if (env && env.ALLOW_INSECURE_JWT_FALLBACK === 'true') return JWT_FALLBACK;
+  return null;
+}
+function isLocalJwtRequest(request) {
+  try {
+    const hostname = new URL(request && request.url || 'http://invalid').hostname;
+    return hostname === '127.0.0.1' || hostname === 'localhost';
+  } catch {
+    return false;
+  }
+}
+function resolveSecret(env, request) {
+  const value = secret(env);
+  if (value) return value;
+  if (isLocalJwtRequest(request)) return JWT_FALLBACK;
   throw new Error('JWT_SECRET is required');
 }
 function b64urlDecode(str) { str = String(str || '').replace(/-/g, '+').replace(/_/g, '/'); while (str.length % 4) str += '='; return Uint8Array.from(atob(str), c => c.charCodeAt(0)); }
 function getCookie(header, name) { const m = (header || '').match(new RegExp('(?:^|;\\s*)' + name + '=([^;]*)')); return m ? decodeURIComponent(m[1]) : null; }
 async function importHmacKey(value) { return crypto.subtle.importKey('raw', new TextEncoder().encode(value), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']); }
-async function verifyToken(token, env) { const parts = String(token || '').split('.'); if (parts.length !== 3) throw new Error('invalid token'); const key = await importHmacKey(secret(env)); const ok = await crypto.subtle.verify('HMAC', key, b64urlDecode(parts[2]), new TextEncoder().encode(parts[0] + '.' + parts[1])); if (!ok) throw new Error('bad signature'); const payload = JSON.parse(new TextDecoder().decode(b64urlDecode(parts[1]))); if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) throw new Error('expired'); return payload; }
+async function verifyToken(token, env, request) { const parts = String(token || '').split('.'); if (parts.length !== 3) throw new Error('invalid token'); const key = await importHmacKey(resolveSecret(env, request)); const ok = await crypto.subtle.verify('HMAC', key, b64urlDecode(parts[2]), new TextEncoder().encode(parts[0] + '.' + parts[1])); if (!ok) throw new Error('bad signature'); const payload = JSON.parse(new TextDecoder().decode(b64urlDecode(parts[1]))); if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) throw new Error('expired'); return payload; }
 function getRequestToken(request) { return getCookie(request.headers.get('Cookie') || '', 'session') || String(request.headers.get('X-GPT-Image-Session') || '').trim() || null; }
-async function currentUser(request, env) { const token = getRequestToken(request); if (!token) return null; try { const payload = await verifyToken(token, env); return await env.gpt_image2_db.prepare('SELECT id, username, role FROM users WHERE id = ?').bind(payload.userId).first(); } catch { return null; } }
+async function currentUser(request, env) { const token = getRequestToken(request); if (!token) return null; try { const payload = await verifyToken(token, env, request); return await env.gpt_image2_db.prepare('SELECT id, username, role FROM users WHERE id = ?').bind(payload.userId).first(); } catch { return null; } }
 function json(data, status = 200) { return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0' } }); }
 async function loadSettings(db, userId) { const rows = await db.prepare('SELECT key, value FROM user_settings WHERE user_id = ?').bind(userId).all(); const settings = {}; (rows.results || []).forEach(row => { try { settings[row.key] = JSON.parse(row.value); } catch { settings[row.key] = row.value; } }); return settings; }
 function firstString() { for (let i = 0; i < arguments.length; i++) { const v = arguments[i]; if (typeof v === 'string' && v.trim()) return v.trim(); } return ''; }
@@ -113,7 +127,11 @@ export async function onRequestPost(ctx) {
   fd.append('n', String(provider === 'google' ? 1 : asNum(params.count || params.n || settings.n, 1)));
   fd.append('output_format', outputFormat);
   fd.append('moderation', String(params.moderation || settings.moderation || 'auto'));
-  if (outputFormat === 'png') fd.append('transparent_background', String(params.transparent_background ?? params.transparent ?? settings.transparent_output ?? false));
+  if (outputFormat === 'png') {
+    const transparentValue = params.transparent_background ?? params.transparent ?? settings.transparent_output ?? false;
+    fd.append('transparent_background', String(transparentValue));
+    if (/^(1|true|yes|on)$/i.test(String(transparentValue))) fd.append('background', 'transparent');
+  }
   else fd.append('output_compression', String(params.output_compression || params.compression || settings.output_compression || 90));
   const imageFieldName = provider === 'google' ? 'image[]' : 'image';
   files.forEach((file, index) => fd.append(imageFieldName, file, file.name || `pro-reference-${index + 1}.png`));

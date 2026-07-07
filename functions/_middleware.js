@@ -90,7 +90,10 @@ function wechatCompatPage(request) {
 export async function onRequest(context) {
   const url = new URL(context.request.url);
   const path = url.pathname.replace(/\/+$/, '') || '/';
-  if (/^\/(?:scripts|tests|docs)(?:\/|$)/i.test(path) || /^\/(?:init_db\.sql|README\.md)$/i.test(path)) {
+  if (
+    /^\/(?:scripts|tests|docs|\.tmp-[^/]+)(?:\/|$)/i.test(path)
+    || /^\/(?:init_db\.sql|README\.md|\.dev\.vars|\.env(?:\..*)?|\.tmp-[^/]+)$/i.test(path)
+  ) {
     return new Response('Not found', {
       status: 404,
       headers: {

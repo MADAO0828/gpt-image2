@@ -109,15 +109,42 @@ test('settings save preserves existing secrets when placeholder strings are post
     users: [{ id: 3, username: 'user', role: 'user' }],
     settings: { 3: [
       { key: 'apiKey', value: JSON.stringify('sk-existing'), updated_at: 'x' },
-      { key: 'profiles', value: JSON.stringify([{ id: 'main', apiKey: 'sk-profile-existing', nativeApiKey: 'gemini-existing' }]), updated_at: 'x' }
+      { key: 'profiles', value: JSON.stringify([{ id: 'main', apiKey: 'sk-profile-existing', nativeApiKey: 'gemini-existing', googleNativeApiKey: 'google-native-existing' }]), updated_at: 'x' }
     ] }
   });
-  const res = await mod.onRequestPost({ request: await authedRequest(3, { settings: { apiKey: 'placeholder', profiles: [{ id: 'main', apiKey: '***MASKED***', nativeApiKey: '***MASKED***' }] } }), env: { gpt_image2_db: db, ALLOW_INSECURE_JWT_FALLBACK: 'true' } });
+  const res = await mod.onRequestPost({ request: await authedRequest(3, { settings: { apiKey: 'placeholder', profiles: [{ id: 'main', apiKey: '***MASKED***', nativeApiKey: '***MASKED***', googleNativeApiKey: 'cloudflare-proxy' }] } }), env: { gpt_image2_db: db, ALLOW_INSECURE_JWT_FALLBACK: 'true' } });
   assert.equal(res.status, 200);
   const apiWrite = db.writes.find(w => w.bound[1] === 'apiKey');
   const profilesWrite = db.writes.find(w => w.bound[1] === 'profiles');
   assert.equal(apiWrite.bound[2], 'sk-existing');
   assert.equal(JSON.parse(profilesWrite.bound[2])[0].apiKey, 'sk-profile-existing');
   assert.equal(JSON.parse(profilesWrite.bound[2])[0].nativeApiKey, 'gemini-existing');
+  assert.equal(JSON.parse(profilesWrite.bound[2])[0].googleNativeApiKey, 'google-native-existing');
+});
+
+test('public registration is disabled unless explicitly enabled', async () => {
+  const mod = await importWorkerModule('functions/api/auth/register.js', ['onRequestPost']);
+  const res = await mod.onRequestPost({
+    request: new Request('https://prod.example/api/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'new-user', password: 'pass1234' })
+    }),
+    env: { gpt_image2_db: makeDb() }
+  });
+  assert.equal(res.status, 403);
+});
+
+test('admin users API rejects fallback JWT in production without explicit opt-in', async () => {
+  const mod = await importWorkerModule('functions/api/admin/users/index.js', ['onRequestGet']);
+  const db = makeDb({ users: [{ id: 1, username: 'root', role: 'admin' }] });
+  const token = await signToken({ userId: 1, role: 'admin', exp: Math.floor(Date.now() / 1000) + 60 });
+  const res = await mod.onRequestGet({
+    request: new Request('https://prod.example/api/admin/users', {
+      headers: { 'X-GPT-Image-Session': token }
+    }),
+    env: { gpt_image2_db: db }
+  });
+  assert.equal(res.status, 401);
 });
 

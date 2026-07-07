@@ -125,8 +125,8 @@ function New-DeployStage {
     Remove-Item -LiteralPath $resolvedStage -Recurse -Force
   }
   New-Item -ItemType Directory -Path $stage | Out-Null
-  $excludeDirs = @('.git', '.codegraph', '.agents', '.codex', '.wrangler', '.playwright-cli', '.deploy', '.deploy2', '.deploy_stage', '.deploy_quality_stage', 'node_modules', 'tests', 'tests\node_modules', 'scripts', 'docs')
-  $excludeFiles = @('.git', '*.log', '*.tmp', '*.bak', '*.md', '.env', '.env.local', 'README.md', 'init_db.sql', 'prompts_data.latest.tmp.json', 'pw-*.txt', 'pw-*.png', 'pw-*.json')
+  $excludeDirs = @('.git', '.codegraph', '.agents', '.codex', '.wrangler', '.playwright-cli', '.deploy', '.deploy2', '.deploy_stage', '.deploy_quality_stage', '.tmp-transparent-check', 'node_modules', 'tests', 'tests\node_modules', 'scripts', 'docs')
+  $excludeFiles = @('.git', '.dev.vars', '.tmp-models.json', '*.log', '*.tmp', '*.bak', '*.md', '.env', '.env.local', 'README.md', 'init_db.sql', 'prompts_data.latest.tmp.json', 'pw-*.txt', 'pw-*.png', 'pw-*.json')
   $args = @($ProjectDir, $stage, '/E', '/NFL', '/NDL', '/NJH', '/NJS', '/NP') + @('/XD') + $excludeDirs + @('/XF') + $excludeFiles
   & robocopy @args | Out-Null
   if ($LASTEXITCODE -gt 7) { throw "robocopy failed with exit code $LASTEXITCODE" }
@@ -191,8 +191,8 @@ function Test-PreviewSupportsAuth([string]$Url) {
 function Invoke-PreviewStaticChecks([string]$Url) {
   Write-Step "Run static deploy checks against preview"
   $root = Invoke-WebRequest -UseBasicParsing -Uri ($Url.TrimEnd('/') + '/') -TimeoutSec 45
-  if (-not ($root.Content -match 'home-v3-20260705-gallery-migration-r26')) {
-    throw "Preview HTML does not contain expected asset version home-v3-20260705-gallery-migration-r26."
+  if (-not ($root.Content -match 'home-v3-20260708-full-qa-r72')) {
+    throw "Preview HTML does not contain expected asset version home-v3-20260708-full-qa-r72."
   }
   $js = Invoke-WebRequest -UseBasicParsing -Method Head -Uri ($Url.TrimEnd('/') + '/assets/homepage-v3.js') -TimeoutSec 45
   $css = Invoke-WebRequest -UseBasicParsing -Method Head -Uri ($Url.TrimEnd('/') + '/assets/homepage-v3.css') -TimeoutSec 45
