@@ -84,7 +84,10 @@ function fastSearchPayload(searchIndex, cat, search, page, limit) {
   ranked.sort((a, b) => b.score - a.score || a.index - b.index);
   const offset = (page - 1) * limit;
   return {
-    prompts: ranked.slice(offset, offset + limit).map((entry) => ({ ...entry.item, partial: false })),
+    prompts: ranked.slice(offset, offset + limit).map((entry) => ({
+      ...entry.item,
+      partial: Boolean(entry.item.partial || entry.item.d || /\.\.\.$|…$/.test(String(entry.item.p || '').trim()))
+    })),
     total: ranked.length,
     page,
     limit,

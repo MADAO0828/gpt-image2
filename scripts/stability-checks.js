@@ -7,6 +7,7 @@ const indexShellHtml = indexHtml.replace(/<script id="promptFastBootstrap" type=
 const homeJs = fs.readFileSync(path.join(root, 'assets', 'homepage-v3.js'), 'utf8');
 const homeCss = fs.readFileSync(path.join(root, 'assets', 'homepage-v3.css'), 'utf8');
 const promptsData = JSON.parse(fs.readFileSync(path.join(root, 'prompts_data.json'), 'utf8'));
+const promptSearchIndex = JSON.parse(fs.readFileSync(path.join(root, 'prompts_fast', 'search_index.json'), 'utf8'));
 const failures = [];
 
 function ok(cond, msg) {
@@ -86,6 +87,16 @@ ok(homeJs.includes('webMode') && homeJs.includes('reasoning'), 'Agent workflow r
 ok(Array.isArray(promptsData) && promptsData.length === 10311, 'local prompts_data.json must contain the latest 10311 prompts');
 const promptCategories = Array.from(new Set(promptsData.map((row) => row && (row.category || row.c)).filter(Boolean)));
 ok(promptCategories.length >= 20 && promptCategories.some((cat) => String(cat).includes('建筑室内空间设计')), 'prompt categories must be extracted from the full ThinkAI c/category fields, not an old whitelist');
+const aiCommunitySearchItem = (promptSearchIndex.prompts || []).find((row) => row && row.id === 3128);
+ok(aiCommunitySearchItem && aiCommunitySearchItem.partial && aiCommunitySearchItem.d, 'truncated prompt search entries must carry partial=true and a detail chunk path');
+if (aiCommunitySearchItem && aiCommunitySearchItem.d) {
+  const detailChunk = JSON.parse(fs.readFileSync(path.join(root, 'prompts_fast', aiCommunitySearchItem.d), 'utf8'));
+  const full = (detailChunk.prompts || []).find((row) => row && row.id === 3128);
+  ok(full && String(full.p || '').length > String(aiCommunitySearchItem.p || '').length * 10, 'prompt detail chunks must retain full text for truncated search cards');
+}
+ok(homeJs.includes('promptItemNeedsHydration') && homeJs.includes('loadPromptDetailChunk(item.d)') && homeJs.includes('if (promptItemNeedsHydration(item)) hydratePromptDetailItem(item)'), 'homepage prompt repo must hydrate truncated search/detail items before use');
+const promptRepoHtml = fs.readFileSync(path.join(root, 'prompts.html'), 'utf8');
+ok(promptRepoHtml.includes('hydratePromptItem') && promptRepoHtml.includes('loadPromptDetailChunk') && promptRepoHtml.includes('promptNeedsHydration'), '/prompts page must hydrate truncated prompt cards before detail/copy/use');
 ok(homeJs.includes('prompt-categories') && homeJs.includes('prompt-category'), 'homepage prompt repo must expose category filtering');
 ok(homeJs.includes('compositionstart') && homeJs.includes('compositionend'), 'homepage prompt repo search must protect Chinese IME composition');
 ok(homeJs.includes('captureFocusState') && homeJs.includes('restoreFocusState') && homeJs.includes('promptRepoSearch'), 'prompt repo search must preserve focus across rerenders');

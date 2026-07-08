@@ -50,14 +50,15 @@ function normalizeSearchText(value) {
 function searchPrompt(item) {
   const text = String(item.p || '');
   const searchText = text.length > 72 ? text.slice(0, 72) : text;
+  const isPreview = text.length > 48;
   return {
     id: item.id,
     c: item.c,
     t: item.t,
-    p: text.length > 48 ? `${text.slice(0, 48)}...` : text,
+    p: isPreview ? `${text.slice(0, 48)}...` : text,
     i: item.i,
     q: normalizeSearchText(`${item.c} ${item.t} ${searchText}`),
-    partial: text.length > 96,
+    partial: isPreview,
     d: ''
   };
 }

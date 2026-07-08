@@ -9,7 +9,7 @@ const PROMPT_PAGE_SIZE = 36;
 const PROMPT_VIRTUAL_THRESHOLD = 108;
 const PROMPT_VIRTUAL_BUFFER_ROWS = 3;
 const PROMPT_REPO_CACHE_LIMIT = 24;
-const PROMPT_FAST_VERSION = 'home-v3-20260705-prompt-complete-r48';
+const PROMPT_FAST_VERSION = 'home-v3-20260708-prompt-detail-hydrate-r78';
 const PROMPT_FAST_BOOTSTRAP_URL = `/prompts_fast/bootstrap.json?v=${PROMPT_FAST_VERSION}`;
 const PROMPT_FAST_PREVIEWS_URL = `/prompts_fast/category_previews.json?v=${PROMPT_FAST_VERSION}`;
 const PROMPT_FAST_SEARCH_URL = `/prompts_fast/search_index.json?v=${PROMPT_FAST_VERSION}`;
@@ -4938,7 +4938,7 @@ document.addEventListener('click', async (event) => {
     if (!syncPromptRepoOverlays()) render();
     focusPromptRepoOverlay();
     stabilizePromptRepoViewport(snapshot);
-    if (item?.partial) hydratePromptDetailItem(item);
+    if (promptItemNeedsHydration(item)) hydratePromptDetailItem(item);
     return;
   }
   if (action === 'prompt-detail-close') { closePromptRepoDetailOverlay(); return; }
@@ -6834,6 +6834,12 @@ function promptSearchTokens(query) {
 function promptSearchHaystack(item) {
   return normalizePromptSearchText(`${item?.q || ''} ${item?.p || ''}`);
 }
+function promptItemNeedsHydration(item) {
+  if (!item) return false;
+  if (item.partial || item.d) return true;
+  const text = String(item.p || '');
+  return /\.\.\.$|…$/.test(text.trim());
+}
 function searchPromptIndex(query, category = 'all', limit = PROMPT_PAGE_SIZE) {
   const tokens = promptSearchTokens(query);
   if (!tokens.length || !promptSearchCache?.prompts?.length) return null;
@@ -6851,7 +6857,7 @@ function searchPromptIndex(query, category = 'all', limit = PROMPT_PAGE_SIZE) {
       if (categoryText.includes(token)) score += 3;
       if (haystack.startsWith(token)) score += 2;
     });
-    ranked.push({ item: { ...item, partial: false }, index, score });
+    ranked.push({ item: { ...item, partial: promptItemNeedsHydration(item) }, index, score });
   });
   ranked.sort((a, b) => b.score - a.score || a.index - b.index);
   const prompts = ranked.slice(0, limit).map((entry) => entry.item);
@@ -7370,15 +7376,15 @@ async function loadPromptPage(options = {}) {
   }
 }
 async function fullPromptItem(item) {
-  if (!item?.partial) return item;
+  if (!promptItemNeedsHydration(item)) return item;
   if (item.d) {
     const chunkData = await loadPromptDetailChunk(item.d).catch(() => null);
     const full = chunkData?.prompts?.find((prompt) => String(prompt.id) === String(item.id));
-    if (full) return { ...full, partial: false };
+    if (full) return { ...full, partial: false, d: item.d || full.d || '' };
   }
   const pageData = await loadPromptCategoryPage(item.c || state.promptRepo.category || 'all').catch(() => null);
   const full = pageData?.prompts?.find((prompt) => String(prompt.id) === String(item.id));
-  return full || item;
+  return full ? { ...full, partial: false, d: item.d || full.d || '' } : item;
 }
 async function hydratePromptDetailItem(item) {
   const full = await fullPromptItem(item);
