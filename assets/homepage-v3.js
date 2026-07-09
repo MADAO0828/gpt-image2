@@ -9,7 +9,7 @@ const PROMPT_PAGE_SIZE = 36;
 const PROMPT_VIRTUAL_THRESHOLD = 108;
 const PROMPT_VIRTUAL_BUFFER_ROWS = 3;
 const PROMPT_REPO_CACHE_LIMIT = 24;
-const PROMPT_FAST_VERSION = 'home-v3-20260709-prompt-register-local-r79';
+const PROMPT_FAST_VERSION = 'home-v3-20260709-agent-scroll-anchor-r82';
 const PROMPT_FAST_BOOTSTRAP_URL = `/prompts_fast/bootstrap.json?v=${PROMPT_FAST_VERSION}`;
 const PROMPT_FAST_PREVIEWS_URL = `/prompts_fast/category_previews.json?v=${PROMPT_FAST_VERSION}`;
 const PROMPT_FAST_SEARCH_URL = `/prompts_fast/search_index.json?v=${PROMPT_FAST_VERSION}`;
@@ -1913,6 +1913,20 @@ function freezeAgentScrollForRender(anchor = captureAgentScrollAnchor()) {
 function releaseAgentScrollFreezeAfterRender() {
   if (state.agentScrollLock) state.agentScrollLock.keep = false;
 }
+function preserveAgentScrollForRender(anchor = captureAgentScrollAnchor()) {
+  const frozen = anchor?.id ? freezeAgentScrollForRender(anchor) : null;
+  return () => {
+    if (frozen?.id) releaseAgentScrollFreezeAfterRender();
+  };
+}
+function renderPreservingAgentScroll(anchor = captureAgentScrollAnchor()) {
+  const release = preserveAgentScrollForRender(anchor);
+  render();
+  release();
+}
+function shouldPreserveAgentScrollForTask(task) {
+  return state.mode === 'agent' || !!task?.agentMessageId || String(task?.workflowMeta?.entry || '') === 'agent';
+}
 function captureAgentScrollAnchor(log = $('.agent-log')) {
   if (!log || typeof log.getBoundingClientRect !== 'function') return null;
   const logRect = log.getBoundingClientRect();
@@ -3259,6 +3273,8 @@ function renderAgentPromptOptionCard(message, option, recommended) {
   const messageId = esc(message.id);
   const optionIndex = esc(option.index);
   const isRecommended = recommended?.index === option.index;
+  const optionCount = agentPromptOptionsForMessage(message).length;
+  const generateLabel = optionCount <= 1 ? '生成该 Prompt' : (isRecommended ? '生成推荐方案' : '生成该方案');
   return `<article class="agent-prompt-option-card ${isRecommended ? 'recommended' : ''}">
     <div class="agent-prompt-option-head">
       <span>方案 ${esc(option.index)}${isRecommended ? ' · 推荐' : ''}</span>
@@ -3276,20 +3292,22 @@ function renderAgentPromptOptionCard(message, option, recommended) {
       <div><strong>负面 Prompt</strong><button type="button" data-action="copy-agent-prompt" data-message-id="${messageId}" data-option-index="${optionIndex}" data-prompt-kind="negative">复制</button></div>
       <p>${esc(option.negativePrompt || '无')}</p>
     </div>
-    <button class="toolbar-button agent-option-generate" data-action="confirm-agent-image" data-message-id="${messageId}" data-option-index="${optionIndex}">${isRecommended ? '生成推荐方案' : '生成该方案'}</button>
+    <button class="toolbar-button agent-option-generate" data-action="confirm-agent-image" data-message-id="${messageId}" data-option-index="${optionIndex}">${generateLabel}</button>
   </article>`;
 }
 function renderAgentPromptOptions(message, options) {
   if (!options.length) return '';
   const recommended = recommendedAgentPromptOption(options);
+  const multiOption = options.length > 1;
+  const primaryLabel = multiOption ? '生成推荐方案' : '生成图片';
   return `<div class="agent-prompt-options">
     <div class="agent-recommended-action">
-      <button class="generate-button" data-action="confirm-agent-image" data-message-id="${esc(message.id)}" data-option-index="${esc(recommended?.index || options[0].index)}">生成推荐方案</button>
+      <button class="generate-button" data-action="confirm-agent-image" data-message-id="${esc(message.id)}" data-option-index="${esc(recommended?.index || options[0].index)}">${primaryLabel}</button>
     </div>
     <div class="agent-option-grid">${options.map((option) => renderAgentPromptOptionCard(message, option, recommended)).join('')}</div>
-    <div class="agent-option-shortcuts" aria-label="快捷选择方案">
+    ${multiOption ? `<div class="agent-option-shortcuts" aria-label="快捷选择方案">
       ${options.map((option) => `<button type="button" data-action="agent-option-shortcut" data-message-id="${esc(message.id)}" data-option-index="${esc(option.index)}">${esc(option.index)}</button>`).join('')}
-    </div>
+    </div>` : ''}
   </div>`;
 }
 function renderAgentMessage(message) {
@@ -5772,7 +5790,9 @@ async function generateImageTask(seedTask = null) {
   };
   state.tasks.unshift(task);
   writeStore();
-  render();
+  const preserveAgentScroll = shouldPreserveAgentScrollForTask(task);
+  if (preserveAgentScroll) renderPreservingAgentScroll();
+  else render();
   if (meta.onCreated) meta.onCreated(task);
   try {
     const apiStartedAt = Date.now();
@@ -5850,7 +5870,8 @@ async function generateImageTask(seedTask = null) {
     notifyTaskComplete(task);
   }
   writeStore();
-  render();
+  if (preserveAgentScroll) renderPreservingAgentScroll();
+  else render();
   return task;
 }
 async function collectGenerationResult(prompt, params, options = {}) {
@@ -6252,6 +6273,9 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     restoreAgentScrollAnchor,
     freezeAgentScrollForRender,
     releaseAgentScrollFreezeAfterRender,
+    preserveAgentScrollForRender,
+    renderPreservingAgentScroll,
+    shouldPreserveAgentScrollForTask,
     galleryVirtualWindow,
     maskCanvasHasPaint,
     shouldCloseModalFromClick,
@@ -6939,6 +6963,14 @@ async function loadPromptCategoryPage(category) {
   const cleanCategory = category || 'all';
   const cached = pageDataFromPromptBootstrap(cleanCategory);
   if (cached) return cached;
+  return loadPromptCategoryFullPage(cleanCategory);
+}
+async function loadPromptCategoryFullPage(category) {
+  const cleanCategory = category || 'all';
+  if (cleanCategory === 'all') return pageDataFromPromptBootstrap('all');
+  const cacheKey = promptRepoPageCacheKey(1, { category: cleanCategory, query: '' });
+  const cached = promptPageCache.get(cacheKey);
+  if (cached) return cached;
   const bootstrap = await loadPromptBootstrap();
   const file = bootstrap?.categoryFiles?.[cleanCategory];
   if (!file || String(file).includes('..')) return null;
@@ -6949,7 +6981,7 @@ async function loadPromptCategoryPage(category) {
     }).then(async (res) => {
       if (!res.ok) throw new Error(`prompt category ${res.status}`);
       const data = await res.json();
-      rememberPromptPageCache(promptRepoPageCacheKey(1, { category: cleanCategory, query: '' }), data);
+      rememberPromptPageCache(cacheKey, data);
       return data;
     }).catch((err) => {
       promptCategoryPagePromises.delete(cleanCategory);
@@ -7383,7 +7415,7 @@ async function fullPromptItem(item) {
     const full = chunkData?.prompts?.find((prompt) => String(prompt.id) === String(item.id));
     if (full) return { ...full, partial: false, d: item.d || full.d || '' };
   }
-  const pageData = await loadPromptCategoryPage(item.c || state.promptRepo.category || 'all').catch(() => null);
+  const pageData = await loadPromptCategoryFullPage(item.c || state.promptRepo.category || 'all').catch(() => null);
   const full = pageData?.prompts?.find((prompt) => String(prompt.id) === String(item.id));
   return full ? { ...full, partial: false, d: item.d || full.d || '' } : item;
 }
@@ -7441,11 +7473,13 @@ function buildAgentRequestPayload(input, options = {}) {
     instructions: [
       '你是当前项目的 Agent，负责直接、清晰地回答用户问题。',
       '不要生成 workflow JSON，除非用户明确要求。',
-      '普通问答保持简洁；只有生图、工作流、参数建议场景才必须方案化。',
-      '遇到生图、图片修改、工作流或参数建议时，必须输出 5 个方案，固定字段为：方案 N、适合模型、推荐理由、正向 Prompt、负面 Prompt。',
+      '普通问答保持简洁；不要为了生图而强行输出多个方案。',
+      '遇到生图、图片修改、工作流或参数建议时，先判断用户需求是否足够明确；缺少会显著影响结果的关键信息时，先追问，最多 3 个问题。',
+      '需求简单且明确时，默认只输出 1 个可直接使用的推荐 Prompt；用户明确要求多方案、风格对比、模型对比，或需求存在多个合理方向时，再输出 2-5 个方案。',
+      '输出方案时使用固定字段：方案 N、适合模型、推荐理由、正向 Prompt、负面 Prompt；只有 1 个方案也可以使用“方案 1（推荐）”。',
       '只把可直接生图的内容写进正向 Prompt；说明、免责声明、选择建议不得混入 Prompt。',
       '负面 Prompt 必须单独给出；如果没有明确禁用项，也要给出简短的避免项。',
-      '最终推荐方案请在标题中标记“（推荐）”；用户点击生成图片时只会使用该推荐方案的正向和负面 Prompt。',
+      '多方案时请在最终推荐方案标题中标记“（推荐）”；用户点击生成图片时只会使用推荐方案或第一个方案的正向和负面 Prompt。',
       '高影响不确定项先问，最多 3 个问题；低影响不确定项直接采用合理默认，并用一句话注明假设。',
       '涉及版权角色或受保护风格时，先用一句话说明不可复刻，再直接给原创替代 Prompt，不要长篇免责声明。',
       'Prompt 以中文为主；如英文表达更稳定，可在正向 Prompt 内附英文原文。',
@@ -7535,7 +7569,8 @@ async function handleAgentOptionSelectionInput(input, inputEl, project) {
   state.agent.inputDraft = '';
   if (inputEl) inputEl.value = '';
   writeStore();
-  await generateAgentImageFromMessage(sourceMessage.id, '', { optionIndex });
+  const scrollAnchor = freezeAgentScrollForRender();
+  await generateAgentImageFromMessage(sourceMessage.id, '', { optionIndex, scrollAnchor });
   return true;
 }
 async function sendAgentChat() {
@@ -7702,7 +7737,7 @@ function attachAgentTaskToMessage(threadId, messageId, taskId, imagePrompt, opti
     };
   });
   writeStore();
-  if (options.renderNow) render();
+  if (options.renderNow) renderPreservingAgentScroll();
 }
 function cloneReferenceSnapshotsForAgent() {
   return (state.references || []).map((ref) => ({

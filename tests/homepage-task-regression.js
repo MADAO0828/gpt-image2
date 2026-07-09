@@ -1131,6 +1131,9 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(payload.webSearchEnabled === true, 'Agent payload should expose the runtime web search state');
   ok(!Object.prototype.hasOwnProperty.call(payload, 'reasoning'), 'normal Agent chat payload should not force Responses reasoning for compatible relays');
   ok(String(payload.instructions || '').includes('当前文本模型 slug') && String(payload.instructions || '').includes('项目专属提示词'), 'Agent payload should send CookSleep-style instructions context');
+  ok(!String(payload.instructions || '').includes('必须输出 5 个方案'), 'Agent payload should not force five image prompt options');
+  ok(String(payload.instructions || '').includes('默认只输出 1 个可直接使用的推荐 Prompt'), 'Agent payload should allow concise single-prompt image replies');
+  ok(String(payload.instructions || '').includes('先追问，最多 3 个问题'), 'Agent payload should ask clarifying questions before prompting when requirements are incomplete');
   ok(String(payload.input || '').includes('当前北京时间') && String(payload.input || '').includes('当前文本模型 slug'), 'Agent payload input should mention Beijing time and actual model slug');
   const longAgentImageReply = '可以。先说明一点：我不能直接复刻角色。你可以直接用下面提示词生成： **中文提示词：** 一只原创的蓝色圆脸机器猫风格角色，手里抱着几枚金黄色圆形甜点，神情慌张，正在快速奔跑；后方一个原创的瘦弱男孩角色戴着圆框眼镜，穿简单休闲服，表情着急，正追赶前面的机器猫角色。整体构图有强烈的追逐动感，日系动画风，线条干净，色彩明亮，2D 插画，完整人物，全身，居中构图，透明背景，PNG，背景留空，无场景无地面无道具杂物。 **负面提示词：** 不要直接使用已有角色形象，不要版权角色，不要真实背景，不要街道。 如果你想，我还可以继续输出 Midjourney 版。';
   const extractedAgentPrompt = hooks.extractImagePromptFromAgentText(longAgentImageReply);
@@ -1225,7 +1228,7 @@ if (typeof hooks.openAiSizePayload === 'function') {
     '不要哆啦A梦，不要大雄，不要熊，不要动物。'
   ].join('\n');
   const promptOptions = hooks.extractAgentPromptOptions(fiveOptionReply);
-  ok(promptOptions.length === 5, 'Agent prompt option parser should extract five options');
+  ok(promptOptions.length === 5, 'Agent prompt option parser should still extract five options when the model provides them');
   ok(promptOptions[0].recommended === true && hooks.recommendedAgentPromptOption(promptOptions).index === 1, 'Agent prompt option parser should mark the recommended option');
   ok(promptOptions[2].prompt.includes('极简贴纸') && promptOptions[2].negativePrompt.includes('不要复杂背景'), 'Agent prompt option parser should keep per-option positive and negative prompts');
   ok(hooks.parseAgentOptionSelection('/1') === 1 && hooks.parseAgentOptionSelection('用第3个') === 3 && hooks.parseAgentOptionSelection('5') === 5, 'Agent option selector should parse slash, Chinese ordinal, and bare number forms');
@@ -1234,11 +1237,34 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(agentMessageHtml.includes('data-option-index="1"') && agentMessageHtml.includes('生成推荐方案') && agentMessageHtml.includes('生成该方案'), 'Agent message should render main recommended generation and per-option generation buttons');
   ok(agentMessageHtml.includes('agent-option-shortcuts') && agentMessageHtml.includes('data-action="copy-agent-prompt"'), 'Agent message should render option shortcuts and prompt copy buttons');
   ok(!agentMessageHtml.includes('data-prompt='), 'Agent generation buttons should not embed the whole prompt in DOM attributes');
+  const singleOptionReply = [
+    '需求已经足够明确，我先给你一个可直接生成的版本。',
+    '',
+    '## 方案 1（推荐）：短视频广告分镜',
+    '**适合模型：** gpt-image2',
+    '**推荐理由：** 单一方向最贴合短视频广告。',
+    '**正向 Prompt：**',
+    '高完成度日系商业动画广告分镜，夏日街头，阳光强烈，年轻角色手持透明玻璃瓶饮料，清爽水珠，竖屏 9:16，三镜头拼接。',
+    '**负面 Prompt：**',
+    '不要品牌 logo，不要真实商标，不要低清，不要文字水印。'
+  ].join('\n');
+  const singleOptions = hooks.extractAgentPromptOptions(singleOptionReply);
+  ok(singleOptions.length === 1 && singleOptions[0].negativePrompt.includes('不要品牌 logo'), 'Agent prompt option parser should support a single adaptive option with negative prompt');
+  const singleMessageHtml = hooks.renderAgentMessage({ id: 'msg-single-option', role: 'assistant', text: singleOptionReply, createdAt: 0 });
+  ok(singleMessageHtml.includes('生成图片') && singleMessageHtml.includes('生成该 Prompt'), 'single Agent prompt option should use concise generation labels');
+  ok(!singleMessageHtml.includes('agent-option-shortcuts') && !singleMessageHtml.includes('生成推荐方案'), 'single Agent prompt option should not render multi-option shortcuts or recommended-plan copy');
+  const clarificationReply = '我需要先确认 3 点：\n\n1. 你要竖屏短视频 9:16，还是横屏广告 16:9？\n2. 主要画面是人物、产品，还是纯场景？\n3. 你希望偏写实、动漫，还是手绘风？';
+  const clarificationHtml = hooks.renderAgentMessage({ id: 'msg-clarify', role: 'assistant', text: clarificationReply, createdAt: 0 });
+  ok(!clarificationHtml.includes('agent-prompt-option-card') && !clarificationHtml.includes('data-action="confirm-agent-image"'), 'clarifying Agent reply should not render prompt cards or image generation buttons');
   const frozenAnchor = hooks.freezeAgentScrollForRender({ id: 'msg-options', offsetTop: 96, scrollTop: 420 });
   const frozenState = hooks.getTestState();
   ok(frozenAnchor?.id === 'msg-options' && frozenState.agentScrollLock?.anchor?.id === 'msg-options' && frozenState.agentScrollState?.nearBottom === false, 'Agent option generation should be able to freeze the current scroll anchor before rendering task cards');
   hooks.releaseAgentScrollFreezeAfterRender();
   ok(hooks.getTestState().agentScrollLock?.keep === false, 'Agent scroll freeze should be released after the task-card render is scheduled');
+  ok(hooks.shouldPreserveAgentScrollForTask({ id: 'task-agent', agentMessageId: 'msg-options' }) === true, 'Agent-linked task updates should preserve Agent scroll during task creation and completion renders');
+  ok(hooks.shouldPreserveAgentScrollForTask({ id: 'task-gallery' }) === false, 'Gallery-only task updates should not force Agent scroll preservation');
+  hooks.setTestState({ mode: 'agent', agentScrollLock: null, agentScrollState: { nearBottom: true, offsetFromBottom: 0 } });
+  ok(hooks.shouldPreserveAgentScrollForTask({ id: 'task-current-mode' }) === true, 'Task updates while viewing Agent should preserve the current Agent scroll anchor');
   hooks.setTestTasks([
     { id: 'agent-task-1', status: 'success', prompt: '这是一段很长很长的生图提示词，不应该在 Agent 内嵌紧凑卡片中展示出来', images: [{ blobId: 'img-1' }], actualCount: 1, expectedCount: 1, apiElapsedMs: 61000 },
     { id: 'agent-task-2', status: 'running', prompt: '另一个很长提示词', images: [], actualCount: 0, expectedCount: 1, startedAt: Date.now() - 9000 }

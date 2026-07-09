@@ -32,14 +32,6 @@ function normalizePrompt(row, fallbackId) {
     i: row.image_url || row.imageUrl || row.i || firstPromptImage(row) || ''
   };
 }
-function previewPrompt(item) {
-  const text = String(item.p || '');
-  return {
-    ...item,
-    p: text.length > 32 ? `${text.slice(0, 32)}...` : text,
-    partial: text.length > 32
-  };
-}
 function normalizeSearchText(value) {
   return String(value || '')
     .normalize('NFKC')
@@ -126,8 +118,8 @@ for (const category of categories) {
   categoryCounts[category] = bucket.length;
   categoryPreviewPages[category] = {
     ...pagePayload,
-    prompts: pagePayload.prompts.map(previewPrompt),
-    source: 'prebuilt-bootstrap-category-preview'
+    prompts: pagePayload.prompts.map((item) => ({ ...item, partial: false })),
+    source: 'prebuilt-bootstrap-category-full'
   };
 }
 
