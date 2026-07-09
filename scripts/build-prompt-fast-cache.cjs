@@ -6,10 +6,14 @@ const sourcePath = path.join(root, 'prompts_data.json');
 const outDir = path.join(root, 'prompts_fast');
 const categoryDir = path.join(outDir, 'categories');
 const detailDir = path.join(outDir, 'details');
+const standalonePageDir = path.join(root, 'prompts_pages');
+const standaloneCategoriesPath = path.join(root, 'prompts_categories.json');
 const outPath = path.join(outDir, 'bootstrap.json');
 const previewPath = path.join(outDir, 'category_previews.json');
 const searchPath = path.join(outDir, 'search_index.json');
 const pageSize = 36;
+const standalonePageSize = 48;
+const standalonePageCount = 12;
 const detailChunkSize = 100;
 
 function firstPromptImage(row) {
@@ -97,8 +101,10 @@ const searchIndex = normalizedRows.map(searchPrompt);
 ensureDir(outDir);
 fs.rmSync(categoryDir, { recursive: true, force: true });
 fs.rmSync(detailDir, { recursive: true, force: true });
+fs.rmSync(standalonePageDir, { recursive: true, force: true });
 ensureDir(categoryDir);
 ensureDir(detailDir);
+ensureDir(standalonePageDir);
 let categoryIndex = 1;
 for (const category of categories) {
   if (category === 'all') continue;
@@ -163,8 +169,28 @@ fs.writeFileSync(searchPath, JSON.stringify({
   total: searchIndex.length,
   prompts: searchIndex
 }));
+fs.writeFileSync(standaloneCategoriesPath, JSON.stringify({
+  generatedAt: payload.generatedAt,
+  categories,
+  total: rows.length,
+  source: 'prebuilt-standalone-categories'
+}));
+for (let page = 1; page <= standalonePageCount; page += 1) {
+  const offset = (page - 1) * standalonePageSize;
+  const prompts = normalizedRows.slice(offset, offset + standalonePageSize);
+  const fileName = `page-${String(page).padStart(3, '0')}.json`;
+  fs.writeFileSync(path.join(standalonePageDir, fileName), JSON.stringify({
+    prompts,
+    total: rows.length,
+    page,
+    limit: standalonePageSize,
+    pages: Math.ceil(rows.length / standalonePageSize),
+    source: 'prebuilt-standalone-page'
+  }));
+}
 console.log(`[build-prompt-fast-cache] wrote ${path.relative(root, outPath)} (${Buffer.byteLength(JSON.stringify(payload))} bytes)`);
 console.log(`[build-prompt-fast-cache] wrote ${path.relative(root, previewPath)} (${Buffer.byteLength(JSON.stringify(previewPayload))} bytes)`);
 console.log(`[build-prompt-fast-cache] wrote ${path.relative(root, searchPath)} (${Buffer.byteLength(JSON.stringify({ generatedAt: payload.generatedAt, total: searchIndex.length, prompts: searchIndex }))} bytes)`);
 console.log(`[build-prompt-fast-cache] wrote ${categoryIndex - 1} category first-page files`);
 console.log(`[build-prompt-fast-cache] wrote ${detailChunkIndex - 1} detail chunk files`);
+console.log(`[build-prompt-fast-cache] wrote ${standalonePageCount} standalone prompt pages`);
