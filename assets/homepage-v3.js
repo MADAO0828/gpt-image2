@@ -9,7 +9,7 @@ const PROMPT_PAGE_SIZE = 36;
 const PROMPT_VIRTUAL_THRESHOLD = 108;
 const PROMPT_VIRTUAL_BUFFER_ROWS = 3;
 const PROMPT_REPO_CACHE_LIMIT = 24;
-const PROMPT_FAST_VERSION = 'home-v3-20260708-prompt-detail-hydrate-r78';
+const PROMPT_FAST_VERSION = 'home-v3-20260709-prompt-register-local-r79';
 const PROMPT_FAST_BOOTSTRAP_URL = `/prompts_fast/bootstrap.json?v=${PROMPT_FAST_VERSION}`;
 const PROMPT_FAST_PREVIEWS_URL = `/prompts_fast/category_previews.json?v=${PROMPT_FAST_VERSION}`;
 const PROMPT_FAST_SEARCH_URL = `/prompts_fast/search_index.json?v=${PROMPT_FAST_VERSION}`;
@@ -4390,11 +4390,12 @@ function renderPromptDetail(item) {
   const imageUrl = normalizePromptImageUrl(promptItemImageSource(item));
   return `
     <div class="modal-layer" style="background:rgba(0,0,0,.18)" data-action="prompt-detail-close">
-      <div class="size-modal" role="dialog" aria-modal="true" aria-label="提示词详情" tabindex="-1" data-stop>
+      <div class="size-modal prompt-full-modal" role="dialog" aria-modal="true" aria-label="提示词详情" tabindex="-1" data-stop>
         <button class="modal-close" aria-label="关闭" data-action="prompt-detail-close">×</button>
         <h2>${esc(item.t || '提示词详情')}</h2>
         ${imageUrl ? `<img src="${esc(imageUrl)}" referrerpolicy="no-referrer" loading="eager" decoding="async" data-action="prompt-image-view" style="width:100%;max-height:320px;object-fit:contain;border-radius:18px;background:rgba(0,0,0,.05)" alt="">` : ''}
-        <p style="line-height:1.7;white-space:pre-wrap">${esc(item.p || '')}</p>
+        <div class="prompt-detail-text-label">完整提示词</div>
+        <div class="prompt-detail-text">${esc(item.p || '')}</div>
         <div class="detail-actions"><button class="reuse" data-action="use-prompt" data-id="${esc(item.id)}">使用提示词</button></div>
       </div>
     </div>

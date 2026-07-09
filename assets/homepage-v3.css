@@ -3624,6 +3624,31 @@ button { cursor: pointer; }
   background: var(--panel-strong);
   box-shadow: var(--shadow);
 }
+.prompt-full-modal {
+  width: min(920px, 94vw);
+}
+.prompt-detail-text-label {
+  margin: 16px 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: .04em;
+}
+.prompt-detail-text {
+  max-height: min(32dvh, 360px);
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.72;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 14px 15px;
+  background: rgba(255, 255, 255, .48);
+}
+:root[data-theme="dark"] .prompt-detail-text {
+  background: rgba(255, 255, 255, .06);
+}
 .size-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

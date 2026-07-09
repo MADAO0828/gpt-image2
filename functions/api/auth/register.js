@@ -46,10 +46,15 @@ function decodeUsername(body) {
   }
   return String(body && body.username || '').trim();
 }
+function publicRegistrationEnabled(env) {
+  if (env?.ALLOW_PUBLIC_REGISTRATION === 'false') return false;
+  if (env?.DISABLE_PUBLIC_REGISTRATION === 'true') return false;
+  return true;
+}
 
 export async function onRequestPost(ctx) {
   try {
-    if (ctx.env?.ALLOW_PUBLIC_REGISTRATION !== 'true') {
+    if (!publicRegistrationEnabled(ctx.env)) {
       return json({ error: 'Registration is disabled' }, 403);
     }
     const body = await ctx.request.json();

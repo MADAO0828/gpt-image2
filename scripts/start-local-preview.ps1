@@ -44,6 +44,14 @@ function Test-HttpReady {
 }
 
 function Get-WranglerCommand {
+  $npx = Get-Command npx.cmd -ErrorAction SilentlyContinue
+  if ($npx) {
+    return @{
+      FilePath = $npx.Source
+      Arguments = @('--yes', 'wrangler', 'pages', 'dev', './', '--ip', $HostName, '--port', [string]$Port)
+    }
+  }
+
   $wrangler = Get-Command wrangler -ErrorAction SilentlyContinue
   if ($wrangler) {
     if ($wrangler.CommandType -eq 'ExternalScript' -and $wrangler.Source -like '*.ps1') {
@@ -57,20 +65,12 @@ function Get-WranglerCommand {
       $wranglerJs = Join-Path $baseDir 'node_modules\\wrangler\\bin\\wrangler.js'
       return @{
         FilePath = $node.Source
-        Arguments = @($wranglerJs, 'pages', 'dev', './', '--ip', $HostName, '--port', [string]$Port)
+      Arguments = @($wranglerJs, 'pages', 'dev', './', '--ip', $HostName, '--port', [string]$Port)
       }
     }
     return @{
       FilePath = $wrangler.Source
       Arguments = @('pages', 'dev', './', '--ip', $HostName, '--port', [string]$Port)
-    }
-  }
-
-  $npx = Get-Command npx.cmd -ErrorAction SilentlyContinue
-  if ($npx) {
-    return @{
-      FilePath = $npx.Source
-      Arguments = @('wrangler', 'pages', 'dev', './', '--ip', $HostName, '--port', [string]$Port)
     }
   }
 
@@ -95,7 +95,27 @@ function Start-WranglerHidden {
   $quotedOut = ConvertTo-PowerShellLiteral -Value $OutLog
   $quotedErr = ConvertTo-PowerShellLiteral -Value $ErrLog
   $quotedJwt = ConvertTo-PowerShellLiteral -Value $DefaultLocalJwtSecret
-  $commandLine = "if (-not `$env:JWT_SECRET) { `$env:JWT_SECRET = $quotedJwt }; if (-not `$env:ALLOW_INSECURE_JWT_FALLBACK) { `$env:ALLOW_INSECURE_JWT_FALLBACK = 'true' }; Set-Location -LiteralPath $quotedProject; & $quotedFile $quotedArgs > $quotedOut 2> $quotedErr"
+  $commandLine = "if (-not `$env:JWT_SECRET) { `$env:JWT_SECRET = $quotedJwt }; if (-not `$env:ALLOW_INSECURE_JWT_FALLBACK) { `$env:ALLOW_INSECURE_JWT_FALLBACK = 'true' }; if (-not `$env:ALLOW_PUBLIC_REGISTRATION) { `$env:ALLOW_PUBLIC_REGISTRATION = 'true' }; Set-Location -LiteralPath $quotedProject; & $quotedFile $quotedArgs > $quotedOut 2> $quotedErr"
+
+  Start-Process `
+    -FilePath $powershell `
+    -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $commandLine) `
+    -WorkingDirectory $ProjectRoot `
+    -WindowStyle Hidden | Out-Null
+}
+
+function Start-NodeFallbackHidden {
+  New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+  $powershell = (Get-Command powershell.exe -ErrorAction Stop).Source
+  $node = (Get-Command node.exe -ErrorAction Stop).Source
+  $server = Join-Path $ProjectRoot 'scripts\local-preview-server.mjs'
+  $quotedNode = ConvertTo-PowerShellLiteral -Value $node
+  $quotedServer = ConvertTo-PowerShellLiteral -Value $server
+  $quotedProject = ConvertTo-PowerShellLiteral -Value $ProjectRoot
+  $quotedOut = ConvertTo-PowerShellLiteral -Value $OutLog
+  $quotedErr = ConvertTo-PowerShellLiteral -Value $ErrLog
+  $quotedJwt = ConvertTo-PowerShellLiteral -Value $DefaultLocalJwtSecret
+  $commandLine = "if (-not `$env:JWT_SECRET) { `$env:JWT_SECRET = $quotedJwt }; if (-not `$env:ALLOW_PUBLIC_REGISTRATION) { `$env:ALLOW_PUBLIC_REGISTRATION = 'true' }; `$env:LOCAL_PREVIEW_PORT = '$Port'; `$env:LOCAL_PREVIEW_HOST = '$HostName'; Set-Location -LiteralPath $quotedProject; & $quotedNode $quotedServer > $quotedOut 2> $quotedErr"
 
   Start-Process `
     -FilePath $powershell `
@@ -116,7 +136,16 @@ if (-not (Test-PortOpen -HostName $HostName -Port $Port)) {
 }
 
 if (-not (Test-HttpReady -Url ($Url + 'login'))) {
-  throw "Local preview did not start on $Url. Check $ErrLog."
+  Start-NodeFallbackHidden
+  $deadline = (Get-Date).AddSeconds(20)
+  while ((Get-Date) -lt $deadline) {
+    if (Test-HttpReady -Url ($Url + 'login')) { break }
+    Start-Sleep -Milliseconds 500
+  }
+}
+
+if (-not (Test-HttpReady -Url ($Url + 'login'))) {
+  throw "Local preview did not start on $Url. Wrangler failed and Node fallback did not start. Check $ErrLog."
 }
 
 Start-Process $Url

@@ -122,7 +122,7 @@ test('settings save preserves existing secrets when placeholder strings are post
   assert.equal(JSON.parse(profilesWrite.bound[2])[0].googleNativeApiKey, 'google-native-existing');
 });
 
-test('public registration is disabled unless explicitly enabled', async () => {
+test('public registration can be disabled explicitly', async () => {
   const mod = await importWorkerModule('functions/api/auth/register.js', ['onRequestPost']);
   const res = await mod.onRequestPost({
     request: new Request('https://prod.example/api/auth/register', {
@@ -130,7 +130,7 @@ test('public registration is disabled unless explicitly enabled', async () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: 'new-user', password: 'pass1234' })
     }),
-    env: { gpt_image2_db: makeDb() }
+    env: { gpt_image2_db: makeDb(), DISABLE_PUBLIC_REGISTRATION: 'true' }
   });
   assert.equal(res.status, 403);
 });
