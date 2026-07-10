@@ -13,7 +13,7 @@ const PROMPT_PAGE_SIZE = 36;
 const PROMPT_VIRTUAL_THRESHOLD = 108;
 const PROMPT_VIRTUAL_BUFFER_ROWS = 3;
 const PROMPT_REPO_CACHE_LIMIT = 24;
-const PROMPT_FAST_VERSION = 'home-v3-20260710-image-actions-r85';
+const PROMPT_FAST_VERSION = 'home-v3-20260710-output-quality-r86';
 const PROMPT_FAST_BOOTSTRAP_URL = `/prompts_fast/bootstrap.json?v=${PROMPT_FAST_VERSION}`;
 const PROMPT_FAST_PREVIEWS_URL = `/prompts_fast/category_previews.json?v=${PROMPT_FAST_VERSION}`;
 const PROMPT_FAST_SEARCH_URL = `/prompts_fast/search_index.json?v=${PROMPT_FAST_VERSION}`;
@@ -274,6 +274,22 @@ function firstDefined(...values) {
     if (value !== undefined && value !== null && String(value).trim() !== '') return value;
   }
   return undefined;
+}
+
+function outputQualityPercent(value, fallback = 90) {
+  const number = Number(value);
+  const fallbackNumber = Number(fallback);
+  const normalized = Number.isFinite(number) ? number : (Number.isFinite(fallbackNumber) ? fallbackNumber : 90);
+  return Math.max(0, Math.min(100, Math.round(normalized)));
+}
+
+function outputCompressionFromQuality(value, fallback = 90) {
+  return 100 - outputQualityPercent(value, fallback);
+}
+
+function outputQualityFromCompression(value, fallback = undefined) {
+  if (value === undefined || value === null || value === '') return fallback;
+  return 100 - outputQualityPercent(value, 0);
 }
 
 function collectObjectsDeep(value, options = {}) {
@@ -1686,7 +1702,8 @@ function settingsForSummary(settings = state.settings) {
   return {
     quality: settings?.quality || 'high',
     output_format: settings?.output_format || 'png',
-    output_compression: Number(settings?.output_compression) || 90,
+    // Keep the legacy storage key, but treat its value as user-facing output quality.
+    output_compression: outputQualityPercent(settings?.output_compression, 90),
     n: Math.max(1, Number(settings?.n) || 1),
     transparent_output: !!settings?.transparent_output,
     moderation: settings?.moderation || 'auto',
@@ -1735,6 +1752,8 @@ function requestedParamsFromSettings(profile = activeProfile(), settings = state
     quality: source.quality,
     format: source.output_format,
     compression: source.output_compression,
+    outputQuality: source.output_compression,
+    outputCompression: outputCompressionFromQuality(source.output_compression),
     transparent: !!source.transparent_output,
     moderation: source.moderation,
     count: Number(source.n) || 1
@@ -1855,7 +1874,7 @@ function computeParamMismatches(requested = {}, returned = {}, images = []) {
     { key: 'quality', type: 'text', requested: firstDefined(requested.quality), actual: firstDefined(returned.quality) },
     { key: 'format', type: 'format', requested: firstDefined(requested.format, requested.output_format), actual: firstDefined(returned.format, returned.outputFormat, returned.output_format) },
     { key: 'transparent', type: 'bool', requested: firstDefined(requested.transparent, requested.background === 'transparent' ? true : requested.transparent_background), actual: firstDefined(returned.transparent, returned.transparentBackground, returned.transparent_background, returned.background) },
-    { key: 'compression', type: 'number', requested: firstDefined(requested.compression, requested.outputCompression, requested.output_compression), actual: firstDefined(returned.compression, returned.outputCompression, returned.output_compression) },
+    { key: 'outputQuality', type: 'number', requested: firstDefined(requested.outputQuality, requested.output_quality, requested.compression, requested.output_compression), actual: firstDefined(returned.outputQuality, returned.output_quality, returned.compression) },
     { key: 'moderation', type: 'text', requested: firstDefined(requested.moderation), actual: firstDefined(returned.moderation) },
     { key: 'count', type: 'number', requested: firstDefined(requested.count), actual: firstDefined(returned.count, images.length || undefined) }
   ];
@@ -2797,7 +2816,7 @@ function cardParamSummary(task) {
   const profile = firstDefined(req.profileName, task.profileName, task.model, 'model');
   const variable = isPng
     ? `透明${normalizeComparableValue(firstDefined(req.transparent, req.transparent_background), 'bool') === 'yes' ? '开' : '关'}`
-    : `压缩${displayParamValue(firstDefined(req.compression, req.outputCompression, req.output_compression, task.compression), '')}`;
+    : `质量${displayParamValue(firstDefined(req.outputQuality, req.output_quality, req.compression, req.output_compression, task.compression), '')}`;
   return [
     profile,
     variable,
@@ -3212,7 +3231,7 @@ function renderGalleryComposer() {
           <button class="control-chip" data-action="open-size-modal"><small>自动比例</small>${esc(ratioSummary())}</button>
           <button class="control-chip" data-action="open-popover" data-popover="quality"><small>质量</small>${esc(state.settings.quality)}</button>
           <button class="control-chip" data-action="open-popover" data-popover="format"><small>格式</small>${esc(state.settings.output_format)}</button>
-          <button class="control-chip" data-action="open-popover" data-popover="compression"><small>${state.settings.output_format === 'png' ? '透明背景' : '压缩/质量'}</small>${esc(state.settings.output_format === 'png' ? (state.settings.transparent_output ? '是' : '否') : state.settings.output_compression)}</button>
+          <button class="control-chip" data-action="open-popover" data-popover="compression" title="${state.settings.output_format === 'png' ? '透明背景' : '100 为最高质量、最低压缩'}"><small>${state.settings.output_format === 'png' ? '透明背景' : '输出质量'}</small>${esc(state.settings.output_format === 'png' ? (state.settings.transparent_output ? '是' : '否') : state.settings.output_compression)}</button>
           <label class="control-chip"><small>数量</small><input type="number" min="1" max="8" value="${esc(state.settings.n)}" data-action="count-input"></label>
           <button class="control-icon control-advanced" data-action="open-entry-advanced" data-entry="gallery" title="高级配置" aria-label="高级配置">⚙</button>
         </div>
@@ -3299,7 +3318,7 @@ function renderMobileParamDrawer() {
       <button class="control-chip" data-action="open-size-modal"><small>自动比例</small>${esc(ratioSummary())}</button>
       <button class="control-chip" data-action="open-popover" data-popover="quality"><small>质量</small>${esc(state.settings.quality)}</button>
       <button class="control-chip" data-action="open-popover" data-popover="format"><small>格式</small>${esc(state.settings.output_format)}</button>
-      <button class="control-chip" data-action="open-popover" data-popover="compression"><small>${state.settings.output_format === 'png' ? '透明背景' : '压缩/质量'}</small>${esc(state.settings.output_format === 'png' ? (state.settings.transparent_output ? '是' : '否') : state.settings.output_compression)}</button>
+      <button class="control-chip" data-action="open-popover" data-popover="compression" title="${state.settings.output_format === 'png' ? '透明背景' : '100 为最高质量、最低压缩'}"><small>${state.settings.output_format === 'png' ? '透明背景' : '输出质量'}</small>${esc(state.settings.output_format === 'png' ? (state.settings.transparent_output ? '是' : '否') : state.settings.output_compression)}</button>
       <label class="control-chip"><small>数量</small><input type="number" min="1" max="8" value="${esc(state.settings.n)}" data-action="count-input"></label>
       <button class="control-icon control-advanced" data-action="open-entry-advanced" data-entry="gallery" title="高级配置" aria-label="高级配置">⚙</button>
       <button class="control-chip" data-action="pick-reference"><small>参考图</small>${state.references.length}/${referenceLimit()}</button>
@@ -3486,7 +3505,7 @@ function renderAgentImageParamControls() {
     <button class="control-chip" data-action="open-agent-size-modal"><small>比例</small>${esc(agentImageAspectValue(profile, settings))}</button>
     <button class="control-chip" data-action="open-agent-popover" data-popover="agent-quality"><small>质量</small>${esc(settings.quality || 'high')}</button>
     <button class="control-chip" data-action="open-agent-popover" data-popover="agent-format"><small>格式</small>${esc(format)}</button>
-    <button class="control-chip" data-action="open-agent-popover" data-popover="agent-compression"><small>${format === 'png' ? '透明' : '压缩/质量'}</small>${esc(format === 'png' ? transparent : settings.output_compression)}</button>
+    <button class="control-chip" data-action="open-agent-popover" data-popover="agent-compression" title="${format === 'png' ? '透明背景' : '100 为最高质量、最低压缩'}"><small>${format === 'png' ? '透明' : '输出质量'}</small>${esc(format === 'png' ? transparent : settings.output_compression)}</button>
     <button class="control-chip" data-action="set-agent-image-param" data-field="n"><small>数量</small>${esc(Number(settings.n) || 1)}</button>
     <button class="control-icon control-advanced" data-action="open-agent-image-advanced" title="Agent 生图高级配置" aria-label="Agent 生图高级配置">⚙</button>
   `;
@@ -4365,7 +4384,7 @@ function renderDetailModal(taskId) {
   };
   const compressionParam = formatForConditional === 'png'
     ? param('透明背景', 'transparent', !!requested.transparent, { type: 'bool', aliases: ['transparentBackground', 'transparent_background'] })
-    : param('压缩/质量', 'compression', requested.compression, { type: 'number', aliases: ['outputCompression', 'output_compression', 'compressionQuality'] });
+    : param('输出质量', 'outputQuality', firstDefined(requested.outputQuality, requested.output_quality, requested.compression), { type: 'number', aliases: ['output_quality', 'compression'] });
   return `
     <div class="modal-layer" data-action="close-modal-bg">
       <div class="detail-modal" role="dialog" aria-modal="true" aria-label="生图任务详情" tabindex="-1" data-modal-key="task-detail" data-stop>
@@ -4854,9 +4873,21 @@ function renderPopover(pop) {
   const rect = pop.rect || { left: 40, top: 40, bottom: 100 };
   return `
     <div class="popover up-popover" style="${popoverStyle(rect, 250, Math.min(320, 48 + options.length * 38))}">
-      ${options.map((value) => `<button class="${isPopoverValueActive(pop.type, value) ? 'active' : ''}" data-action="${String(pop.type || '').startsWith('agent-') ? 'set-agent-popover-value' : 'set-popover-value'}" data-type="${esc(pop.type)}" data-value="${esc(value)}">${esc(value)}</button>`).join('')}
+      ${options.map((value) => `<button class="${isPopoverValueActive(pop.type, value) ? 'active' : ''}" data-action="${String(pop.type || '').startsWith('agent-') ? 'set-agent-popover-value' : 'set-popover-value'}" data-type="${esc(pop.type)}" data-value="${esc(value)}">${esc(popoverOptionLabel(pop.type, value))}</button>`).join('')}
     </div>
   `;
+}
+function popoverOptionLabel(type, value) {
+  if ((type === 'compression' || type === 'agent-compression') && /^\d+$/.test(String(value))) {
+    return {
+      100: '100 · 最高质量',
+      95: '95 · 极高质量',
+      90: '90 · 高质量',
+      80: '80 · 均衡',
+      70: '70 · 较小文件'
+    }[Number(value)] || String(value);
+  }
+  return String(value);
 }
 function renderAgentProjectMenu(pop) {
   const rect = pop.rect || { left: 40, top: 40, bottom: 80 };
@@ -6078,6 +6109,7 @@ function setAgentImageParam(field, value) {
     settings.n = value ? Math.max(1, Math.min(8, Number(value) || 1)) : ((Number(settings.n) || 1) % 8) + 1;
   }
   state.agent.imageSettings = settings;
+  state.popover = null;
   writeStore();
   render();
 }
@@ -7099,7 +7131,16 @@ function imageOutputParams(params = {}, profile = imageProfile()) {
       out.background = transparent ? 'transparent' : 'auto';
     }
   } else {
-    out.output_compression = Number(firstDefined(requestParams.compression, requestParams.output_compression, state.settings.output_compression, 90)) || 90;
+    const outputQuality = firstDefined(
+      requestParams.outputQuality,
+      requestParams.output_quality,
+      requestParams.compressionQuality,
+      requestParams.compression,
+      requestParams.output_compression,
+      state.settings.output_compression,
+      90
+    );
+    out.output_compression = outputCompressionFromQuality(outputQuality, 90);
   }
   return out;
 }
@@ -7344,7 +7385,11 @@ function extractReturnedParams(response, params, images = []) {
     readDeepAlias(response, ['format', 'output_format', 'outputFormat', 'mimeType', 'mime_type']),
     firstImage.type
   );
-  const returnedCompression = readDeepAlias(response, ['compression', 'output_compression', 'outputCompression', 'compressionQuality', 'compression_quality']);
+  const returnedCompression = readDeepAlias(response, ['compression', 'output_compression', 'outputCompression']);
+  const returnedOutputQuality = firstDefined(
+    readDeepAlias(response, ['outputQuality', 'output_quality', 'compressionQuality', 'compression_quality']),
+    outputQualityFromCompression(returnedCompression)
+  );
   const returnedBackground = readDeepAlias(response, ['background']);
   const returnedTransparent = firstDefined(
     readDeepAlias(response, ['transparent', 'transparent_background', 'transparentBackground', 'transparent_output', 'transparentOutput']),
@@ -7360,7 +7405,8 @@ function extractReturnedParams(response, params, images = []) {
     quality: readDeepAlias(response, ['quality', 'image_quality', 'imageQuality']),
     format: returnedFormat,
     outputFormat: returnedFormat,
-    compression: returnedCompression,
+    compression: returnedOutputQuality,
+    outputQuality: returnedOutputQuality,
     outputCompression: returnedCompression,
     transparent: returnedTransparent,
     transparentBackground: returnedTransparent,
@@ -7410,6 +7456,9 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     shouldCloseModalFromClick,
     returnedPromptFromResponse,
     normalizeComparableValue,
+    outputQualityPercent,
+    outputCompressionFromQuality,
+    outputQualityFromCompression,
     computeParamMismatches,
     providerPayload,
     promptWithCanvasConstraint,
@@ -7515,6 +7564,7 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
       if (patch.composerPrompt !== undefined) state.composerPrompt = patch.composerPrompt;
       if (patch.galleryVirtual) state.galleryVirtual = { ...state.galleryVirtual, ...patch.galleryVirtual };
       if (patch.promptRepo) state.promptRepo = { ...state.promptRepo, ...patch.promptRepo };
+      if (patch.popover !== undefined) state.popover = patch.popover;
     },
     getTestState: () => JSON.parse(JSON.stringify({
       profiles: state.profiles,
@@ -7530,6 +7580,7 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
       composerPrompt: state.composerPrompt,
       galleryVirtual: state.galleryVirtual,
       promptRepo: state.promptRepo,
+      popover: state.popover,
       agentScrollLock: state.agentScrollLock,
       agentScrollState: state.agentScrollState,
       confirmDialog: state.confirmDialog,

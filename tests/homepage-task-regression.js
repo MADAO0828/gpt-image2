@@ -465,7 +465,8 @@ ok(params.resolution === '1600x900', 'returned resolution should fall back to pe
 ok(params.aspectRatio === '16:9', 'returned aspect ratio alias should be extracted');
 ok(params.quality === 'high', 'returned quality alias should be extracted');
 ok(params.format === 'webp', 'returned output format alias should be extracted');
-ok(Number(params.compression) === 72, 'returned compression alias should be extracted');
+ok(Number(params.compression) === 28 && Number(params.outputQuality) === 28, 'returned API compression should be converted to user-facing output quality');
+ok(Number(params.outputCompression) === 72, 'returned raw API compression should remain available for diagnostics');
 ok(params.moderation === 'low', 'returned moderation alias should be extracted');
 ok(params.count === 2, 'returned count should prefer actual persisted image count');
 
@@ -496,7 +497,7 @@ const nestedReturned = hooks.extractReturnedParams({
 ok(nestedReturned.aspectRatio === '16:9', 'nested returned aspect ratio should be extracted');
 ok(nestedReturned.quality === 'low', 'nested returned quality should be extracted');
 ok(nestedReturned.format === 'webp', 'nested returned format should be extracted');
-ok(Number(nestedReturned.compression) === 64, 'nested returned compression should be extracted');
+ok(Number(nestedReturned.compression) === 36 && Number(nestedReturned.outputCompression) === 64, 'nested API compression should expose both output quality and raw compression');
 ok(nestedReturned.transparent === true, 'nested returned transparent flag should be extracted');
 ok(nestedReturned.moderation === 'strict', 'nested returned moderation should be extracted');
 ok(nestedReturned.count === 2, 'returned count should still prefer actual persisted images over response count');
@@ -952,7 +953,7 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(googleFormExtra?.generationConfig?.imageConfig?.imageSize === '2K', 'Google reference FormData should include Gemini imageConfig imageSize');
   ok(googleForm.get('quality') === 'medium', 'Google reference FormData should include selected quality');
   ok(googleForm.get('output_format') === 'webp', 'Google reference FormData should include selected output format');
-  ok(String(googleForm.get('output_compression')) === '72', 'Google reference FormData should include selected compression for non-png output');
+  ok(String(googleForm.get('output_compression')) === '28', 'Google reference FormData should convert selected output quality to API compression');
   ok(googleForm.get('moderation') === 'low', 'Google reference FormData should include selected moderation');
   ok(String(googleForm.get('n')) === '1', 'Google reference FormData should force n=1');
 
@@ -980,6 +981,9 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(hooks.openAiTransparentBackgroundSupported({ provider: 'openai', model: 'gpt-image-2', supportsNativeTransparency: true }) === true, 'explicit OpenAI native transparency capability should be honored');
   ok(hooks.openAiTransparentBackgroundSupported({ provider: 'google', model: 'gemini-3.1-flash-image-preview' }) === false, 'Google/Nano profiles should not claim OpenAI transparent-background support');
   ok(hooks.openAiTransparentBackgroundSupported({ provider: 'xai', model: 'grok-imagine-image-pro' }) === false, 'Xai/Grok profiles should not claim OpenAI transparent-background support');
+  ok(hooks.outputCompressionFromQuality(100) === 0 && hooks.outputCompressionFromQuality(70) === 30, 'output quality 100 must map to minimum API compression and 70 to compression 30');
+  ok(hooks.outputQualityFromCompression(0) === 100 && hooks.outputQualityFromCompression(30) === 70, 'API compression must map back to the matching user-facing output quality');
+  ok(hooks.imageOutputParams({ format: 'webp', compression: 100 }, { provider: 'openai' }).output_compression === 0, 'WebP output quality 100 should send API compression 0');
 
   const greenPixels = new Uint8ClampedArray([
     0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255,
@@ -1070,7 +1074,7 @@ if (typeof hooks.openAiSizePayload === 'function') {
   const xaiBody = JSON.parse(capturedRequest?.options?.body || '{}');
   ok(xaiBody.resolution === '2k', 'Xai generation request body should include selected resolution');
   ok(xaiBody.aspect_ratio === '9:20', 'Xai generation request body should include selected aspect ratio');
-  ok(Number(xaiBody.output_compression) === 80, 'Xai generation request body should include selected compression');
+  ok(Number(xaiBody.output_compression) === 20, 'Xai generation request body should convert selected output quality to API compression');
   ok(xaiBody.response_format === undefined, 'Xai generation request body should not include response_format');
 
   await hooks.sendGenerationRequest('grok transparent png payload', {
@@ -2220,9 +2224,17 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(compactComposerHtml.indexOf('文本模型') < compactComposerHtml.indexOf('生图模型') && compactComposerHtml.indexOf('生图模型') < compactComposerHtml.indexOf('data-action="agent-chat"'), 'Agent toolbar should keep text controls, image params, and send button in one row order');
   const initialAgentParams = hooks.agentImageParams();
   ok(initialAgentParams.profileName === '画廊模型' && initialAgentParams.resolution === '4K' && initialAgentParams.aspectRatio === '3:2' && initialAgentParams.transparent === true && initialAgentParams.count === 2, 'hybrid Agent image settings should initialize from agentImageProfileId before the active gallery profile');
+  hooks.setAgentImageParam('output_format', 'webp');
+  const agentQualityComposerHtml = hooks.renderAgentComposer();
+  ok(agentQualityComposerHtml.includes('输出质量') && !agentQualityComposerHtml.includes('压缩/质量'), 'Agent non-PNG compression control should be labeled as user-facing output quality');
+  const agentQualityPopoverHtml = hooks.renderPopover({ type: 'agent-compression', rect: { left: 20, top: 200, bottom: 240 } });
+  ok(agentQualityPopoverHtml.includes('100 · 最高质量') && agentQualityPopoverHtml.includes('70 · 较小文件'), 'output quality popover should explain the direction of the quality scale');
   hooks.setTestState({ settings: { openaiSize: '1K', openaiAspectRatio: '1:1', n: 1, transparent_output: false } });
   const independentAgentParams = hooks.agentImageParams();
   ok(independentAgentParams.resolution === '4K' && independentAgentParams.aspectRatio === '3:2' && independentAgentParams.transparent === true && independentAgentParams.count === 2, 'Agent image params should stay independent after gallery settings change');
+  hooks.setTestState({ popover: { type: 'agent-resolution', rect: { left: 10, top: 10, bottom: 40 } } });
+  hooks.setAgentImageParam('resolution', '2K');
+  ok(hooks.getTestState().popover === null, 'Agent model, resolution, and ratio choices should close the active popover after selection');
   hooks.setTestState({ agentConfig: { mode: 'off', imageProfileId: null }, agent: { imageSettings: null } });
   const galleryFallbackAgentParams = hooks.agentImageParams();
   ok(galleryFallbackAgentParams.profileName === '备用模型', 'Agent image settings should clone the active gallery profile only when no hybrid image profile is configured');

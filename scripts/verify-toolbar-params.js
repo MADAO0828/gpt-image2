@@ -39,7 +39,7 @@ assertContains('JSON sends provider payload', 'Object.assign(body, providerPaylo
 assertContains('multipart sends provider payload', 'appendProviderParams(fd, provider, requestParams)');
 assertPattern('output params include quality', /quality:\s*firstDefined\(/);
 assertContains('output params include format', 'output_format: format');
-assertContains('non-png sends compression', "out.output_compression = Number(firstDefined");
+assertContains('non-png converts output quality to compression', 'out.output_compression = outputCompressionFromQuality(outputQuality, 90)');
 assertContains('native transparency requires explicit capability', "profile?.supportsNativeTransparency === true");
 assertContains('non-OpenAI branches preserve transparent background', "providerKey(profile) !== 'openai' || openAiTransparentBackgroundSupported(profile)");
 assertContains('capable profiles send transparent background', 'out.transparent_background = transparent');
