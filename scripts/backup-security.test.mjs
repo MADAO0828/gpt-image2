@@ -244,8 +244,8 @@ test('new password hashing uses random per-user PBKDF2 salts', async () => {
   const mod = await importWorkerModule('functions/_lib/password.js');
   const first = await mod.hashPassword('correct horse battery staple');
   const second = await mod.hashPassword('correct horse battery staple');
-  assert.match(first, /^pbkdf2-sha256\$210000\$[^$]+\$[^$]+$/);
-  assert.match(second, /^pbkdf2-sha256\$210000\$[^$]+\$[^$]+$/);
+  assert.match(first, /^pbkdf2-sha256\$100000\$[^$]+\$[^$]+$/);
+  assert.match(second, /^pbkdf2-sha256\$100000\$[^$]+\$[^$]+$/);
   assert.notEqual(first, second);
   assert.equal((await mod.verifyPassword('correct horse battery staple', first)).valid, true);
   assert.equal((await mod.verifyPassword('wrong password', first)).valid, false);
@@ -272,7 +272,7 @@ test('legacy password login succeeds and migrates the stored hash to PBKDF2', as
   const loginBody = await res.json();
   assert.equal(Object.prototype.hasOwnProperty.call(loginBody, 'token'), false);
   assert.match(res.headers.get('Set-Cookie') || '', /HttpOnly/i);
-  assert.match(users[0].password_hash, /^pbkdf2-sha256\$210000\$/);
+  assert.match(users[0].password_hash, /^pbkdf2-sha256\$100000\$/);
 });
 
 test('production authentication accepts session cookies and rejects header tokens by default', async () => {

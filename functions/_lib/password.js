@@ -1,6 +1,7 @@
 const LEGACY_PASSWORD_SALT = 'gpt-image2-auth-salt-2026';
 const PBKDF2_ALGORITHM = 'pbkdf2-sha256';
-const PBKDF2_ITERATIONS = 210000;
+// Cloudflare Pages Web Crypto currently rejects PBKDF2 counts above 100000.
+const PBKDF2_ITERATIONS = 100000;
 const SALT_BYTES = 16;
 const HASH_BITS = 256;
 
@@ -62,7 +63,7 @@ export async function verifyPassword(password, storedHash) {
   const parts = encoded.split('$');
   if (parts.length === 4 && parts[0] === PBKDF2_ALGORITHM) {
     const iterations = Number.parseInt(parts[1], 10);
-    if (!Number.isSafeInteger(iterations) || iterations < 100000 || iterations > 2000000) {
+    if (!Number.isSafeInteger(iterations) || iterations < 100000 || iterations > PBKDF2_ITERATIONS) {
       return { valid: false, needsRehash: false };
     }
     try {

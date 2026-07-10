@@ -152,7 +152,7 @@ password_hash LIKE 'pbkdf2-sha256$%'
 AND (length(password_hash) - length(replace(password_hash, '$', ''))) = 3
 AND substr(substr(password_hash, length('pbkdf2-sha256$') + 1), 1, instr(substr(password_hash, length('pbkdf2-sha256$') + 1), '$') - 1) != ''
 AND substr(substr(password_hash, length('pbkdf2-sha256$') + 1), 1, instr(substr(password_hash, length('pbkdf2-sha256$') + 1), '$') - 1) NOT GLOB '*[^0-9]*'
-AND CAST(substr(substr(password_hash, length('pbkdf2-sha256$') + 1), 1, instr(substr(password_hash, length('pbkdf2-sha256$') + 1), '$') - 1) AS INTEGER) BETWEEN 100000 AND 2000000
+AND CAST(substr(substr(password_hash, length('pbkdf2-sha256$') + 1), 1, instr(substr(password_hash, length('pbkdf2-sha256$') + 1), '$') - 1) AS INTEGER) = 100000
 AND length(substr(substr(substr(password_hash, length('pbkdf2-sha256$') + 1), instr(substr(password_hash, length('pbkdf2-sha256$') + 1), '$') + 1), 1, instr(substr(substr(password_hash, length('pbkdf2-sha256$') + 1), instr(substr(password_hash, length('pbkdf2-sha256$') + 1), '$') + 1), '$') - 1)) = 22
 AND substr(substr(substr(password_hash, length('pbkdf2-sha256$') + 1), instr(substr(password_hash, length('pbkdf2-sha256$') + 1), '$') + 1), 1, instr(substr(substr(password_hash, length('pbkdf2-sha256$') + 1), instr(substr(password_hash, length('pbkdf2-sha256$') + 1), '$') + 1), '$') - 1) NOT GLOB '*[^A-Za-z0-9_-]*'
 AND length(substr(substr(substr(password_hash, length('pbkdf2-sha256$') + 1), instr(substr(password_hash, length('pbkdf2-sha256$') + 1), '$') + 1), instr(substr(substr(password_hash, length('pbkdf2-sha256$') + 1), instr(substr(password_hash, length('pbkdf2-sha256$') + 1), '$') + 1), '$') + 1)) = 43
