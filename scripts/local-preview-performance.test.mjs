@@ -156,6 +156,12 @@ test('preview sources keep streaming and diagnostic fallback invariants', async 
   assert.doesNotMatch(serverSource, /fs\.readFileSync\(file\)/);
   assert.match(startSource, /Falling back to the Node preview server/);
   assert.match(startSource, /Wrangler stderr/);
+  assert.match(startSource, /\[string\]\$Engine = 'Node'/);
+  assert.match(startSource, /System\.Threading\.Mutex/);
+  assert.match(startSource, /Get-ProcessAncestry/);
+  assert.match(startSource, /Stop-ProcessTree -ProcessId/);
+  assert.match(startSource, /launcher-latest\.log/);
+  assert.match(startSource, /status\.json/);
   assert.doesNotMatch(startSource, /throw 'Wrangler is not installed\.'/);
 
   const shell = spawnSync('pwsh.exe', [

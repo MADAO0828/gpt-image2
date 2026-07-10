@@ -1,3 +1,11 @@
+[CmdletBinding()]
+param(
+  [ValidateSet('Node', 'Wrangler', 'Auto')]
+  [string]$Engine = 'Node',
+  [switch]$NoBrowser,
+  [switch]$ReuseExisting
+)
+
 $ErrorActionPreference = 'Stop'
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
@@ -5,12 +13,54 @@ $Port = 8788
 $HostName = '127.0.0.1'
 $Url = "http://$HostName`:$Port/"
 $LogDir = Join-Path $ProjectRoot '.wrangler\local-preview'
+$LauncherLog = Join-Path $LogDir 'launcher-latest.log'
+$StatusFile = Join-Path $LogDir 'status.json'
 $Stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $WranglerOutLog = Join-Path $LogDir "wrangler-local-$Stamp.out.log"
 $WranglerErrLog = Join-Path $LogDir "wrangler-local-$Stamp.err.log"
 $NodeOutLog = Join-Path $LogDir "node-local-$Stamp.out.log"
 $NodeErrLog = Join-Path $LogDir "node-local-$Stamp.err.log"
 $DefaultLocalJwtSecret = 'gpt-image2-local-preview-jwt-20260705'
+$LauncherMutexName = 'Local\NexGen-GPT-Image2-Local-Preview-8788'
+
+function Write-LauncherLog {
+  param(
+    [string]$Message,
+    [ValidateSet('INFO', 'WARN', 'ERROR')]
+    [string]$Level = 'INFO'
+  )
+
+  New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+  $line = '[{0}] [{1}] {2}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff'), $Level, $Message
+  Add-Content -LiteralPath $LauncherLog -Value $line -Encoding utf8
+  if ($Level -eq 'WARN') {
+    Write-Warning $Message
+  } elseif ($Level -eq 'ERROR') {
+    Write-Host $Message -ForegroundColor Red
+  } else {
+    Write-Host $Message
+  }
+}
+
+function Write-PreviewStatus {
+  param(
+    [string]$State,
+    [string]$ActiveEngine = '',
+    [int]$ProcessId = 0,
+    [string]$Message = ''
+  )
+
+  New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+  [ordered]@{
+    state = $State
+    engine = $ActiveEngine
+    pid = $ProcessId
+    url = $Url
+    projectRoot = $ProjectRoot
+    updatedAt = (Get-Date).ToString('o')
+    message = $Message
+  } | ConvertTo-Json | Set-Content -LiteralPath $StatusFile -Encoding utf8
+}
 
 function Test-PortOpen {
   param(
@@ -62,16 +112,33 @@ function Get-ListeningProcessInfo {
   }
 }
 
-function Test-IsProjectPreviewProcess {
+function Get-ProcessAncestry {
   param($ProcessInfo)
 
-  if (-not $ProcessInfo) { return $false }
-  $cmd = [string]$ProcessInfo.CommandLine
+  $chain = @()
+  $current = $ProcessInfo
+  $seen = @{}
+  for ($depth = 0; $current -and $depth -lt 10; $depth++) {
+    $pidValue = [int]$current.ProcessId
+    if ($seen.ContainsKey($pidValue)) { break }
+    $seen[$pidValue] = $true
+    $chain += $current
+    $parentId = [int]$current.ParentProcessId
+    if ($parentId -le 0) { break }
+    $current = Get-CimInstance Win32_Process -Filter ("ProcessId = {0}" -f $parentId) -ErrorAction SilentlyContinue
+  }
+  return $chain
+}
+
+function Test-IsProjectPreviewCommand {
+  param([string]$CommandLine)
+
+  $cmd = [string]$CommandLine
   if (-not $cmd) { return $false }
   return (
     $cmd -like "*$ProjectRoot*" -or
     $cmd -like "*local-preview-server.mjs*" -or
-    $cmd -like "*wrangler*pages*dev*./*--port*8788*"
+    $cmd -like "*wrangler*pages*dev*--port*8788*"
   )
 }
 
@@ -83,11 +150,19 @@ function Stop-ExistingPreviewProcess {
 
   $proc = Get-ListeningProcessInfo -HostName $HostName -Port $Port
   if (-not $proc) { return }
-  if (-not (Test-IsProjectPreviewProcess -ProcessInfo $proc)) {
+  $chain = @(Get-ProcessAncestry -ProcessInfo $proc)
+  $owned = @($chain | Where-Object { Test-IsProjectPreviewCommand -CommandLine ([string]$_.CommandLine) })
+  if (-not $owned.Count) {
     throw ("Port {0} is already in use by another process: PID {1} {2}`nCommandLine: {3}" -f $Port, $proc.ProcessId, $proc.Name, ([string]$proc.CommandLine))
   }
-  Stop-Process -Id $proc.ProcessId -Force -ErrorAction Stop
-  Start-Sleep -Milliseconds 700
+  $root = $owned[-1]
+  Stop-ProcessTree -ProcessId ([int]$root.ProcessId)
+  $deadline = (Get-Date).AddSeconds(5)
+  while ((Get-Date) -lt $deadline) {
+    if (-not (Test-PortOpen -HostName $HostName -Port $Port)) { return }
+    Start-Sleep -Milliseconds 200
+  }
+  throw "The previous project preview process did not release port $Port."
 }
 
 function Stop-ProcessTree {
@@ -101,6 +176,14 @@ function Stop-ProcessTree {
 }
 
 function Get-WranglerCommand {
+  $localWrangler = Join-Path $ProjectRoot 'node_modules\.bin\wrangler.cmd'
+  if (Test-Path -LiteralPath $localWrangler) {
+    return @{
+      FilePath = $localWrangler
+      Arguments = @('pages', 'dev', './', '--ip', $HostName, '--port', [string]$Port)
+    }
+  }
+
   $npx = Get-Command npx.cmd -ErrorAction SilentlyContinue
   if ($npx) {
     return @{
@@ -205,71 +288,114 @@ function Start-NodeFallbackHidden {
     -PassThru
 }
 
-if (Test-PortOpen -HostName $HostName -Port $Port) {
-  Stop-ExistingPreviewProcess -HostName $HostName -Port $Port
-}
-
-$engine = $null
-$wranglerFailure = $null
-$command = Get-WranglerCommand
-if ($command) {
-  $commandText = "$($command.FilePath) $($command.Arguments -join ' ')"
-  Write-Host "Starting Wrangler preview: $commandText"
-  try {
-    $wranglerProcess = Start-WranglerHidden -Command $command
-    $deadline = (Get-Date).AddSeconds(60)
-    while ((Get-Date) -lt $deadline) {
-      if (Test-HttpReady -Url ($Url + 'login')) {
-        $engine = 'Wrangler'
-        break
-      }
-      if ($wranglerProcess.HasExited) {
-        $wranglerFailure = "Wrangler exited with code $($wranglerProcess.ExitCode)."
-        break
-      }
-      Start-Sleep -Milliseconds 500
-    }
-    if (-not $engine -and -not $wranglerFailure) {
-      $wranglerFailure = 'Wrangler did not become HTTP-ready within 60 seconds.'
-    }
-  } catch {
-    $wranglerFailure = "Wrangler launch failed: $($_.Exception.Message)"
-  }
-} else {
-  $wranglerFailure = 'Wrangler command was not found.'
-}
-
-if (-not $engine) {
-  if ($wranglerProcess -and -not $wranglerProcess.HasExited) {
-    Stop-ProcessTree -ProcessId ([int]$wranglerProcess.Id)
-    Start-Sleep -Milliseconds 500
-  }
-  if (Test-PortOpen -HostName $HostName -Port $Port) {
-    try {
-      Stop-ExistingPreviewProcess -HostName $HostName -Port $Port
-    } catch {
-      $wranglerFailure += " Failed to clear Wrangler listener: $($_.Exception.Message)"
-    }
-  }
-  $wranglerTail = Get-LogTail -Path $WranglerErrLog
-  Write-Warning "$wranglerFailure Falling back to the Node preview server.`nWrangler stderr: $WranglerErrLog`n$wranglerTail"
-  $nodeProcess = Start-NodeFallbackHidden
+function Start-NodePreview {
+  Write-LauncherLog -Message 'Starting the built-in Node preview server.'
+  $process = Start-NodeFallbackHidden
   $deadline = (Get-Date).AddSeconds(20)
   while ((Get-Date) -lt $deadline) {
     if (Test-HttpReady -Url ($Url + 'login')) {
-      $engine = 'Node fallback'
-      break
+      return $process
     }
-    if ($nodeProcess.HasExited) { break }
+    if ($process.HasExited) { break }
+    Start-Sleep -Milliseconds 300
+  }
+
+  if (-not $process.HasExited) {
+    Stop-ProcessTree -ProcessId ([int]$process.Id)
+  }
+  $nodeTail = Get-LogTail -Path $NodeErrLog
+  throw "Node preview did not become HTTP-ready within 20 seconds.`nNode stderr ($NodeErrLog):`n$nodeTail"
+}
+
+function Start-WranglerPreview {
+  $command = Get-WranglerCommand
+  if (-not $command) {
+    throw 'Wrangler command was not found.'
+  }
+
+  $commandText = "$($command.FilePath) $($command.Arguments -join ' ')"
+  Write-LauncherLog -Message "Starting Wrangler preview: $commandText"
+  $process = Start-WranglerHidden -Command $command
+  $deadline = (Get-Date).AddSeconds(45)
+  while ((Get-Date) -lt $deadline) {
+    if (Test-HttpReady -Url ($Url + 'login')) {
+      return $process
+    }
+    if ($process.HasExited) {
+      throw "Wrangler exited with code $($process.ExitCode)."
+    }
     Start-Sleep -Milliseconds 500
   }
+
+  if (-not $process.HasExited) {
+    Stop-ProcessTree -ProcessId ([int]$process.Id)
+  }
+  throw 'Wrangler did not become HTTP-ready within 45 seconds.'
 }
 
-if (-not $engine) {
-  $wranglerTail = Get-LogTail -Path $WranglerErrLog
-  $nodeTail = Get-LogTail -Path $NodeErrLog
-  throw "Local preview did not start on $Url.`nWrangler: $wranglerFailure`nWrangler stderr ($WranglerErrLog):`n$wranglerTail`nNode stderr ($NodeErrLog):`n$nodeTail"
+function Invoke-LocalPreview {
+  Write-PreviewStatus -State 'starting' -ActiveEngine $Engine
+
+  if (Test-PortOpen -HostName $HostName -Port $Port) {
+    if ($ReuseExisting -and (Test-HttpReady -Url ($Url + 'login'))) {
+      $existingProcess = Get-ListeningProcessInfo -HostName $HostName -Port $Port
+      $existingProcessId = if ($existingProcess) { [int]$existingProcess.ProcessId } else { 0 }
+      Write-LauncherLog -Message "Reusing the healthy local preview at $Url"
+      Write-PreviewStatus -State 'ready' -ActiveEngine 'existing' -ProcessId $existingProcessId
+      if (-not $NoBrowser) { Start-Process $Url }
+      return
+    }
+    Write-LauncherLog -Message "Stopping the existing project preview on port $Port."
+    Stop-ExistingPreviewProcess -HostName $HostName -Port $Port
+  }
+
+  $activeEngine = $null
+  $activeProcess = $null
+  if ($Engine -eq 'Node') {
+    $activeProcess = Start-NodePreview
+    $activeEngine = 'Node fallback'
+  } else {
+    try {
+      $activeProcess = Start-WranglerPreview
+      $activeEngine = 'Wrangler'
+    } catch {
+      if ($Engine -eq 'Wrangler') { throw }
+      $wranglerFailure = $_.Exception.Message
+      $wranglerTail = Get-LogTail -Path $WranglerErrLog
+      Write-LauncherLog -Level 'WARN' -Message "$wranglerFailure Falling back to the Node preview server.`nWrangler stderr: $WranglerErrLog`n$wranglerTail"
+      if (Test-PortOpen -HostName $HostName -Port $Port) {
+        Stop-ExistingPreviewProcess -HostName $HostName -Port $Port
+      }
+      $activeProcess = Start-NodePreview
+      $activeEngine = 'Node fallback'
+    }
+  }
+
+  if (-not (Test-HttpReady -Url ($Url + 'api/ping'))) {
+    throw "Local preview started but failed the final health check at $($Url)api/ping."
+  }
+
+  $listenerProcess = Get-ListeningProcessInfo -HostName $HostName -Port $Port
+  $listenerProcessId = if ($listenerProcess) { [int]$listenerProcess.ProcessId } else { [int]$activeProcess.Id }
+  Write-PreviewStatus -State 'ready' -ActiveEngine $activeEngine -ProcessId $listenerProcessId
+  Write-LauncherLog -Message "Local preview ready via $activeEngine at $Url"
+  if (-not $NoBrowser) { Start-Process $Url }
 }
 
-Write-Host "Local preview ready via $engine at $Url"
-Start-Process $Url
+$launcherMutex = [System.Threading.Mutex]::new($false, $LauncherMutexName)
+$lockTaken = $false
+try {
+  $lockTaken = $launcherMutex.WaitOne([TimeSpan]::FromSeconds(15))
+  if (-not $lockTaken) {
+    throw 'Another local preview launch is still in progress. Wait a few seconds and try again.'
+  }
+  Invoke-LocalPreview
+} catch {
+  $message = $_.Exception.Message
+  Write-PreviewStatus -State 'failed' -ActiveEngine $Engine -Message $message
+  Write-LauncherLog -Level 'ERROR' -Message $message
+  throw
+} finally {
+  if ($lockTaken) { $launcherMutex.ReleaseMutex() }
+  $launcherMutex.Dispose()
+}

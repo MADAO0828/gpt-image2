@@ -15,7 +15,8 @@
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-local-preview.ps1
 ```
 
-本地验收入口固定为 `http://127.0.0.1:8788/`。启动脚本会把 Wrangler 日志写入 `.wrangler/local-preview/`，根目录不保留临时日志。
+本地验收入口固定为 `http://127.0.0.1:8788/`。启动脚本会把预览日志写入 `.wrangler/local-preview/`，根目录不保留临时日志。
+桌面快捷方式默认使用仓库自带的 Node 预览服务器，不依赖 npm 网络；需要验证 Wrangler 时可显式传入 `-Engine Wrangler`。最近一次启动状态和诊断分别写入 `.wrangler/local-preview/status.json` 与 `.wrangler/local-preview/launcher-latest.log`。
 
 ## 核验
 
