@@ -13,7 +13,7 @@ const PROMPT_PAGE_SIZE = 36;
 const PROMPT_VIRTUAL_THRESHOLD = 108;
 const PROMPT_VIRTUAL_BUFFER_ROWS = 3;
 const PROMPT_REPO_CACHE_LIMIT = 24;
-const PROMPT_FAST_VERSION = 'home-v3-20260710-output-quality-r86';
+const PROMPT_FAST_VERSION = 'home-v3-20260710-stream-preview-r89';
 const PROMPT_FAST_BOOTSTRAP_URL = `/prompts_fast/bootstrap.json?v=${PROMPT_FAST_VERSION}`;
 const PROMPT_FAST_PREVIEWS_URL = `/prompts_fast/category_previews.json?v=${PROMPT_FAST_VERSION}`;
 const PROMPT_FAST_SEARCH_URL = `/prompts_fast/search_index.json?v=${PROMPT_FAST_VERSION}`;
@@ -71,6 +71,12 @@ const BRUSH_COLORS = [
 ];
 
 const HOMEPAGE_V3_TEST_HOOKS = typeof window !== 'undefined' ? (window.__homepageV3TestHooks = window.__homepageV3TestHooks || {}) : null;
+const IMAGE_STREAM_RUNTIME = typeof globalThis !== 'undefined' ? globalThis.NexGenImageStream : null;
+const STREAM_PARTIAL_PER_OUTPUT_LIMIT = 2;
+const STREAM_PARTIAL_TASK_LIMIT = 8;
+const STREAM_INPUT_FILE_LIMIT = 50 * 1024 * 1024;
+const STREAM_INPUT_TOTAL_LIMIT = 512 * 1024 * 1024;
+const streamPartialPersistChains = new Map();
 
 const DEFAULT_AGENT_BUDGET = {
   maxSteps: 5,
@@ -274,6 +280,15 @@ function firstDefined(...values) {
     if (value !== undefined && value !== null && String(value).trim() !== '') return value;
   }
   return undefined;
+}
+
+function normalizeImageQuality(value, fallback = 'high') {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (['auto', 'low', 'medium', 'high'].includes(normalized)) return normalized;
+  if (normalized === 'hd') return 'high';
+  if (normalized === 'standard') return 'medium';
+  const normalizedFallback = String(fallback || '').trim().toLowerCase();
+  return ['auto', 'low', 'medium', 'high'].includes(normalizedFallback) ? normalizedFallback : 'high';
 }
 
 function outputQualityPercent(value, fallback = 90) {
@@ -604,6 +619,7 @@ function collectReferencedBlobIds() {
   const add = (id) => { if (id) ids.add(id); };
   for (const task of state.tasks || []) {
     for (const img of task.images || []) add(img.blobId);
+    for (const partial of task.streamPartialImages || []) add(partial.blobId);
     for (const ref of task.referenceSnapshots || []) {
       add(ref.blobId);
       add(ref.originalBlobId);
@@ -1166,6 +1182,7 @@ function readStore() {
     const base = defaultStore();
     const merged = { ...base, ...parsed };
     merged.settings = { ...base.settings, ...(parsed.settings || {}) };
+    merged.settings.quality = normalizeImageQuality(merged.settings.quality);
     merged.preferences = { ...DEFAULT_PREFERENCES, ...(parsed.preferences || {}) };
     merged.entryAdvanced = {
       gallery: { ...DEFAULT_ENTRY_ADVANCED, ...(readEntryAdvanced('gallery') || parsed.entryAdvanced?.gallery || {}) },
@@ -1176,6 +1193,7 @@ function readStore() {
     if (typeof sessionStorage !== 'undefined') {
       const sessionSettings = JSON.parse(sessionStorage.getItem(COMPOSER_SESSION_KEY) || 'null');
       for (const key of COMPOSER_SETTING_KEYS) merged.settings[key] = sessionSettings && Object.prototype.hasOwnProperty.call(sessionSettings, key) ? sessionSettings[key] : base.settings[key];
+      merged.settings.quality = normalizeImageQuality(merged.settings.quality);
       for (const key of COMPOSER_SESSION_FIELDS) {
         if (sessionSettings && Object.prototype.hasOwnProperty.call(sessionSettings, key)) merged[key] = sessionSettings[key];
         else merged[key] = null;
@@ -1217,6 +1235,9 @@ function readStore() {
 }
 function normalizeRestoredTask(task) {
   const images = Array.isArray(task.images) ? task.images : [];
+  const streamPartialImages = Array.isArray(task.streamPartialImages)
+    ? task.streamPartialImages.filter((item) => item?.blobId).slice(-STREAM_PARTIAL_TASK_LIMIT)
+    : [];
   const hasImages = images.length > 0;
   const errorText = String(task.error || task.errorDetail || '').trim();
   const hasError = !!errorText;
@@ -1231,19 +1252,30 @@ function normalizeRestoredTask(task) {
   const hasTransparentFailure = Number(task.transparentFailedCount || 0) > 0
     || !!String(task.transparentPostProcessError || '').trim()
     || (Array.isArray(task.partialErrors) && task.partialErrors.some((item) => item?.stage === 'transparent-postprocess'));
+  if (!hasImages && streamPartialImages.length && (task.status === 'queued' || task.status === 'running' || task.status === 'interrupted' || task.streamState === 'interrupted')) {
+    return {
+      ...task,
+      images,
+      streamPartialImages,
+      streamState: 'interrupted',
+      status: 'partial_success',
+      error: task.error || '流式连接已中断，已保留预览图；该图片不是最终输出。',
+      finishedAt: task.finishedAt || Date.now()
+    };
+  }
   if (hasImages && expected > 0) {
     const partial = task.status === 'partial_success' || images.length < expected || hasTransparentFailure;
-    return { ...task, images, status: partial ? 'partial_success' : 'success', error: partial ? task.error || '' : '', errorDetail: partial ? task.errorDetail || '' : '' };
+    return { ...task, images, streamPartialImages, status: partial ? 'partial_success' : 'success', error: partial ? task.error || '' : '', errorDetail: partial ? task.errorDetail || '' : '' };
   }
   if ((hasCompletionEvidence && (!hasError || isRefreshInterruptionError)) || (isRefreshInterruptionError && hasRecoverableSuccessEvidence)) {
     const partial = task.status === 'partial_success' || hasTransparentFailure || (expected > 0 && images.length > 0 && images.length < expected);
-    return { ...task, images, status: partial ? 'partial_success' : 'success', error: partial ? task.error || '' : '', errorDetail: partial ? task.errorDetail || '' : '' };
+    return { ...task, images, streamPartialImages, status: partial ? 'partial_success' : 'success', error: partial ? task.error || '' : '', errorDetail: partial ? task.errorDetail || '' : '' };
   }
-  if (hasError && !hasImages && task.status !== 'queued' && task.status !== 'running') return { ...task, images, status: 'error' };
+  if (hasError && !hasImages && task.status !== 'queued' && task.status !== 'running') return { ...task, images, streamPartialImages, status: 'error' };
   if (task.status === 'queued' || task.status === 'running') {
-    return { ...task, images, status: 'interrupted', error: task.error || '页面刷新导致请求中断，可重试。', finishedAt: task.finishedAt || Date.now() };
+    return { ...task, images, streamPartialImages, status: 'interrupted', error: task.error || '页面刷新导致请求中断，可重试。', finishedAt: task.finishedAt || Date.now() };
   }
-  return { ...task, images };
+  return { ...task, images, streamPartialImages };
 }
 function sanitizeStoredImages(images = []) {
   return (Array.isArray(images) ? images : []).map((img) => {
@@ -1306,6 +1338,7 @@ function compactTaskForStorage(task, mode = 'normal') {
     previewUrl: undefined,
     streamPreviewUrl: '',
     streamPreviewRemoteUrl: '',
+    streamPreviewSlots: {},
     images: sanitizeStoredImages(task.images),
     referenceSnapshots: sanitizeReferenceSnapshots(task.referenceSnapshots)
   };
@@ -1343,6 +1376,11 @@ function compactTaskForStorage(task, mode = 'normal') {
     elapsedMs: base.elapsedMs,
     apiElapsedMs: base.apiElapsedMs,
     persistElapsedMs: base.persistElapsedMs,
+    timing: base.timing,
+    responseMode: base.responseMode,
+    completionReason: base.completionReason,
+    errorStage: base.errorStage,
+    errorCode: base.errorCode,
     expectedCount: base.expectedCount,
     actualCount: base.actualCount,
     failedCount: base.failedCount,
@@ -1700,7 +1738,7 @@ function referenceLimit(profile = activeProfile()) {
 }
 function settingsForSummary(settings = state.settings) {
   return {
-    quality: settings?.quality || 'high',
+    quality: normalizeImageQuality(settings?.quality),
     output_format: settings?.output_format || 'png',
     // Keep the legacy storage key, but treat its value as user-facing output quality.
     output_compression: outputQualityPercent(settings?.output_compression, 90),
@@ -1762,7 +1800,7 @@ function requestedParamsFromSettings(profile = activeProfile(), settings = state
 function normalizeRequestedParamsToComposerSettings(params = {}, baseSettings = state.settings) {
   const next = { ...settingsForSummary(baseSettings) };
   const provider = String(params.provider || providerKey(activeProfile()) || 'openai').toLowerCase();
-  if (params.quality !== undefined && params.quality !== null && params.quality !== '') next.quality = params.quality;
+  if (params.quality !== undefined && params.quality !== null && params.quality !== '') next.quality = normalizeImageQuality(params.quality);
   if (params.format !== undefined && params.format !== null && params.format !== '') next.output_format = params.format;
   if (params.compression !== undefined && params.compression !== null && params.compression !== '') next.output_compression = params.compression;
   if (params.transparent !== undefined) next.transparent_output = !!params.transparent;
@@ -3160,9 +3198,16 @@ function filteredTasks() {
     return hay.includes(q);
   });
 }
+function renderTaskStreamPreviewImage(task, outputIndex = 0, extra = '') {
+  const preview = taskStreamPreviewRecord(task, outputIndex);
+  if (!preview) return '';
+  const common = `data-image-kind="stream-preview" data-task-id="${esc(task.id)}" data-stream-output-index="${esc(outputIndex)}"`;
+  if (preview.url) return `<img ${common} src="${esc(preview.url)}" class="${esc(extra)}" alt="流式预览">`;
+  return `<img ${common} data-blob-id="${esc(preview.blobId || '')}" class="${esc(extra)}" alt="流式预览">`;
+}
 function renderAssetCard(task) {
   const image = (task.images || [])[0];
-  const streamPreview = task.streamPreviewUrl || task.streamPreviewRemoteUrl || '';
+  const streamPreviewHtml = renderTaskStreamPreviewImage(task, 0);
   const selected = state.selectedTaskIds.includes(task.id);
   const countInfo = taskCountInfo(task);
   const summary = cardParamSummary(task);
@@ -3175,7 +3220,8 @@ function renderAssetCard(task) {
     <article class="asset-card ${selected ? 'selected' : ''}" data-task-id="${esc(task.id)}">
       <button class="asset-check" title="选择" data-action="toggle-select" data-id="${esc(task.id)}"></button>
       <div class="asset-media" data-action="open-detail" data-id="${esc(task.id)}">
-        ${image ? `<img data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="0" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(image.url || image.remoteUrl || '')}" alt="">` : streamPreview ? `<img data-image-kind="task-image" data-task-id="${esc(task.id)}" src="${esc(streamPreview)}" alt="">` : placeholder}
+        ${image ? `<img data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="0" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(image.url || image.remoteUrl || '')}" alt="">` : streamPreviewHtml || placeholder}
+        ${!image && streamPreviewHtml ? '<span class="stream-preview-badge">预览</span>' : ''}
         ${renderReferenceBadge(task)}
         <div class="asset-badges">
           <span class="badge ${esc(task.status)}">${esc(countInfo.label)}</span>
@@ -4126,6 +4172,7 @@ function renderAgentTaskCards(message) {
 }
 function renderAgentTaskCard(task) {
   const image = (task.images || [])[0];
+  const streamPreviewHtml = renderTaskStreamPreviewImage(task, 0);
   const count = taskCountInfo(task);
   const status = count.label || (task.status === 'running' ? '生成中' : task.status === 'success' ? '完成' : task.status === 'partial_success' ? '部分完成' : '失败');
   const expected = Math.max(1, Number(count.expected || task.expectedCount || task.count || 1));
@@ -4135,7 +4182,8 @@ function renderAgentTaskCard(task) {
   const progressText = `${actual}/${expected}`;
   return `<button class="agent-task-card ${esc(statusClass)}" data-action="open-detail" data-id="${esc(task.id)}" title="点击查看完整生图详情">
     <div class="agent-task-preview">
-      ${image ? `<img data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="0" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(image.url || image.remoteUrl || '')}" alt="">` : '<span class="spinner"></span>'}
+      ${image ? `<img data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="0" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(image.url || image.remoteUrl || '')}" alt="">` : streamPreviewHtml || '<span class="spinner"></span>'}
+      ${!image && streamPreviewHtml ? '<span class="stream-preview-badge compact">预览</span>' : ''}
     </div>
     <div class="agent-task-meta">
       <strong>${esc(status)}</strong>
@@ -4355,8 +4403,11 @@ function renderDetailModal(taskId) {
   const task = state.tasks.find((t) => t.id === taskId);
   if (!task) return '';
   const images = task.images || [];
-  const imageIndex = Math.max(0, Math.min(Number(task.detailImageIndex) || 0, Math.max(0, images.length - 1)));
+  const mediaCount = images.length || taskStreamMediaCount(task);
+  const imageIndex = Math.max(0, Math.min(Number(task.detailImageIndex) || 0, Math.max(0, mediaCount - 1)));
   const image = images[imageIndex];
+  const streamPreview = image ? null : taskStreamPreviewRecord(task, imageIndex);
+  const streamPreviewHtml = image ? '' : renderTaskStreamPreviewImage(task, imageIndex, 'detail-stream-preview');
   const returnedPrompt = task.returnedPrompt && task.returnedPrompt !== task.prompt ? task.returnedPrompt : '';
   const requested = task.requestedParams || {};
   const returned = task.returnedParams || {};
@@ -4385,6 +4436,20 @@ function renderDetailModal(taskId) {
   const compressionParam = formatForConditional === 'png'
     ? param('透明背景', 'transparent', !!requested.transparent, { type: 'bool', aliases: ['transparentBackground', 'transparent_background'] })
     : param('输出质量', 'outputQuality', firstDefined(requested.outputQuality, requested.output_quality, requested.compression), { type: 'number', aliases: ['output_quality', 'compression'] });
+  const timing = task.timing && typeof task.timing === 'object' ? task.timing : {};
+  const timingValue = (value) => Number(value) > 0 ? `${(Number(value) / 1000).toFixed(Number(value) < 10000 ? 2 : 1)}s` : '';
+  const timingParts = [
+    timingValue(timing.responseHeaderMs) ? `响应头 ${timingValue(timing.responseHeaderMs)}` : '',
+    timingValue(timing.streamReadMs) ? `流读取 ${timingValue(timing.streamReadMs)}` : '',
+    timingValue(timing.persistMs || task.persistElapsedMs) ? `本地入库 ${timingValue(timing.persistMs || task.persistElapsedMs)}` : '',
+    timingValue(timing.postProcessMs) ? `后处理 ${timingValue(timing.postProcessMs)}` : '',
+    timingValue(timing.totalMs || task.elapsedMs) ? `总计 ${timingValue(timing.totalMs || task.elapsedMs)}` : '',
+    timingValue(timing.upstreamHeaderMs) ? `上游响应头 ${timingValue(timing.upstreamHeaderMs)}` : ''
+  ].filter(Boolean);
+  const responseDiagnostics = [
+    task.responseMode ? `响应模式 ${task.responseMode}` : '',
+    task.completionReason ? `完成原因 ${task.completionReason}` : ''
+  ].filter(Boolean);
   return `
     <div class="modal-layer" data-action="close-modal-bg">
       <div class="detail-modal" role="dialog" aria-modal="true" aria-label="生图任务详情" tabindex="-1" data-modal-key="task-detail" data-stop>
@@ -4393,14 +4458,19 @@ function renderDetailModal(taskId) {
             <span>${esc(imageRatioLabel || requested.aspectRatio || 'auto')}</span>
             <span>${esc(imageSizeLabel || requested.resolution || 'auto')}</span>
           </div>
-          ${image ? `<img data-action="open-viewer" role="button" tabindex="0" aria-label="查看生成图片大图" data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="${esc(imageIndex)}" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(image.url || image.remoteUrl || '')}" alt="">` : '<div class="asset-placeholder"><div class="progress-ring"></div></div>'}
+          ${image ? `<img data-action="open-viewer" role="button" tabindex="0" aria-label="查看生成图片大图" data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="${esc(imageIndex)}" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(image.url || image.remoteUrl || '')}" alt="">` : streamPreviewHtml || '<div class="asset-placeholder"><div class="progress-ring"></div></div>'}
+          ${streamPreview ? '<span class="stream-preview-badge detail">流式预览</span>' : ''}
+          ${streamPreview?.blobId ? `<button class="detail-download preview" data-action="download-stream-preview" data-task-id="${esc(task.id)}" data-index="${esc(imageIndex)}">下载预览</button>` : ''}
           ${isTransparentPng && image ? `<button class="detail-download original" data-action="download-image" data-task-id="${esc(task.id)}" data-index="${esc(imageIndex)}">下载原图</button><button class="detail-download orig" data-action="download-image" data-task-id="${esc(task.id)}" data-index="${esc(imageIndex)}" data-original="true">ORIG</button>` : ''}
           ${renderReferenceBadge(task, 'detail')}
-          ${images.length > 1 ? `
+          ${mediaCount > 1 ? `
             <button class="detail-image-nav prev" data-action="detail-image-prev" data-id="${esc(task.id)}" aria-label="上一张">‹</button>
             <button class="detail-image-nav next" data-action="detail-image-next" data-id="${esc(task.id)}" aria-label="下一张">›</button>
-            <div class="detail-image-count">${esc(imageIndex + 1)} / ${esc(images.length)}</div>
-            <div class="detail-thumbs">${images.map((img, idx) => `<button class="${idx === imageIndex ? 'active' : ''}" data-action="detail-image-select" data-id="${esc(task.id)}" data-index="${esc(idx)}"><img data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="${esc(idx)}" data-blob-id="${esc(img.blobId || '')}" data-remote-url="${esc(img.url || img.remoteUrl || '')}" alt=""></button>`).join('')}</div>
+            <div class="detail-image-count">${esc(imageIndex + 1)} / ${esc(mediaCount)}</div>
+            <div class="detail-thumbs">${Array.from({ length: mediaCount }, (_, idx) => {
+              const img = images[idx];
+              return `<button class="${idx === imageIndex ? 'active' : ''}" data-action="detail-image-select" data-id="${esc(task.id)}" data-index="${esc(idx)}">${img ? `<img data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="${esc(idx)}" data-blob-id="${esc(img.blobId || '')}" data-remote-url="${esc(img.url || img.remoteUrl || '')}" alt="">` : renderTaskStreamPreviewImage(task, idx)}</button>`;
+            }).join('')}</div>
           ` : ''}
         </div>
         <div class="detail-info">
@@ -4414,11 +4484,13 @@ function renderDetailModal(taskId) {
           ${param('来源', 'source', requested.source)}
           ${param('分辨率', 'resolution', requested.resolution || requested.size || task.sizeLabel, { aliases: ['size', 'dimensions', 'output_size', 'outputSize'], actualFallback: imageSizeLabel })}
           ${param('比例', 'aspectRatio', requested.aspectRatio || 'auto', { type: 'ratio', aliases: ['aspect_ratio', 'ratio'], actualFallback: imageRatioLabel })}
-          ${param('质量', 'quality', requested.quality || task.quality)}
+          ${param('请求质量', 'quality', requested.quality || task.quality)}
           ${param('格式', 'format', requestedFormat, { type: 'format', aliases: ['outputFormat', 'output_format', 'mimeType'] })}
           ${compressionParam}
           ${param('审核', 'moderation', requested.moderation, { aliases: ['moderation_level', 'moderationLevel', 'safety', 'safety_filter', 'safetyFilter'] })}
           ${param('数量', 'count', requested.count || task.count, { type: 'number', aliases: ['n', 'imageCount', 'image_count'], actualFallback: images.length || undefined })}
+          ${timingParts.length || responseDiagnostics.length || task.streamPartialCount ? `<div class="detail-section-label">耗时与响应诊断</div><div class="param-card"><div class="param-value"><span>${esc([...timingParts, ...responseDiagnostics, task.streamPartialCount ? `预览帧 ${task.streamPartialCount}` : '', task.lastStreamEventType ? `最后事件 ${task.lastStreamEventType}` : ''].filter(Boolean).join(' · '))}</span></div></div>` : ''}
+          ${task.streamPartialImages?.length ? `<div class="detail-section-label">流式中间帧</div><div class="returned-prompt stream-warning">已保留 ${esc(task.streamPartialImages.length)} 张中间帧。它们仅用于预览和故障恢复，不代表最终输出。</div>` : ''}
           ${task.workflowName ? `<div class="detail-section-label">工作流来源</div><div class="param-card"><div class="param-value"><span>${esc(task.workflowName)}</span><span>${esc(task.batchLabel || '批量行')}</span><span>${esc(task.workflowNodeId || '生图节点')}</span></div></div>` : ''}
           <div class="detail-section-label">标签与备注</div>
           <input class="detail-edit-input" data-action="task-tags-input" data-id="${esc(task.id)}" value="${esc(task.tags || '')}" placeholder="标签，用逗号分隔">
@@ -4479,7 +4551,7 @@ function setViewerImage(delta) {
 function setDetailImage(taskId, value, isDelta = false) {
   const task = state.tasks.find((item) => item.id === taskId);
   if (!task) return;
-  const total = (task.images || []).length;
+  const total = (task.images || []).length || taskStreamMediaCount(task);
   if (!total) return;
   const current = Number(task.detailImageIndex) || 0;
   task.detailImageIndex = isDelta ? (current + Number(value) + total) % total : Math.max(0, Math.min(Number(value) || 0, total - 1));
@@ -4587,6 +4659,15 @@ async function downloadImageFromMenuOrTarget(target = null) {
   if (!blob) return toast('当前图片无法下载');
   const ext = (blob.type?.split('/')[1] || 'png').replace('jpeg', 'jpg');
   downloadBlob(blob, String(source.name || `image-${Date.now()}.${ext}`).replace(/\.[a-z0-9]+$/i, `.${ext}`));
+}
+async function downloadStreamPreview(taskId, outputIndex = 0) {
+  const task = state.tasks.find((item) => item.id === taskId);
+  const preview = taskStreamPreviewRecord(task, outputIndex);
+  if (!preview?.blobId) return toast('预览图仍在写入本地，请稍后重试');
+  const blob = await getBlob(preview.blobId).catch(() => null);
+  if (!blob) return toast('预览图已不存在');
+  const ext = (blob.type?.split('/')[1] || 'png').replace('jpeg', 'jpg');
+  downloadBlob(blob, `stream-preview-${taskId}-${Number(outputIndex) + 1}.${ext}`);
 }
 async function editImageFromMenu() {
   const source = currentImageMenuSource();
@@ -5819,6 +5900,7 @@ document.addEventListener('click', async (event) => {
   if (action === 'cancel-confirm') { closeConfirmDialog(null); return; }
   if (action === 'confirm-dialog') { await runConfirmDialog(); return; }
   if (action === 'download-selected') { await downloadSelected(); return; }
+  if (action === 'download-stream-preview') { await downloadStreamPreview(target.dataset.taskId, Number(target.dataset.index) || 0); return; }
   if (action === 'open-detail') { state.modal = target.dataset.id; render(); return; }
   if (action === 'close-modal' || action === 'close-modal-bg') { state.modal = null; render(); return; }
   if (action === 'detail-image-prev' || action === 'detail-image-next' || action === 'detail-image-select') { setDetailImage(target.dataset.id, action === 'detail-image-select' ? Number(target.dataset.index) : action === 'detail-image-next' ? 1 : -1, action !== 'detail-image-select'); return; }
@@ -6062,7 +6144,7 @@ function autoGrow(el) {
   el.style.height = `${Math.min(el.scrollHeight, window.innerHeight * .48)}px`;
 }
 function setPopoverValue(type, value) {
-  if (type === 'quality') state.settings.quality = value;
+  if (type === 'quality') state.settings.quality = normalizeImageQuality(value);
   if (type === 'format') state.settings.output_format = value;
   if (type === 'compression' && state.settings.output_format === 'png') state.settings.transparent_output = value === '是';
   else if (type === 'compression') state.settings.output_compression = Number(value);
@@ -6099,7 +6181,7 @@ function setAgentImageParam(field, value) {
     else if (key === 'xai') settings.xaiAspectRatio = next;
     else settings.openaiAspectRatio = next;
   } else if (field === 'quality') {
-    settings.quality = value || nextFromList(['auto', 'low', 'medium', 'high'], settings.quality || 'high');
+    settings.quality = normalizeImageQuality(value || nextFromList(['auto', 'low', 'medium', 'high'], normalizeImageQuality(settings.quality)));
   } else if (field === 'output_format') {
     settings.output_format = value || nextFromList(['png', 'jpeg', 'webp'], settings.output_format || 'png');
   } else if (field === 'transparent_output') {
@@ -6115,7 +6197,7 @@ function setAgentImageParam(field, value) {
 }
 function setAgentPopoverValue(type, value) {
   const settings = agentImageSettings();
-  if (type === 'agent-quality') settings.quality = value;
+  if (type === 'agent-quality') settings.quality = normalizeImageQuality(value);
   if (type === 'agent-format') settings.output_format = value;
   if (type === 'agent-compression' && settings.output_format === 'png') settings.transparent_output = value === '是';
   else if (type === 'agent-compression') settings.output_compression = Number(value);
@@ -6254,7 +6336,7 @@ async function loadRuntime(options = {}) {
   if (!state.agentConfig.webSearchEnabled) state.agent.webMode = 'off';
   if (!preserveComposerSession) {
     const nextSettings = { ...state.settings };
-    if (runtimeHas('quality')) nextSettings.quality = runtime.quality || 'high';
+    if (runtimeHas('quality')) nextSettings.quality = normalizeImageQuality(runtime.quality);
     if (runtimeHas('output_format')) nextSettings.output_format = runtime.output_format || 'png';
     if (runtimeHas('output_compression')) nextSettings.output_compression = runtime.output_compression === null ? null : runtime.output_compression ?? 90;
     if (runtimeHas('n')) nextSettings.n = Number(runtime.n) || 1;
@@ -6294,6 +6376,184 @@ async function fetchJson(url, options) {
     throw err;
   }
   return data;
+}
+function imageResponseError(message, code, stage, detail = '') {
+  const error = new Error(message);
+  error.code = code;
+  error.stage = stage;
+  error.detail = detail || message;
+  return error;
+}
+function classifyImageResponse(contentType, firstChunk = '') {
+  const normalizedType = String(contentType || '').toLowerCase();
+  if (normalizedType.includes('text/event-stream')) return 'sse';
+  const prefix = String(firstChunk || '').replace(/^\uFEFF/, '').trimStart();
+  if (/^(?:data|event)\s*:/i.test(prefix) || prefix.startsWith(':')) return 'sse-sniffed';
+  const lowerPrefix = prefix.toLowerCase();
+  if (!lowerPrefix || ['data:', 'event:'].some((marker) => marker.startsWith(lowerPrefix))) return 'undetermined';
+  return 'json';
+}
+function imageResponseTiming(response, startedAt, responseHeaderMs = 0) {
+  return {
+    responseHeaderMs: Math.max(0, Number(responseHeaderMs) || 0),
+    streamReadMs: Math.max(0, Date.now() - startedAt),
+    upstreamHeaderMs: Math.max(0, Number(response?.headers?.get?.('X-GPT-Image-Upstream-Ms')) || 0),
+    proxyHeaderMs: Math.max(0, Number(response?.headers?.get?.('X-GPT-Image-Proxy-Ms')) || 0)
+  };
+}
+function attachImageResponseMetadata(payload, metadata = {}) {
+  const target = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : { data: Array.isArray(payload) ? payload : [] };
+  target.responseMode = metadata.responseMode || target.responseMode || 'json';
+  target.completionReason = target.completionReason || metadata.completionReason || (target.responseMode === 'json' ? 'json-response' : '');
+  target.timing = { ...(target.timing || {}), ...(metadata.timing || {}) };
+  return target;
+}
+async function readableBodyText(body) {
+  const reader = body?.getReader?.();
+  if (!reader) return '';
+  const decoder = new TextDecoder();
+  let text = '';
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
+}
+function imageResponseWithBody(response, body) {
+  return {
+    ok: response.ok,
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+    body,
+    text: () => readableBodyText(body)
+  };
+}
+function imageTextStreamResponse(text, response) {
+  const bytes = new TextEncoder().encode(text);
+  let sent = false;
+  return {
+    ok: response.ok,
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+    body: {
+      getReader: () => ({
+        read: async () => {
+          if (sent) return { value: undefined, done: true };
+          sent = true;
+          return { value: bytes, done: false };
+        },
+        cancel: async () => { sent = true; }
+      })
+    }
+  };
+}
+async function consumeImageHttpResponse(response, options = {}) {
+  const startedAt = Date.now();
+  let readableResponse = response;
+  let responseMode = classifyImageResponse(response?.headers?.get?.('Content-Type'));
+  if ((responseMode === 'json' || responseMode === 'undetermined') && options.streamRequested && response?.body?.tee) {
+    const [probeBody, replayBody] = response.body.tee();
+    const probeReader = probeBody.getReader();
+    const decoder = new TextDecoder();
+    let prefix = '';
+    try {
+      while (prefix.length < 8192) {
+        const { value, done } = await probeReader.read();
+        if (done) break;
+        prefix += decoder.decode(value, { stream: true });
+        if (classifyImageResponse(response?.headers?.get?.('Content-Type'), prefix) !== 'undetermined') break;
+      }
+    } finally {
+      probeReader.cancel().catch(() => {});
+    }
+    responseMode = classifyImageResponse(response?.headers?.get?.('Content-Type'), prefix);
+    if (responseMode === 'undetermined') responseMode = 'json';
+    readableResponse = imageResponseWithBody(response, replayBody);
+  }
+  if (responseMode === 'undetermined') responseMode = 'json';
+  if (responseMode === 'sse' || responseMode === 'sse-sniffed') {
+    if (!response.ok) {
+      const text = await readableResponse.text().catch(() => '');
+      throw imageResponseError(response.statusText || '图片流请求失败', 'IMAGE_STREAM_HTTP_ERROR', 'response-headers', text);
+    }
+    try {
+      const payload = await consumeImageStream(readableResponse, options.onPartialImage);
+      return attachImageResponseMetadata(payload, {
+        responseMode,
+        timing: imageResponseTiming(response, startedAt, options.responseHeaderMs)
+      });
+    } catch (error) {
+      error.responseMode = responseMode;
+      error.timing = imageResponseTiming(response, startedAt, options.responseHeaderMs);
+      throw error;
+    }
+  }
+  const text = await readableResponse.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    if (/^\s*(?:data|event)\s*:/i.test(text)) {
+      const streamResponse = imageTextStreamResponse(text, response);
+      const payload = await consumeImageStream(streamResponse, options.onPartialImage);
+      return attachImageResponseMetadata(payload, {
+        responseMode: 'sse-sniffed',
+        timing: imageResponseTiming(response, startedAt, options.responseHeaderMs)
+      });
+    }
+    const error = imageResponseError('图片接口返回了无法解析的响应', 'IMAGE_RESPONSE_INVALID_JSON', 'response-parse', text.slice(0, 2000));
+    error.responseMode = responseMode;
+    error.timing = imageResponseTiming(response, startedAt, options.responseHeaderMs);
+    throw error;
+  }
+  if (!response.ok) {
+    const normalized = normalizeError(data || response.statusText, response.statusText || '图片请求失败');
+    const error = imageResponseError(normalized.summary, normalized.code || response.status, 'response-status', normalized.detail);
+    error.status = response.status;
+    error.raw = data;
+    error.responseMode = responseMode;
+    error.timing = imageResponseTiming(response, startedAt, options.responseHeaderMs);
+    throw error;
+  }
+  return attachImageResponseMetadata(data, {
+    responseMode: 'json',
+    timing: imageResponseTiming(response, startedAt, options.responseHeaderMs)
+  });
+}
+async function fetchImageHttpResponse(url, fetchOptions = {}, responseOptions = {}) {
+  const requestStartedAt = Date.now();
+  const controller = new AbortController();
+  const timeoutSeconds = Math.max(1, Math.min(Number(responseOptions.timeoutSeconds) || 600, 6000));
+  let timedOut = false;
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutSeconds * 1000);
+  timeoutId.unref?.();
+  const externalSignal = fetchOptions.signal;
+  const abortFromExternal = () => controller.abort();
+  externalSignal?.addEventListener?.('abort', abortFromExternal, { once: true });
+  try {
+    const response = await fetch(url, { credentials: 'same-origin', cache: 'no-store', ...fetchOptions, signal: controller.signal });
+    return await consumeImageHttpResponse(response, {
+      ...responseOptions,
+      responseHeaderMs: Date.now() - requestStartedAt
+    });
+  } catch (error) {
+    if (timedOut || error?.name === 'AbortError') {
+      const timeoutError = imageResponseError(`本站等待图片响应超过 ${timeoutSeconds} 秒`, 'IMAGE_CLIENT_TIMEOUT', 'client-total-timeout');
+      timeoutError.timing = { responseHeaderMs: Date.now() - requestStartedAt, totalMs: Date.now() - requestStartedAt };
+      throw timeoutError;
+    }
+    if (!error.stage) error.stage = 'request-transport';
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+    externalSignal?.removeEventListener?.('abort', abortFromExternal);
+  }
 }
 function responseStreamTextFromPayload(payload) {
   const type = String(payload?.type || '');
@@ -6782,6 +7042,12 @@ async function generateImageTask(seedTask = null) {
     createdAt: Date.now(),
     startedAt: Date.now(),
     images: [],
+    streamState: 'idle',
+    streamPreviewSlots: {},
+    streamPartialImages: [],
+    streamEventCount: 0,
+    streamPartialCount: 0,
+    lastStreamEventType: '',
     error: ''
   };
   state.tasks.unshift(task);
@@ -6797,8 +7063,29 @@ async function generateImageTask(seedTask = null) {
       references,
       entry: meta.entry || 'gallery',
       transparentOutput: transparentRequested,
-      onPartialImage: (url) => {
-        task.streamPreviewUrl = url;
+      onPartialImage: (candidate) => {
+        const resolved = streamCandidateObjectUrl(candidate);
+        if (!resolved) return;
+        const outputIndex = Number(candidate.outputIndex || candidate.output_index || 0);
+        const key = String(outputIndex);
+        const previous = task.streamPreviewSlots?.[key];
+        if (previous?.temporary && previous.url) revokeTransientObjectUrl(previous.url);
+        task.streamState = 'receiving';
+        task.streamPartialCount = Number(task.streamPartialCount || 0) + 1;
+        task.lastStreamEventType = candidate.eventType || '';
+        task.streamPreviewSlots = {
+          ...(task.streamPreviewSlots || {}),
+          [key]: {
+            url: resolved.url,
+            temporary: resolved.temporary,
+            outputIndex,
+            partialIndex: candidate.partialIndex,
+            eventType: candidate.eventType || '',
+            receivedAt: candidate.receivedAt || Date.now()
+          }
+        };
+        if (outputIndex === 0) task.streamPreviewUrl = resolved.url;
+        queueTaskStreamPartialPersist(task, candidate);
         renderGalleryListOnly();
       },
       onPersistedImages: (batch, snapshot) => {
@@ -6817,6 +7104,17 @@ async function generateImageTask(seedTask = null) {
     task.elapsedMs = task.finishedAt - task.startedAt;
     task.apiElapsedMs = result.apiElapsedMs || (apiFinishedAt - apiStartedAt);
     task.persistElapsedMs = result.persistElapsedMs || Math.max(0, task.elapsedMs - task.apiElapsedMs);
+    task.timing = {
+      ...(result.timing || {}),
+      persistMs: result.persistElapsedMs || result.timing?.persistMs || 0,
+      postProcessMs: result.postProcessElapsedMs || result.timing?.postProcessMs || 0,
+      totalMs: task.elapsedMs
+    };
+    task.responseMode = result.responseMode || response?.responseMode || '';
+    task.completionReason = result.completionReason || response?.completionReason || '';
+    task.streamEventCount = Number(response?.streamEventCount || task.streamEventCount || 0);
+    task.streamPartialCount = Number(response?.partialCount || task.streamPartialCount || 0);
+    task.lastStreamEventType = response?.lastStreamEventType || task.lastStreamEventType || '';
     task.images = images;
     task.expectedCount = result.expectedCount || params.count || images.length;
     task.actualCount = images.length;
@@ -6842,8 +7140,10 @@ async function generateImageTask(seedTask = null) {
     task.error = [generationError, transparencyError].filter(Boolean).join('；');
     task.errorDetail = task.partialErrors.map((item, idx) => `${idx + 1}. ${item.detail || item.summary || item.error || item}`).join('\n');
     task.status = task.failedCount || result.transparentFailedCount ? 'partial_success' : 'success';
-    task.streamPreviewUrl = '';
-    task.streamPreviewRemoteUrl = '';
+    task.streamState = 'completed';
+    clearTaskStreamPreviewUrls(task);
+    await waitForTaskStreamPartialPersistence(task.id);
+    await clearTaskStreamPartialImages(task);
     writeStore();
     if (!seedTask && state.preferences?.clearInputAfterSubmit) state.composerPrompt = '';
     notifyTaskComplete(task);
@@ -6852,6 +7152,17 @@ async function generateImageTask(seedTask = null) {
     task.finishedAt = Date.now();
     task.elapsedMs = task.finishedAt - task.startedAt;
     task.apiElapsedMs = task.apiElapsedMs || task.elapsedMs;
+    task.timing = {
+      ...(task.timing || {}),
+      ...(err?.timing || {}),
+      totalMs: task.elapsedMs
+    };
+    task.errorStage = err?.stage || '';
+    task.errorCode = normalized.code || err?.code || '';
+    task.streamEventCount = Number(err?.streamEventCount || task.streamEventCount || 0);
+    task.streamPartialCount = Number(err?.partialCount || task.streamPartialCount || 0);
+    task.lastStreamEventType = err?.lastStreamEventType || task.lastStreamEventType || '';
+    await waitForTaskStreamPartialPersistence(task.id);
     if ((task.images || []).length) {
       const expected = Number(task.expectedCount || effectiveParams.count || task.images.length);
       task.actualCount = task.images.length;
@@ -6859,13 +7170,21 @@ async function generateImageTask(seedTask = null) {
       task.error = task.failedCount ? `部分图片生成失败：${task.failedCount} 张未完成` : '';
       task.errorDetail = task.failedCount ? normalized.detail : '';
       task.status = task.failedCount ? 'partial_success' : 'success';
+    } else if (err?.code === 'IMAGE_STREAM_TRANSPORT_INTERRUPTED' && (task.streamPartialImages || []).length) {
+      task.actualCount = 0;
+      task.failedCount = Number(task.expectedCount || effectiveParams.count || 1);
+      task.error = '流式连接已中断，已保留预览图；该图片不是最终输出。';
+      task.errorDetail = normalized.detail;
+      task.status = 'partial_success';
+      task.streamState = 'interrupted';
+      task.completionReason = 'stream-transport-interrupted';
     } else {
       task.error = normalized.summary;
       task.errorDetail = normalized.detail;
       task.status = 'error';
+      task.streamState = err?.code === 'IMAGE_STREAM_UPSTREAM_FAILED' ? 'failed' : 'interrupted';
     }
-    task.streamPreviewUrl = '';
-    task.streamPreviewRemoteUrl = '';
+    clearTaskStreamPreviewUrls(task);
     if (task.status === 'error') toast(`生成失败：${task.error}`);
     else if (task.status === 'partial_success') toast(`部分图片已保存：${task.error}`);
     notifyTaskComplete(task);
@@ -6887,6 +7206,11 @@ async function collectGenerationResult(prompt, params, options = {}) {
   let lastError = null;
   let apiElapsedMs = 0;
   let persistElapsedMs = 0;
+  let postProcessElapsedMs = 0;
+  let responseHeaderMs = 0;
+  let streamReadMs = 0;
+  let upstreamHeaderMs = 0;
+  let proxyHeaderMs = 0;
   let transparentProcessedCount = 0;
   let transparentFailedCount = 0;
   const transparentPostProcessErrors = [];
@@ -6897,17 +7221,23 @@ async function collectGenerationResult(prompt, params, options = {}) {
       const apiStartedAt = Date.now();
       const response = await sendGenerationRequest(prompt, requestParams, { ...options, profile });
       apiElapsedMs += Date.now() - apiStartedAt;
+      responseHeaderMs += Number(response?.timing?.responseHeaderMs) || 0;
+      streamReadMs += Number(response?.timing?.streamReadMs) || 0;
+      upstreamHeaderMs += Number(response?.timing?.upstreamHeaderMs) || 0;
+      proxyHeaderMs += Number(response?.timing?.proxyHeaderMs) || 0;
       responses.push(response);
       const persistStartedAt = Date.now();
       let batch = await persistResponseImages(response);
+      persistElapsedMs += Date.now() - persistStartedAt;
       if (options.transparentOutput) {
+        const postProcessStartedAt = Date.now();
         const transparentResult = await postProcessTransparentImages(batch);
+        postProcessElapsedMs += Date.now() - postProcessStartedAt;
         batch = transparentResult.images;
         transparentProcessedCount += transparentResult.processedCount;
         transparentFailedCount += transparentResult.failedCount;
         transparentPostProcessErrors.push(...transparentResult.errors);
       }
-      persistElapsedMs += Date.now() - persistStartedAt;
       images.push(...batch);
       if (typeof options.onPersistedImages === 'function') {
         options.onPersistedImages(batch, {
@@ -6954,6 +7284,17 @@ async function collectGenerationResult(prompt, params, options = {}) {
     failedCount: Math.max(0, expected - images.length),
     apiElapsedMs,
     persistElapsedMs,
+    postProcessElapsedMs,
+    timing: {
+      responseHeaderMs,
+      streamReadMs,
+      persistMs: persistElapsedMs,
+      postProcessMs: postProcessElapsedMs,
+      upstreamHeaderMs,
+      proxyHeaderMs
+    },
+    responseMode: responses.length === 1 ? responses[0]?.responseMode || '' : 'multi-response',
+    completionReason: responses.length === 1 ? responses[0]?.completionReason || '' : 'multi-response',
     transparentProcessedCount,
     transparentFailedCount,
     transparentPostProcessErrors,
@@ -7017,21 +7358,51 @@ async function sendGenerationRequest(prompt, params = {}, options = {}) {
   const hasRefs = refs.some((item) => item.blob);
   const endpoint = hasRefs ? '/api-proxy/images/edits' : '/api-proxy/images/generations';
   const provider = providerKey(profile);
+  const advanced = effectiveAdvanced(entry, profile);
+  const responseOptions = {
+    streamRequested: advanced.streamImages && streamSupported(profile),
+    onPartialImage: options.onPartialImage,
+    timeoutSeconds: advanced.timeout
+  };
   const requestPrompt = promptWithCanvasConstraint(prompt, provider, requestParams);
   if (hasRefs) {
-    const fd = new FormData();
-    fd.append('model', profile.model || 'gpt-image-2');
-    fd.append('prompt', requestPrompt);
-    appendProviderParams(fd, provider, requestParams);
-    appendImageOutputParams(fd, requestParams, profile);
-    appendNegativePromptParams(fd, requestParams);
-    fd.append('n', String(provider === 'google' ? 1 : (requestParams.count || state.settings.n || 1)));
-    const imageFieldName = provider === 'google' ? 'image[]' : 'image';
-    refs.forEach(({ ref, blob }, idx) => { if (blob) fd.append(imageFieldName, blob, ref.name || `reference-${idx}.png`); });
-    appendAdvancedToFormData(fd, entry, profile);
-    const response = await fetchJson(endpoint, { method: 'POST', headers: appendAdvancedHeaders({}, entry, profile), body: fd });
-    if (response?.__stream) return consumeImageStream(response.response, options.onPartialImage);
-    return response;
+    const validRefs = refs.filter((item) => item.blob);
+    const totalBytes = validRefs.reduce((sum, item) => sum + Number(item.blob?.size || 0), 0);
+    if (!validRefs.length) throw imageResponseError('参考图文件不存在或为空', 'IMAGE_EDIT_INPUT_EMPTY', 'request-validation');
+    if (validRefs.some((item) => !item.blob?.size)) throw imageResponseError('参考图包含空文件', 'IMAGE_EDIT_INPUT_EMPTY_FILE', 'request-validation');
+    if (validRefs.some((item) => !String(item.blob?.type || '').toLowerCase().startsWith('image/'))) throw imageResponseError('参考图包含不支持的文件类型', 'IMAGE_EDIT_INPUT_TYPE', 'request-validation');
+    if (validRefs.some((item) => Number(item.blob?.size || 0) > STREAM_INPUT_FILE_LIMIT)) throw imageResponseError('单张参考图超过 50MB 安全上限', 'IMAGE_EDIT_INPUT_TOO_LARGE', 'request-validation');
+    if (totalBytes > STREAM_INPUT_TOTAL_LIMIT) throw imageResponseError('参考图总大小超过 512MB 安全上限', 'IMAGE_EDIT_INPUT_TOTAL_TOO_LARGE', 'request-validation');
+    const defaultEditImageField = (currentProvider) => IMAGE_STREAM_RUNTIME?.defaultEditImageField?.(currentProvider) || 'image[]';
+    const shouldRetryEditImageField = (error) => IMAGE_STREAM_RUNTIME?.shouldRetryEditImageField?.({
+      status: error?.status,
+      message: `${error?.message || ''}\n${error?.detail || ''}`,
+      streamEventCount: error?.streamEventCount,
+      partialCount: error?.partialCount
+    }) === true;
+    const sendEditRequest = (imageFieldName) => {
+      const fd = new FormData();
+      fd.append('model', profile.model || 'gpt-image-2');
+      fd.append('prompt', requestPrompt);
+      appendProviderParams(fd, provider, requestParams);
+      appendImageOutputParams(fd, requestParams, profile);
+      appendNegativePromptParams(fd, requestParams);
+      fd.append('n', String(provider === 'google' ? 1 : (requestParams.count || state.settings.n || 1)));
+      validRefs.forEach(({ ref, blob }, idx) => fd.append(imageFieldName, blob, ref.name || `reference-${idx + 1}.png`));
+      appendAdvancedToFormData(fd, entry, profile);
+      return fetchImageHttpResponse(endpoint, {
+        method: 'POST',
+        headers: appendAdvancedHeaders({}, entry, profile),
+        body: fd
+      }, responseOptions);
+    };
+    const imageFieldName = defaultEditImageField(provider);
+    try {
+      return await sendEditRequest(imageFieldName);
+    } catch (error) {
+      if (imageFieldName === 'image' || !shouldRetryEditImageField(error)) throw error;
+      return sendEditRequest('image');
+    }
   }
   const body = {
     model: profile.model || 'gpt-image-2',
@@ -7045,7 +7416,7 @@ async function sendGenerationRequest(prompt, params = {}, options = {}) {
   const headers = appendAdvancedHeaders({ 'Content-Type': 'application/json' }, entry, profile);
   let response;
   try {
-    response = await fetchJson(endpoint, { method: 'POST', headers, body: JSON.stringify(body) });
+    response = await fetchImageHttpResponse(endpoint, { method: 'POST', headers, body: JSON.stringify(body) }, responseOptions);
   } catch (err) {
     const message = `${err?.message || ''}\n${err?.detail || ''}`;
     const canLegacyRetry = provider === 'google' && body.response_format && typeof body.response_format === 'object' && /response_format|unmarshal|object|string/i.test(message);
@@ -7056,13 +7427,12 @@ async function sendGenerationRequest(prompt, params = {}, options = {}) {
       googleCompatResponseFormatFallback: true,
       googleResponseFormatFallbackReason: 'object-response-format-rejected'
     };
-    response = await fetchJson(endpoint, { method: 'POST', headers, body: JSON.stringify(legacyBody) });
+    response = await fetchImageHttpResponse(endpoint, { method: 'POST', headers, body: JSON.stringify(legacyBody) }, responseOptions);
     if (response && typeof response === 'object') {
       response.googleCompatResponseFormatFallback = true;
       response.googleResponseFormatFallbackReason = 'object-response-format-rejected';
     }
   }
-  if (response?.__stream) return consumeImageStream(response.response, options.onPartialImage);
   return response;
 }
 function providerPayload(provider, params = {}) {
@@ -7120,7 +7490,7 @@ function imageOutputParams(params = {}, profile = imageProfile()) {
   const requestParams = params && typeof params === 'object' ? params : {};
   const format = String(firstDefined(requestParams.format, requestParams.output_format, state.settings.output_format) || 'png').toLowerCase();
   const out = {
-    quality: firstDefined(requestParams.quality, state.settings.quality),
+    quality: normalizeImageQuality(firstDefined(requestParams.quality, state.settings.quality)),
     output_format: format,
     moderation: firstDefined(requestParams.moderation, state.settings.moderation)
   };
@@ -7202,7 +7572,7 @@ async function persistResponseImages(response) {
       const info = await imageInfoFromBlob(blob).catch(async () => ({ ...(await imageSizeFromBlob(blob).catch(() => ({}))), type: blob.type }));
       return { blobId, remoteUrl: /^blob:|^data:/i.test(String(remoteUrl || '')) ? '' : remoteUrl, width: info.width, height: info.height, type: info.type || blob.type, transparent: info.hasAlpha === undefined ? undefined : !!info.hasAlpha };
     }))).filter(Boolean);
-    if (!images.length) throw new Error('上游未返回可解析图片');
+    if (!images.length) throw imageResponseError('图片响应中没有可保存的图片数据', 'IMAGE_RESPONSE_NO_IMAGE', 'image-persist');
     return images;
   } finally {
     for (const url of response?.streamObjectUrls || []) revokeTransientObjectUrl(url);
@@ -7231,136 +7601,119 @@ function collectImageCandidates(response) {
   }
   return out;
 }
-async function consumeImageStream(response, onPartialImage) {
-  const reader = response.body?.getReader?.();
-  if (!reader) throw new Error('流式响应不可读取');
-  const decoder = new TextDecoder();
-  const byteEncoder = new TextEncoder();
-  let buffer = '';
-  let eventCount = 0;
-  const streamEvents = [];
-  const imageCandidatesByOutput = new Map();
-  let terminalError = '';
-  const revokeAllCandidates = () => {
-    imageCandidatesByOutput.forEach((candidate) => {
-      if (candidate?.temporary) revokeTransientObjectUrl(candidate.url);
+function streamCandidateSource(candidate) {
+  const dataUrl = firstDefined(candidate?.data_url, candidate?.dataUrl);
+  const b64 = firstDefined(candidate?.b64_json, candidate?.b64Json);
+  const remoteUrl = firstDefined(candidate?.url, candidate?.remoteUrl);
+  if (dataUrl) return String(dataUrl);
+  if (b64) return String(b64).startsWith('data:') ? String(b64) : `data:image/png;base64,${b64}`;
+  return remoteUrl ? String(remoteUrl) : '';
+}
+function streamCandidateObjectUrl(candidate) {
+  const source = streamCandidateSource(candidate);
+  if (!source) return null;
+  if (!/^data:/i.test(source)) return { url: source, temporary: false };
+  return { url: trackTransientObjectUrl(URL.createObjectURL(dataUrlToBlob(source))), temporary: true };
+}
+function taskStreamPreviewRecord(task, outputIndex = 0) {
+  const live = task?.streamPreviewSlots?.[String(outputIndex)];
+  if (live?.url) return { ...live, live: true };
+  const persisted = (task?.streamPartialImages || [])
+    .filter((item) => Number(item.outputIndex || 0) === Number(outputIndex))
+    .sort((a, b) => Number(b.receivedAt || 0) - Number(a.receivedAt || 0))[0];
+  return persisted?.blobId ? { ...persisted, live: false } : null;
+}
+function taskStreamMediaCount(task) {
+  const indexes = [
+    ...Object.keys(task?.streamPreviewSlots || {}).map(Number),
+    ...(task?.streamPartialImages || []).map((item) => Number(item.outputIndex || 0))
+  ].filter(Number.isFinite);
+  return indexes.length ? Math.max(...indexes) + 1 : 0;
+}
+function clearTaskStreamPreviewUrls(task) {
+  for (const slot of Object.values(task?.streamPreviewSlots || {})) {
+    if (slot?.temporary && slot.url) revokeTransientObjectUrl(slot.url);
+  }
+  task.streamPreviewSlots = {};
+  task.streamPreviewUrl = '';
+  task.streamPreviewRemoteUrl = '';
+}
+async function candidateToBlob(candidate) {
+  const source = streamCandidateSource(candidate);
+  if (!source) return null;
+  if (/^data:/i.test(source)) return dataUrlToBlob(source);
+  return fetchRemoteImageBlob(source);
+}
+function queueTaskStreamPartialPersist(task, candidate) {
+  if (!task || !candidate) return Promise.resolve();
+  const taskId = task.id;
+  const previous = streamPartialPersistChains.get(taskId) || Promise.resolve();
+  const next = previous.then(async () => {
+    if (!state.tasks.some((item) => item.id === taskId)) return;
+    const blob = await candidateToBlob(candidate);
+    if (!blob?.size) return;
+    const blobId = await putBlob(blob);
+    const outputIndex = Number(candidate.outputIndex || candidate.output_index || 0);
+    const receivedAt = Number(candidate.receivedAt || Date.now());
+    const current = Array.isArray(task.streamPartialImages) ? [...task.streamPartialImages] : [];
+    const sameOutput = current.filter((item) => Number(item.outputIndex || 0) === outputIndex).sort((a, b) => Number(a.receivedAt || 0) - Number(b.receivedAt || 0));
+    let kind = 'first';
+    const removeIds = [];
+    if (sameOutput.length) {
+      kind = 'latest';
+      const oldLatest = sameOutput.find((item) => item.kind === 'latest') || (sameOutput.length >= STREAM_PARTIAL_PER_OUTPUT_LIMIT ? sameOutput.at(-1) : null);
+      if (oldLatest) {
+        removeIds.push(oldLatest.blobId);
+        const oldIndex = current.indexOf(oldLatest);
+        if (oldIndex >= 0) current.splice(oldIndex, 1);
+      }
+    }
+    current.push({
+      blobId,
+      outputIndex,
+      partialIndex: candidate.partialIndex,
+      kind,
+      eventType: candidate.eventType || '',
+      receivedAt,
+      type: blob.type || 'image/png'
     });
-    imageCandidatesByOutput.clear();
-  };
-  const compactEventMetadata = (payload, candidateCount) => ({
-    type: String(payload?.type || payload?.event || '').slice(0, 80),
-    status: String(payload?.status || '').slice(0, 40),
-    id: String(payload?.id || payload?.response?.id || '').slice(0, 120),
-    candidateCount,
-    outputIndex: firstDefined(payload?.output_index, payload?.outputIndex, payload?.image_index, payload?.imageIndex, payload?.index, null)
+    while (current.length > STREAM_PARTIAL_TASK_LIMIT) {
+      const evicted = current.shift();
+      if (evicted?.blobId) removeIds.push(evicted.blobId);
+    }
+    task.streamPartialImages = current;
+    writeStore();
+    await Promise.all(removeIds.filter((id) => id && id !== blobId).map((id) => deleteBlob(id).catch(() => {})));
+  }).catch((error) => {
+    console.warn('[home-v3] failed to persist stream preview', error);
+    task.streamPersistError = error?.message || String(error);
+  }).finally(() => {
+    if (streamPartialPersistChains.get(taskId) === next) streamPartialPersistChains.delete(taskId);
   });
-  const candidateObjectUrl = (candidate) => {
-    const directUrl = firstDefined(candidate?.data_url, candidate?.dataUrl, candidate?.image_data_url, candidate?.imageDataUrl, candidate?.url, candidate?.image_url, candidate?.imageUrl);
-    const b64 = firstDefined(candidate?.b64_json, candidate?.b64Json, candidate?.base64, candidate?.image_base64, candidate?.imageBase64);
-    if (directUrl && !/^data:image\//i.test(String(directUrl))) return { url: String(directUrl), temporary: false };
-    const dataUrl = directUrl || (b64 ? (String(b64).startsWith('data:') ? String(b64) : `data:image/png;base64,${b64}`) : '');
-    if (!dataUrl || typeof URL?.createObjectURL !== 'function') return null;
-    return { url: trackTransientObjectUrl(URL.createObjectURL(dataUrlToBlob(dataUrl))), temporary: true };
-  };
-  const candidateOutputKey = (payload, candidate, candidateIndex) => {
-    const outputIndex = firstDefined(
-      candidate?.output_index,
-      candidate?.outputIndex,
-      candidate?.image_index,
-      candidate?.imageIndex,
-      candidate?.index,
-      payload?.output_index,
-      payload?.outputIndex,
-      payload?.image_index,
-      payload?.imageIndex,
-      payload?.index,
-      candidateIndex
-    );
-    return `output:${String(outputIndex)}`;
-  };
-  const handleEvent = (chunk) => {
-    if (terminalError) return;
-    const data = parseSseDataBlock(chunk);
-    if (!data || data === '[DONE]') return;
-    let payload = null;
-    try { payload = JSON.parse(data); } catch { return; }
-    eventCount += 1;
-    const candidates = collectImageCandidates(payload);
-    streamEvents.push(compactEventMetadata(payload, candidates.length));
-    if (streamEvents.length > STREAM_EVENT_METADATA_LIMIT) streamEvents.shift();
-    terminalError = streamEventErrorMessage(payload) || '';
-    if (terminalError) return;
-    candidates.forEach((candidate, candidateIndex) => {
-      const resolved = candidateObjectUrl(candidate);
-      if (!resolved) return;
-      const outputKey = candidateOutputKey(payload, candidate, candidateIndex);
-      const previous = imageCandidatesByOutput.get(outputKey);
-      if (previous?.temporary) revokeTransientObjectUrl(previous.url);
-      if (!previous && imageCandidatesByOutput.size >= STREAM_IMAGE_LIMIT) {
-        const oldestKey = imageCandidatesByOutput.keys().next().value;
-        const evicted = imageCandidatesByOutput.get(oldestKey);
-        if (evicted?.temporary) revokeTransientObjectUrl(evicted.url);
-        imageCandidatesByOutput.delete(oldestKey);
-      }
-      imageCandidatesByOutput.set(outputKey, { url: resolved.url, temporary: resolved.temporary });
-      if (onPartialImage) onPartialImage(resolved.url);
-    });
-  };
-  const drainEvents = () => {
-    let separatorMatch = buffer.match(/\r?\n\r?\n/);
-    while (separatorMatch) {
-      const separatorIndex = separatorMatch.index || 0;
-      const part = buffer.slice(0, separatorIndex);
-      if (byteEncoder.encode(part).byteLength > IMAGE_STREAM_EVENT_LIMIT) {
-        throw new Error('流式图片事件超过 32MB 安全上限');
-      }
-      buffer = buffer.slice(separatorIndex + separatorMatch[0].length);
-      handleEvent(part);
-      separatorMatch = buffer.match(/\r?\n\r?\n/);
-    }
-    if (byteEncoder.encode(buffer).byteLength > IMAGE_STREAM_EVENT_LIMIT) {
-      throw new Error('流式图片事件超过 32MB 安全上限');
-    }
-  };
-  try {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      if (Number(value?.byteLength || 0) > IMAGE_STREAM_EVENT_LIMIT) {
-        throw new Error('流式图片数据块超过 32MB 安全上限');
-      }
-      buffer += decoder.decode(value, { stream: true });
-      drainEvents();
-      if (terminalError) {
-        await reader.cancel?.().catch?.(() => {});
-        break;
-      }
-    }
-    if (!terminalError) {
-      buffer += decoder.decode();
-      if (buffer.trim()) handleEvent(buffer);
-    }
-  } catch (err) {
-    await reader.cancel?.().catch?.(() => {});
-    revokeAllCandidates();
-    throw err;
+  streamPartialPersistChains.set(taskId, next);
+  return next;
+}
+async function waitForTaskStreamPartialPersistence(taskId) {
+  await streamPartialPersistChains.get(taskId)?.catch?.(() => {});
+}
+async function clearTaskStreamPartialImages(task) {
+  const ids = (task?.streamPartialImages || []).map((item) => item.blobId).filter(Boolean);
+  task.streamPartialImages = [];
+  await Promise.all(ids.map((id) => deleteBlob(id).catch(() => {})));
+}
+async function consumeImageStream(response, onPartialImage) {
+  if (!IMAGE_STREAM_RUNTIME?.consumeImageStream) {
+    throw imageResponseError('图片流运行时未加载', 'IMAGE_STREAM_RUNTIME_MISSING', 'stream-open');
   }
-  if (terminalError) {
-    revokeAllCandidates();
-    throw new Error(terminalError);
-  }
-  const imageCandidates = [...imageCandidatesByOutput.values()];
-  if (imageCandidates.length) {
-    const streamObjectUrls = imageCandidates.filter((item) => item.temporary).map((item) => item.url);
-    return {
-      data: imageCandidates.map(({ url }) => ({ url })),
-      streamEvents,
-      streamEventCount: eventCount,
-      streamObjectUrls,
-      streamed: true
-    };
-  }
-  throw new Error('流式响应结束但没有返回可解析图片');
+  const payload = await IMAGE_STREAM_RUNTIME.consumeImageStream(response, { onPartialImage });
+  const streamObjectUrls = [];
+  const data = (payload.data || []).map((candidate) => {
+    const resolved = streamCandidateObjectUrl(candidate);
+    if (!resolved) return candidate;
+    if (resolved.temporary) streamObjectUrls.push(resolved.url);
+    return { ...candidate, url: resolved.url, b64_json: undefined, data_url: undefined };
+  });
+  return { ...payload, data, streamObjectUrls };
 }
 function returnedPromptFromResponse(response) {
   return firstDefined(
@@ -7428,6 +7781,13 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     resolveTaskProfile,
     retryTask,
     collectImageCandidates,
+    taskStreamPreviewRecord,
+    taskStreamMediaCount,
+    renderTaskStreamPreviewImage,
+    queueTaskStreamPartialPersist,
+    waitForTaskStreamPartialPersistence,
+    clearTaskStreamPartialImages,
+    downloadStreamPreview,
     extractReturnedParams,
     renderDetailModal,
     renderViewer,
@@ -7456,6 +7816,7 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     shouldCloseModalFromClick,
     returnedPromptFromResponse,
     normalizeComparableValue,
+    normalizeImageQuality,
     outputQualityPercent,
     outputCompressionFromQuality,
     outputQualityFromCompression,
@@ -7477,6 +7838,8 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     compactAgentMessagesByThreadForStorage,
     mergeGenerationPartialErrors,
     consumeImageStream,
+    consumeImageHttpResponse,
+    classifyImageResponse,
     fetchRemoteImageBlob,
     rememberObjectUrl,
     revokeAllObjectUrls,
@@ -7661,6 +8024,9 @@ async function deleteTask(id) {
 async function performDeleteTask(id) {
   const task = state.tasks.find((t) => t.id === id);
   if (!task) return;
+  clearTaskStreamPreviewUrls(task);
+  await waitForTaskStreamPartialPersistence(task.id);
+  await clearTaskStreamPartialImages(task);
   await Promise.all((task.images || []).map((img) => deleteBlob(img.blobId).catch(() => {})));
   for (const img of task.images || []) revokeMapEntry(state.imageUrls, img.blobId);
   await Promise.all(taskReferenceSnapshots(task).map(async (ref) => {
@@ -7694,6 +8060,9 @@ async function performDeleteSelected(ids = []) {
   for (const id of deleteIds) {
     const task = state.tasks.find((t) => t.id === id);
     if (task) {
+      clearTaskStreamPreviewUrls(task);
+      await waitForTaskStreamPartialPersistence(task.id);
+      await clearTaskStreamPartialImages(task);
       await Promise.all((task.images || []).map((img) => deleteBlob(img.blobId).catch(() => {})));
       for (const img of task.images || []) revokeMapEntry(state.imageUrls, img.blobId);
       await Promise.all(taskReferenceSnapshots(task).map(async (ref) => {

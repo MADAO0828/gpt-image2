@@ -80,9 +80,13 @@ function Ensure-TestDependencies {
 function Invoke-StabilityChecks {
   Write-Step 'Run local deliverable quality gates'
   Invoke-LoggedCommand -FilePath 'node' -Arguments @('--check', 'assets/homepage-v3.js')
+  Invoke-LoggedCommand -FilePath 'node' -Arguments @('--check', 'assets/image-stream-runtime.js')
   Invoke-LoggedCommand -FilePath 'node' -Arguments @('--check', 'assets/shell-ui.js')
+  Invoke-LoggedCommand -FilePath 'node' -Arguments @('--check', 'functions/api-proxy/[[path]].js')
   Invoke-LoggedCommand -FilePath 'node' -Arguments @('--check', 'tests/e2e-quality.js')
   Invoke-LoggedCommand -FilePath 'node' -Arguments @('--check', 'scripts/api-smoke.mjs')
+  Invoke-LoggedCommand -FilePath 'node' -Arguments @('tests/image-stream-regression.js')
+  Invoke-LoggedCommand -FilePath 'node' -Arguments @('tests/image-edit-request-regression.js')
   Invoke-LoggedCommand -FilePath 'node' -Arguments @('tests/homepage-task-regression.js')
   Invoke-LoggedCommand -FilePath 'node' -Arguments @('tests/provider-size-branching.js')
   Invoke-LoggedCommand -FilePath 'node' -Arguments @('scripts/stability-checks.js')
@@ -228,14 +232,18 @@ function Test-PreviewSupportsAuth([string]$Url) {
 function Invoke-StaticDeployChecks([string]$Url, [string]$Label) {
   Write-Step "Run static deploy checks against $Label"
   $root = Invoke-WebRequest -UseBasicParsing -Uri ($Url.TrimEnd('/') + '/') -TimeoutSec 45
-  if (-not ($root.Content -match 'home-v3-20260710-output-quality-r86')) {
-    throw "$Label HTML does not contain expected asset version home-v3-20260710-output-quality-r86."
+  if (-not ($root.Content -match 'home-v3-20260710-stream-preview-r89')) {
+    throw "$Label HTML does not contain expected asset version home-v3-20260710-stream-preview-r89."
   }
   $js = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($Url.TrimEnd('/') + '/assets/homepage-v3.js') -TimeoutSec 45
+  $streamRuntime = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($Url.TrimEnd('/') + '/assets/image-stream-runtime.js') -TimeoutSec 45
   $css = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($Url.TrimEnd('/') + '/assets/homepage-v3.css') -TimeoutSec 45
   $jsType = [string]($js.Headers['Content-Type'])
+  $streamRuntimeType = [string]($streamRuntime.Headers['Content-Type'])
   $cssType = [string]($css.Headers['Content-Type'])
   if ($jsType -notmatch 'javascript|ecmascript|text/plain') { throw "$Label homepage-v3.js has unexpected content type: $jsType" }
+  if ($streamRuntimeType -notmatch 'javascript|ecmascript|text/plain') { throw "$Label image-stream-runtime.js has unexpected content type: $streamRuntimeType" }
+  if ($streamRuntime.Content -notmatch 'IMAGE_STREAM_TRANSPORT_INTERRUPTED') { throw "$Label image-stream-runtime.js does not contain the expected r89 runtime." }
   if ($cssType -notmatch 'css|text/plain') { throw "$Label homepage-v3.css has unexpected content type: $cssType" }
   foreach ($path in @('/init_db.sql', '/schema.sql', '/migrations/20260710_session_version_and_auth_rate_limits.sql', '/scripts/deploy-quality.ps1', '/tests/e2e-quality.js', '/README.md', '/wrangler.toml', '/wrangler.jsonc', '/.dev.vars', '/.env')) {
     try {

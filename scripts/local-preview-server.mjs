@@ -30,6 +30,7 @@ const host = process.env.LOCAL_PREVIEW_HOST || '127.0.0.1';
 const port = Number(process.env.PORT || process.env.LOCAL_PREVIEW_PORT || 8788);
 const nowStamp = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
 const LOCAL_JWT_SECRET = process.env.JWT_SECRET || 'gpt-image2-local-preview-jwt-20260705';
+const LOCAL_PUBLIC_REGISTRATION = String(process.env.ALLOW_PUBLIC_REGISTRATION ?? 'true').toLowerCase() === 'true';
 const MAX_REQUEST_BODY_BYTES = requestBodyLimitBytes();
 const d1Dir = path.join(root, '.wrangler', 'state', 'v3', 'd1', 'miniflare-D1DatabaseObject');
 const d1File = fs.readdirSync(d1Dir).find((name) => /^(?!metadata).*\.sqlite$/i.test(name));
@@ -183,6 +184,13 @@ function normalizeIncomingSettings(body) {
   if (Array.isArray(source)) return source.filter((item) => item && item.key).map((item) => ({ key: String(item.key), value: item.value }));
   return Object.keys(source).map((key) => ({ key, value: source[key] }));
 }
+function normalizeImageQuality(value, fallback = 'high') {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (['auto', 'low', 'medium', 'high'].includes(normalized)) return normalized;
+  if (normalized === 'hd') return 'high';
+  if (normalized === 'standard') return 'medium';
+  return ['auto', 'low', 'medium', 'high'].includes(fallback) ? fallback : 'high';
+}
 function sanitizeIncomingSetting(item, existingSettings) {
   if (!item || !item.key) return item;
   return {
@@ -226,7 +234,7 @@ function localRuntimeConfig(user) {
     streamImages: !!(active?.streamImages ?? settings.streamImages),
     streamPartialImages: active?.streamPartialImages ?? settings.streamPartialImages ?? 1,
     size: settings.size || '',
-    quality: settings.quality || 'high',
+    quality: normalizeImageQuality(settings.quality),
     output_format: settings.output_format || 'png',
     output_compression: settings.output_compression ?? null,
     moderation: settings.moderation || 'auto',
@@ -381,7 +389,7 @@ async function dispatchFunction(req, res, url, moduleRelativePath) {
     env: {
       JWT_SECRET: LOCAL_JWT_SECRET,
       ALLOW_INSECURE_JWT_FALLBACK: 'true',
-      ALLOW_PUBLIC_REGISTRATION: process.env.ALLOW_PUBLIC_REGISTRATION || 'false',
+      ALLOW_PUBLIC_REGISTRATION: LOCAL_PUBLIC_REGISTRATION ? 'true' : 'false',
       gpt_image2_db: createD1Binding(),
       ASSETS: createAssetsBinding(url.toString())
     },
@@ -423,7 +431,7 @@ async function handleApi(req, res, url) {
     return json(res, 200, { success: true, username: user.username, role: user.role }, { 'Set-Cookie': `session=${encodeURIComponent(token)}; HttpOnly; Path=/; SameSite=Lax; Max-Age=86400` });
   }
   if (url.pathname === '/api/auth/register' && req.method === 'POST') {
-    if (String(process.env.ALLOW_PUBLIC_REGISTRATION || '').toLowerCase() !== 'true') return json(res, 403, { error: 'Registration is disabled' });
+    if (!LOCAL_PUBLIC_REGISTRATION) return json(res, 403, { error: 'Registration is disabled' });
     const registrationLimit = await consumeRegistrationAttempt(createD1Binding(), clientIp(req));
     if (registrationLimit.limited) return json(res, 429, { error: 'Too many registration attempts. Try again later.' }, rateLimitHeaders(registrationLimit));
     const body = parseJsonBody(await readBody(req));

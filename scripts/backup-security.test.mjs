@@ -518,18 +518,22 @@ test('public registration is rate limited by IP without additional bindings', as
   assert.ok(Number(limited.headers.get('Retry-After')) > 0);
 });
 
-test('registration and password changes reject passwords shorter than 12 characters', async () => {
+test('registration and password changes accept 6 characters and reject shorter passwords', async () => {
+  const passwordPolicy = await importWorkerModule('functions/_lib/password.js');
+  assert.equal(passwordPolicy.validateNewPassword('123456'), '');
+  assert.match(passwordPolicy.validateNewPassword('12345'), /6/);
+
   const register = await importWorkerModule('functions/api/auth/register.js', ['onRequestPost']);
   const registerRes = await register.onRequestPost({
     request: new Request('https://prod.example/api/auth/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: 'short-pass', password: '12345678901' })
+      body: JSON.stringify({ username: 'short-pass', password: '12345' })
     }),
     env: { gpt_image2_db: makeDb(), ALLOW_PUBLIC_REGISTRATION: 'true' }
   });
   assert.equal(registerRes.status, 400);
-  assert.match(await registerRes.text(), /12/);
+  assert.match(await registerRes.text(), /6/);
 
   const me = await importWorkerModule('functions/api/auth/me.js', ['onRequestPatch']);
   const db = makeDb({ users: [{ id: 4, username: 'alice', role: 'user' }] });
@@ -538,7 +542,7 @@ test('registration and password changes reject passwords shorter than 12 charact
     request: new Request('https://prod.example/api/auth/me', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', 'X-GPT-Image-Session': token },
-      body: JSON.stringify({ password: '12345678901' })
+      body: JSON.stringify({ password: '12345' })
     }),
     env: { gpt_image2_db: db, JWT_SECRET: 'test-jwt-secret', ALLOW_SESSION_HEADER_AUTH: 'true' }
   });
@@ -780,6 +784,128 @@ test('API proxy CORS permits only the request origin and rejects cross-origin ca
   assert.equal(sameOrigin.headers.get('Access-Control-Allow-Origin'), 'https://prod.example');
   assert.equal(sameOrigin.headers.get('Access-Control-Allow-Credentials'), 'true');
   assert.notEqual(sameOrigin.headers.get('Access-Control-Allow-Headers'), '*');
+});
+
+test('API proxy timeout remains active while an image response body is streaming', async () => {
+  const proxy = await importWorkerModule('functions/api-proxy/[[path]].js', ['onRequest']);
+  const userId = 17;
+  const token = await signToken({
+    userId,
+    sessionVersion: 1,
+    exp: Math.floor(Date.now() / 1000) + 60
+  }, 'test-jwt-secret');
+  const db = makeDb({
+    users: [{ id: userId, username: 'stream-timeout-user', role: 'user', session_version: 1 }],
+    settings: {
+      [userId]: settingsRows({
+        profiles: [{
+          id: 'image-stream',
+          name: 'Image stream',
+          provider: 'openai',
+          baseUrl: 'https://images.example/v1',
+          apiKey: 'stream-key',
+          model: 'gpt-image-2',
+          apiMode: 'images',
+          timeout: 1,
+          streamImages: true
+        }],
+        activeProfileId: 'image-stream',
+        activeImageProfileId: 'image-stream'
+      })
+    }
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_url, init) => {
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: {"type":"image_edit.partial_image"}\n\n'));
+        init.signal.addEventListener('abort', () => controller.error(new DOMException('Aborted', 'AbortError')), { once: true });
+      }
+    });
+    return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } });
+  };
+  try {
+    const response = await proxy.onRequest({
+      request: new Request('https://prod.example/api-proxy/images/edits', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-GPT-Image-Session': token,
+          'X-GPT-Image-Timeout-Seconds': '1'
+        },
+        body: JSON.stringify({ prompt: 'test', stream: true })
+      }),
+      env: { gpt_image2_db: db, JWT_SECRET: 'test-jwt-secret', ALLOW_SESSION_HEADER_AUTH: 'true' }
+    });
+    const outcome = await Promise.race([
+      response.text().then(() => 'closed', (error) => error?.name === 'AbortError' || /abort/i.test(String(error)) ? 'aborted' : `error:${error}`),
+      new Promise((resolve) => setTimeout(() => resolve('still-open'), 1400))
+    ]);
+    assert.equal(outcome, 'aborted');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('API proxy normalizes legacy image quality in JSON and multipart requests', async () => {
+  const proxy = await importWorkerModule('functions/api-proxy/[[path]].js', ['onRequest']);
+  const userId = 18;
+  const token = await signToken({
+    userId,
+    sessionVersion: 1,
+    exp: Math.floor(Date.now() / 1000) + 60
+  }, 'test-jwt-secret');
+  const db = makeDb({
+    users: [{ id: userId, username: 'quality-user', role: 'user', session_version: 1 }],
+    settings: {
+      [userId]: settingsRows({
+        profiles: [{
+          id: 'image-quality',
+          provider: 'openai',
+          baseUrl: 'https://images.example/v1',
+          apiKey: 'quality-key',
+          model: 'gpt-image-2',
+          apiMode: 'images'
+        }],
+        activeImageProfileId: 'image-quality'
+      })
+    }
+  });
+  const seenQualities = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_url, init) => {
+    if (typeof init.body === 'string') seenQualities.push(JSON.parse(init.body).quality);
+    else if (init.body instanceof FormData) seenQualities.push(init.body.get('quality'));
+    return new Response(JSON.stringify({ data: [] }), { headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    const headers = { 'X-GPT-Image-Session': token, 'X-GPT-Image-Profile-Id': 'image-quality' };
+    const jsonResponse = await proxy.onRequest({
+      request: new Request('https://prod.example/api-proxy/images/generations', {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'test', quality: 'hd' })
+      }),
+      env: { gpt_image2_db: db, JWT_SECRET: 'test-jwt-secret', ALLOW_SESSION_HEADER_AUTH: 'true' }
+    });
+    await jsonResponse.text();
+    const form = new FormData();
+    form.append('prompt', 'test');
+    form.append('quality', 'standard');
+    form.append('image', new Blob(['image'], { type: 'image/png' }), 'image.png');
+    const multipartResponse = await proxy.onRequest({
+      request: new Request('https://prod.example/api-proxy/images/edits', {
+        method: 'POST',
+        headers,
+        body: form
+      }),
+      env: { gpt_image2_db: db, JWT_SECRET: 'test-jwt-secret', ALLOW_SESSION_HEADER_AUTH: 'true' }
+    });
+    await multipartResponse.text();
+    assert.deepEqual(seenQualities, ['high', 'medium']);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('professional workbench endpoints reject unsafe upstream URLs before fetch', async () => {

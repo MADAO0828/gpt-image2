@@ -4,6 +4,7 @@ const vm = require('vm');
 
 const root = path.resolve(__dirname, '..');
 const source = fs.readFileSync(path.join(root, 'assets', 'homepage-v3.js'), 'utf8');
+const streamRuntimeSource = fs.readFileSync(path.join(root, 'assets', 'image-stream-runtime.js'), 'utf8');
 const failures = [];
 const fakeIndexedDbStore = new Map([
   ['ref-blob', new Blob(['reference'], { type: 'image/png' })]
@@ -156,6 +157,7 @@ const sandbox = {
 };
 
 vm.createContext(sandbox);
+vm.runInContext(streamRuntimeSource, sandbox, { filename: 'image-stream-runtime.js' });
 vm.runInContext(source.replace(/\ninit\(\);\s*\n/, '\n'), sandbox, { filename: 'homepage-v3.js' });
 
 const hooks = sandbox.window.__homepageV3TestHooks || {};
@@ -207,6 +209,12 @@ ok(typeof hooks.restoreFocusState === 'function', 'restoreFocusState hook missin
 ok(typeof hooks.topVisibleModal === 'function', 'topVisibleModal hook missing');
 ok(typeof hooks.syncModalAccessibility === 'function', 'syncModalAccessibility hook missing');
 ok(typeof hooks.consumeImageStream === 'function', 'consumeImageStream hook missing');
+ok(typeof hooks.consumeImageHttpResponse === 'function', 'consumeImageHttpResponse hook missing');
+ok(typeof hooks.taskStreamPreviewRecord === 'function', 'taskStreamPreviewRecord hook missing');
+ok(typeof hooks.taskStreamMediaCount === 'function', 'taskStreamMediaCount hook missing');
+ok(typeof hooks.renderTaskStreamPreviewImage === 'function', 'renderTaskStreamPreviewImage hook missing');
+ok(typeof hooks.normalizeImageQuality === 'function', 'normalizeImageQuality hook missing');
+ok(hooks.classifyImageResponse('application/json', 'da') === 'undetermined', 'split SSE data prefix should remain undetermined until more bytes arrive');
 ok(typeof hooks.fetchRemoteImageBlob === 'function', 'fetchRemoteImageBlob hook missing');
 ok(typeof hooks.hydrateBlobImage === 'function', 'hydrateBlobImage hook missing');
 ok(typeof hooks.rememberObjectUrl === 'function', 'rememberObjectUrl hook missing');
@@ -361,6 +369,25 @@ const interrupted = hooks.normalizeRestoredTask({
   error: ''
 });
 ok(interrupted.status === 'interrupted', 'running task without completion evidence should restore as interrupted');
+
+const restoredStreamPartial = hooks.normalizeRestoredTask({
+  id: 'task-stream-interrupted',
+  status: 'running',
+  streamState: 'receiving',
+  images: [],
+  streamPartialImages: [
+    { blobId: 'stream-first', outputIndex: 0, kind: 'first', receivedAt: 1 },
+    { blobId: 'stream-latest', outputIndex: 0, kind: 'latest', receivedAt: 2 }
+  ],
+  error: ''
+});
+ok(restoredStreamPartial.status === 'partial_success', 'restored task with persisted stream previews should become partial_success');
+ok(restoredStreamPartial.streamState === 'interrupted', 'restored stream preview task should record interrupted stream state');
+ok(/不是最终输出/.test(restoredStreamPartial.error), 'restored stream preview task must clearly label previews as non-final');
+ok(hooks.taskStreamMediaCount(restoredStreamPartial) === 1, 'stream preview output slots should produce a media count');
+ok(hooks.taskStreamPreviewRecord(restoredStreamPartial, 0)?.blobId === 'stream-latest', 'latest persisted preview should be selected for display');
+const streamPreviewHtml = hooks.renderTaskStreamPreviewImage(restoredStreamPartial, 0);
+ok(streamPreviewHtml.includes('data-blob-id="stream-latest"') && streamPreviewHtml.includes('流式预览'), 'persisted preview should render through blob hydration');
 
 const sameGalleryWindow = { startIndex: 6, endIndex: 30 };
 ok(hooks.galleryVirtualRangeChanged(sameGalleryWindow, { renderedStartIndex: 6, renderedEndIndex: 30 }) === false, 'gallery virtual window should not rebuild when start/end are unchanged');
@@ -534,6 +561,16 @@ if (typeof hooks.renderDetailModal === 'function') {
       { blobId: 'detail-1', width: 1600, height: 900, type: 'image/png' },
       { blobId: 'detail-2', width: 1600, height: 900, type: 'image/png' }
     ],
+    timing: {
+      responseHeaderMs: 1200,
+      streamReadMs: 2300,
+      persistMs: 400,
+      postProcessMs: 100,
+      totalMs: 4000,
+      upstreamHeaderMs: 900
+    },
+    responseMode: 'sse-sniffed',
+    completionReason: 'completed-event',
     createdAt: Date.now(),
     startedAt: Date.now() - 1000,
     finishedAt: Date.now()
@@ -546,6 +583,9 @@ if (typeof hooks.renderDetailModal === 'function') {
   ok(detailHtml.includes('low'), 'detail modal should show nested actual quality');
   ok(detailHtml.includes('strict'), 'detail modal should show nested actual moderation');
   ok(detailHtml.includes('2'), 'detail modal should show actual returned image count');
+  ok(detailHtml.includes('请求质量'), 'detail modal should label model quality as requested quality');
+  ok(detailHtml.includes('响应头') && detailHtml.includes('流读取') && detailHtml.includes('本地入库'), 'detail modal should show phase timing diagnostics');
+  ok(detailHtml.includes('sse-sniffed') && detailHtml.includes('completed-event'), 'detail modal should show response mode and completion reason');
   const viewerHtml = typeof hooks.renderViewer === 'function' ? hooks.renderViewer({ taskId: 'detail-diff-task', index: 0 }) : '';
   ok(viewerHtml.includes('viewer-nav') && viewerHtml.includes('data-action="viewer-next"'), 'multi-image viewer should render next navigation');
   ok(viewerHtml.includes('1 / 2'), 'multi-image viewer should show the current image index');
@@ -984,6 +1024,10 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(hooks.outputCompressionFromQuality(100) === 0 && hooks.outputCompressionFromQuality(70) === 30, 'output quality 100 must map to minimum API compression and 70 to compression 30');
   ok(hooks.outputQualityFromCompression(0) === 100 && hooks.outputQualityFromCompression(30) === 70, 'API compression must map back to the matching user-facing output quality');
   ok(hooks.imageOutputParams({ format: 'webp', compression: 100 }, { provider: 'openai' }).output_compression === 0, 'WebP output quality 100 should send API compression 0');
+  for (const quality of ['auto', 'low', 'medium', 'high']) {
+    ok(hooks.imageOutputParams({ format: 'webp', quality }, { provider: 'openai' }).quality === quality, `OpenAI ${quality} quality should be preserved in image output params`);
+  }
+  ok(hooks.imageOutputParams({ format: 'webp', quality: 'hd' }, { provider: 'openai' }).quality === 'high', 'legacy hd must not be sent to the image API');
 
   const greenPixels = new Uint8ClampedArray([
     0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255,
@@ -1055,8 +1099,8 @@ if (typeof hooks.openAiSizePayload === 'function') {
   });
   const openAiEditForm = capturedRequest?.options?.body;
   ok(openAiEditForm && typeof openAiEditForm.getAll === 'function', 'OpenAI reference request should use FormData');
-  ok(openAiEditForm.getAll('image').length === 1, 'OpenAI/gpt-image2 edits must send reference files as image');
-  ok(openAiEditForm.getAll('image[]').length === 0, 'OpenAI/gpt-image2 edits must not send image[]');
+  ok(openAiEditForm.getAll('image[]').length === 1, 'OpenAI/gpt-image2 edits must send reference files as image[]');
+  ok(openAiEditForm.getAll('image').length === 0, 'OpenAI/gpt-image2 edits should not use the legacy image field by default');
   ok(openAiEditForm.get('negative_prompt') === '不要边框，不要裁切' && openAiEditForm.get('negativePrompt') === '不要边框，不要裁切', 'FormData edit request should include extracted negative prompt aliases');
   ok(openAiEditForm.get('response_format') === null || openAiEditForm.get('response_format') === 'b64_json', 'OpenAI/gpt-image2 edits should only include supported response_format values');
 
@@ -1570,18 +1614,18 @@ if (typeof hooks.openAiSizePayload === 'function') {
       }
     }
   };
-  const partialStreamUrls = [];
+  const partialStreamCandidates = [];
   const imageStreamPayload = await hooks.consumeImageStream(
     imageStreamResponse,
-    (url) => partialStreamUrls.push(url)
+    (candidate) => partialStreamCandidates.push(candidate)
   );
   const imageStreamJson = JSON.stringify(imageStreamPayload);
   ok(!streamFrames.some((frame) => imageStreamJson.includes(frame)), 'consumeImageStream should not retain base64 image payloads');
   ok(imageStreamPayload.streamEvents.length === 24 && imageStreamPayload.streamEventCount === 30, 'consumeImageStream should retain only bounded event metadata plus the total event count');
   ok(imageStreamPayload.data.length === 1 && /^blob:/.test(imageStreamPayload.data[0].url), 'partial_images for one output should collapse to one final artwork');
-  ok(partialStreamUrls.length === 30 && partialStreamUrls.at(-1) === imageStreamPayload.data[0].url, 'stream preview callback should receive every latest preview while final data keeps only the newest frame');
+  ok(partialStreamCandidates.length === 30 && partialStreamCandidates.at(-1).partialIndex === 29, 'stream preview callback should receive rich metadata for every preview while final data keeps only the newest frame');
   ok(await createdObjectUrlBlobs.get(imageStreamPayload.data[0].url)?.text() === 'frame-29', 'consumeImageStream should retain the latest frame for each output index');
-  ok(partialStreamUrls.slice(0, -1).every((url) => revokedObjectUrls.includes(url)), 'replaced partial frames should be revoked immediately');
+  ok(partialStreamCandidates.every((candidate) => candidate.outputIndex === 0 && candidate.eventType === 'image_generation.partial_image'), 'stream preview callback should identify output slots and event type');
   const streamRevokedBeforePersist = revokedObjectUrls.length;
   const fetchBeforeStreamPersist = sandbox.fetch;
   sandbox.fetch = async () => imageResponse('streamed-image');
@@ -1590,12 +1634,80 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(persistedStreamImages.length === 1, 'streamed Blob URL should remain persistable as an image result');
   ok(revokedObjectUrls.length === streamRevokedBeforePersist + 1, 'persisting a streamed image should revoke its temporary Blob URL');
 
+  let completedReaderCancelled = false;
+  let completedReaderReadCount = 0;
+  const completedImageB64 = Buffer.from('completed-edit-image').toString('base64');
+  const completedImageEvent = new TextEncoder().encode(`data: ${JSON.stringify({
+    type: 'image_edit.completed',
+    output_index: 0,
+    b64_json: completedImageB64
+  })}\n\n`);
+  const completedStreamPayload = await hooks.consumeImageStream({
+    body: {
+      getReader: () => ({
+        read: async () => {
+          completedReaderReadCount += 1;
+          if (completedReaderReadCount === 1) return { value: completedImageEvent, done: false };
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          throw new Error('reader should not be called after image_edit.completed');
+        },
+        cancel: async () => { completedReaderCancelled = true; }
+      })
+    }
+  });
+  ok(completedReaderCancelled, 'image_edit.completed should cancel a connection that remains open');
+  ok(completedReaderReadCount === 1, 'image_edit.completed should return without waiting for another stream read');
+  ok(completedStreamPayload.completionReason === 'completed-event', 'image_edit.completed should record completed-event');
+  ok(completedStreamPayload.data.length === 1, 'image_edit.completed should expose its final image');
+
+  let doneReaderCancelled = false;
+  let doneReaderReadCount = 0;
+  const doneStreamBytes = new TextEncoder().encode([
+    `data: ${JSON.stringify({
+      type: 'image_edit.partial_image',
+      output_index: 0,
+      b64_json: Buffer.from('last-partial-image').toString('base64')
+    })}`,
+    'data: [DONE]'
+  ].join('\n\n') + '\n\n');
+  const doneStreamPayload = await hooks.consumeImageStream({
+    body: {
+      getReader: () => ({
+        read: async () => {
+          doneReaderReadCount += 1;
+          if (doneReaderReadCount === 1) return { value: doneStreamBytes, done: false };
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          throw new Error('reader should not be called after [DONE]');
+        },
+        cancel: async () => { doneReaderCancelled = true; }
+      })
+    }
+  });
+  ok(doneReaderCancelled && doneReaderReadCount === 1, '[DONE] should finish an image stream without waiting for connection close');
+  ok(doneStreamPayload.completionReason === 'last-partial-fallback', '[DONE] with only partial image should record fallback completion');
+
+  const mislabeledSseResponse = new Response(completedImageEvent, {
+    headers: { 'Content-Type': 'application/json' }
+  });
+  const mislabeledSsePayload = await hooks.consumeImageHttpResponse(mislabeledSseResponse, { streamRequested: true });
+  ok(mislabeledSsePayload.responseMode === 'sse-sniffed', 'stream request should sniff SSE when Content-Type is incorrect');
+  ok(mislabeledSsePayload.data.length === 1, 'mislabeled SSE should still return the completed image');
+
+  const regularJsonB64 = Buffer.from('regular-json-image').toString('base64');
+  const regularJsonPayload = await hooks.consumeImageHttpResponse(new Response(JSON.stringify({
+    data: [{ b64_json: regularJsonB64 }]
+  }), {
+    headers: { 'Content-Type': 'application/json' }
+  }));
+  ok(regularJsonPayload.responseMode === 'json', 'normal image JSON should retain json response mode');
+  ok(regularJsonPayload.data[0].b64_json === regularJsonB64, 'normal image JSON should retain b64_json');
+
   const twoOutputStreamText = [
     { output_index: 0, partial_image_index: 0, b64_json: Buffer.from('output-0-partial').toString('base64') },
     { output_index: 1, partial_image_index: 0, b64_json: Buffer.from('output-1-partial').toString('base64') },
     { output_index: 0, partial_image_index: 1, b64_json: Buffer.from('output-0-final').toString('base64') },
     { output_index: 1, partial_image_index: 1, b64_json: Buffer.from('output-1-final').toString('base64') }
-  ].map((event) => `data: ${JSON.stringify({ type: 'image_generation.partial_image', ...event })}`).join('\n\n');
+  ].map((event) => `data: ${JSON.stringify({ type: 'image_generation.partial_image', ...event })}`).concat('data: [DONE]').join('\n\n');
   const twoOutputPayload = await hooks.consumeImageStream(new Response(new TextEncoder().encode(twoOutputStreamText)));
   ok(twoOutputPayload.data.length === 2, 'image stream should retain one final artwork per output index');
   const twoOutputTexts = await Promise.all(twoOutputPayload.data.map((item) => createdObjectUrlBlobs.get(item.url)?.text()));
@@ -1605,8 +1717,6 @@ if (typeof hooks.openAiSizePayload === 'function') {
   sandbox.fetch = fetchBeforeStreamPersist;
 
   for (const terminalType of ['failed', 'incomplete', 'cancelled']) {
-    const terminalUrlStart = createdObjectUrls.length;
-    const terminalRevokeStart = revokedObjectUrls.length;
     const terminalStreamText = [
       `data: ${JSON.stringify({
         type: 'image_generation.partial_image',
@@ -1624,14 +1734,14 @@ if (typeof hooks.openAiSizePayload === 'function') {
     ].join('\n\n');
     await hooks.consumeImageStream(new Response(new TextEncoder().encode(terminalStreamText))).then(
       () => ok(false, `image ${terminalType} stream should reject after a partial image`),
-      (err) => ok(
-        new RegExp(terminalType === 'failed' ? 'upstream image failed|failed' : terminalType === 'incomplete' ? 'max_output_tokens|incomplete' : 'cancelled', 'i').test(String(err?.message || err)),
-        `image ${terminalType} stream should expose its terminal failure`
-      )
+      (err) => {
+        ok(
+          new RegExp(terminalType === 'failed' ? 'upstream image failed|failed' : terminalType === 'incomplete' ? 'max_output_tokens|incomplete' : 'cancelled', 'i').test(String(err?.message || err)),
+          `image ${terminalType} stream should expose its terminal failure`
+        );
+        ok(err?.partialCandidates?.length === 1, `image ${terminalType} stream should retain its partial candidate for recovery`);
+      }
     );
-    const terminalUrls = createdObjectUrls.slice(terminalUrlStart);
-    const terminalRevoked = revokedObjectUrls.slice(terminalRevokeStart);
-    ok(terminalUrls.length === 1 && terminalRevoked.includes(terminalUrls[0]), `image ${terminalType} stream should revoke its temporary partial image URL`);
   }
 
   let abnormalReaderCancelled = false;
@@ -1662,10 +1772,9 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(abnormalReaderCancelled, 'image stream abnormal failure should cancel the upstream reader');
 
   async function expectOversizedImageStreamRejected(chunks, label) {
-    const urlStart = createdObjectUrls.length;
-    const revokeStart = revokedObjectUrls.length;
     let readIndex = 0;
     let cancelled = false;
+    let rejectedError = null;
     await hooks.consumeImageStream({
       body: {
         getReader: () => ({
@@ -1677,12 +1786,13 @@ if (typeof hooks.openAiSizePayload === 'function') {
       }
     }).then(
       () => ok(false, `${label} should reject before retaining an oversized SSE payload`),
-      (err) => ok(/安全上限|过大|too large/i.test(String(err?.message || err)), `${label} should report its stream safety limit`)
+      (err) => {
+        rejectedError = err;
+        ok(/安全上限|过大|too large/i.test(String(err?.message || err)), `${label} should report its stream safety limit`);
+      }
     );
-    const created = createdObjectUrls.slice(urlStart);
-    const revoked = revokedObjectUrls.slice(revokeStart);
     ok(cancelled, `${label} should cancel the upstream reader`);
-    ok(created.length === 1 && revoked.includes(created[0]), `${label} should revoke the temporary partial-image URL`);
+    ok(rejectedError?.partialCandidates?.length === 1, `${label} should retain bounded partial candidate metadata without leaking object URLs`);
   }
 
   const oversizedImagePartial = new TextEncoder().encode(`data: ${JSON.stringify({
@@ -2229,6 +2339,10 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(agentQualityComposerHtml.includes('输出质量') && !agentQualityComposerHtml.includes('压缩/质量'), 'Agent non-PNG compression control should be labeled as user-facing output quality');
   const agentQualityPopoverHtml = hooks.renderPopover({ type: 'agent-compression', rect: { left: 20, top: 200, bottom: 240 } });
   ok(agentQualityPopoverHtml.includes('100 · 最高质量') && agentQualityPopoverHtml.includes('70 · 较小文件'), 'output quality popover should explain the direction of the quality scale');
+  ok(hooks.normalizeImageQuality('hd') === 'high', 'legacy hd quality should migrate to high');
+  ok(hooks.normalizeImageQuality('standard') === 'medium', 'legacy standard quality should migrate to medium');
+  ok(hooks.normalizeImageQuality('LOW') === 'low', 'quality normalization should be case insensitive');
+  ok(hooks.normalizeImageQuality('unsupported') === 'high', 'unknown image quality should fall back to high');
   hooks.setTestState({ settings: { openaiSize: '1K', openaiAspectRatio: '1:1', n: 1, transparent_output: false } });
   const independentAgentParams = hooks.agentImageParams();
   ok(independentAgentParams.resolution === '4K' && independentAgentParams.aspectRatio === '3:2' && independentAgentParams.transparent === true && independentAgentParams.count === 2, 'Agent image params should stay independent after gallery settings change');

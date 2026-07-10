@@ -48,7 +48,7 @@ async function legacyPasswordHash(password) {
 }
 
 export function validateNewPassword(password) {
-  if (String(password || '').length < 12) return 'Password must be at least 12 characters';
+  if (String(password || '').length < 6) return 'Password must be at least 6 characters';
   return '';
 }
 

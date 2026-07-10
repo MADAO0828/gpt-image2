@@ -6,9 +6,15 @@ const indexHtml = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 const indexShellHtml = indexHtml.replace(/<script id="promptFastBootstrap" type="application\/json">[\s\S]*?<\/script>/, '');
 const homeJs = fs.readFileSync(path.join(root, 'assets', 'homepage-v3.js'), 'utf8');
 const homeCss = fs.readFileSync(path.join(root, 'assets', 'homepage-v3.css'), 'utf8');
+const localPreviewServer = fs.readFileSync(path.join(root, 'scripts', 'local-preview-server.mjs'), 'utf8');
+const runtimeConfigFunction = fs.readFileSync(path.join(root, 'functions', '.well-known', 'img-runtime-config.json.js'), 'utf8');
+const proRenderFunction = fs.readFileSync(path.join(root, 'functions', 'api', 'pro-workbench', 'render.js'), 'utf8');
 const promptsHtml = fs.readFileSync(path.join(root, 'prompts.html'), 'utf8');
 const promptsData = JSON.parse(fs.readFileSync(path.join(root, 'prompts_data.json'), 'utf8'));
 const promptSearchIndex = JSON.parse(fs.readFileSync(path.join(root, 'prompts_fast', 'search_index.json'), 'utf8'));
+const loginHtml = fs.readFileSync(path.join(root, 'login.html'), 'utf8');
+const adminHtml = fs.readFileSync(path.join(root, 'admin.html'), 'utf8');
+const localPreviewLauncher = fs.readFileSync(path.join(root, 'scripts', 'start-local-preview.ps1'), 'utf8');
 const failures = [];
 
 function ok(cond, msg) {
@@ -148,9 +154,15 @@ ok(homeCss.includes('.workflow-editor-modal'), 'workflow editing must render in 
 ok(homeJs.includes('composer-param-zone') && homeJs.includes('composer-action-zone') && homeCss.includes('.composer-param-zone') && homeCss.includes('.composer-action-zone'), 'gallery composer must use a dual-zone capsule toolbar');
 ok(homeCss.includes('.entry-advanced-grid') && homeCss.includes('.profile-select-pill'), 'entry advanced controls and professional model selector must be styled');
 
-const adminHtml = fs.readFileSync(path.join(root, 'admin.html'), 'utf8');
 ok(adminHtml.includes('id="peTimeout"') && adminHtml.includes('id="peResponseB64"') && adminHtml.includes('id="peStreamPartial"'), 'admin multi-profile editor must expose per-profile timeout, b64_json, and intermediate image count fields');
 ok(adminHtml.includes("timeout:parseInt(val('peTimeout'))") && adminHtml.includes("streamPartialImages:parseInt(val('peStreamPartial'))") && adminHtml.includes("responseFormatB64Json:bool('peResponseB64')"), 'admin multi-profile save must persist per-profile advanced fields instead of global controls');
+ok(loginHtml.includes("p.length<6") && loginHtml.includes("密码至少6个字符"), 'login registration UI must enforce the 6-character password policy');
+ok(adminHtml.includes("密码至少6个字符") && adminHtml.includes("body.password.length<6"), 'admin user editor must enforce the 6-character password policy');
+ok(localPreviewLauncher.includes("`$env:ALLOW_PUBLIC_REGISTRATION = 'true'"), 'local preview launcher must enable registration by default');
+ok(homeJs.includes('function normalizeImageQuality(') && homeJs.includes('nextSettings.quality = normalizeImageQuality(runtime.quality)'), 'homepage runtime quality must normalize legacy hd/standard values');
+ok(localPreviewServer.includes('quality: normalizeImageQuality(settings.quality)'), 'local runtime config must normalize legacy image quality values');
+ok(runtimeConfigFunction.includes('quality: normalizeImageQuality(settings.quality'), 'Pages runtime config must normalize legacy image quality values');
+ok(proRenderFunction.includes('normalizeImageQuality(params.quality || settings.quality)'), 'professional render requests must normalize legacy image quality values');
 ok(!/\b(alert|confirm|prompt)\s*\(/.test(homeJs), 'homepage must not use browser-native alert/confirm/prompt dialogs');
 ok(!/\b(alert|confirm|prompt)\s*\(/.test(adminHtml), 'admin must not use browser-native alert/confirm/prompt dialogs');
 ok(!/\b(alert|confirm|prompt)\s*\(/.test(promptsHtml), 'prompts page must not use browser-native alert/confirm/prompt dialogs');

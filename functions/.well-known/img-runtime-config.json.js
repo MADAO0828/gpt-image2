@@ -5,6 +5,7 @@ function asBool(value, fallback = false) { return value === undefined || value =
 function asNum(value, fallback) { const n = Number(value); return Number.isFinite(n) ? n : fallback; }
 function firstString() { for (let i = 0; i < arguments.length; i++) { const v = arguments[i]; if (typeof v === 'string' && v.trim()) return v.trim(); } return ''; }
 function firstDefined() { for (let i = 0; i < arguments.length; i++) { if (arguments[i] !== undefined && arguments[i] !== null) return arguments[i]; } return undefined; }
+function normalizeImageQuality(value, fallback = 'high') { const normalized = String(value || '').trim().toLowerCase(); if (['auto', 'low', 'medium', 'high'].includes(normalized)) return normalized; if (normalized === 'hd') return 'high'; if (normalized === 'standard') return 'medium'; return ['auto', 'low', 'medium', 'high'].includes(fallback) ? fallback : 'high'; }
 function normalizeAgentMode(value) { value = String(value || 'off'); if (value === 'same') return 'native'; if (value === 'custom') return 'hybrid'; return value === 'native' || value === 'hybrid' ? value : 'off'; }
 function normalizeBaseUrl(raw) { let value = String(raw || '').trim().replace(/\/+$/, ''); if (!value) return ''; if (!/^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(value)) value = 'https://' + value; try { const url = new URL(value); const parts = url.pathname.split('/').filter(Boolean); if (!parts.includes('v1')) parts.push('v1'); url.pathname = '/' + parts.join('/'); url.search = ''; url.hash = ''; return url.toString().replace(/\/+$/, ''); } catch (e) { return value.replace(/\/+$/, '') + '/v1'; } }
 function selectedProfile(settings) { const profiles = Array.isArray(settings.profiles) ? settings.profiles : []; const activeId = settings.activeImageProfileId || settings.activeProfileId || (profiles[0] && profiles[0].id) || 'default-openai'; const found = profiles.find(p => p && p.id === activeId) || profiles.find(p => p && (p.apiMode || 'images') === 'images') || profiles[0] || null; const base = found || {}; return {
@@ -64,7 +65,7 @@ export async function onRequest(ctx) {
     streamImages: !!clientActive.streamImages,
     streamPartialImages: asNum(clientActive.streamPartialImages, 1),
     size: settings.size || '',
-    quality: settings.quality || 'auto',
+    quality: normalizeImageQuality(settings.quality),
     output_format: settings.output_format || 'png',
     output_compression: settings.output_compression === '' ? null : (settings.output_compression === undefined ? null : settings.output_compression),
     moderation: settings.moderation || 'auto',

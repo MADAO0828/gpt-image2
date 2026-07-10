@@ -257,7 +257,7 @@ function Start-WranglerHidden {
   $quotedOut = ConvertTo-PowerShellLiteral -Value $WranglerOutLog
   $quotedErr = ConvertTo-PowerShellLiteral -Value $WranglerErrLog
   $quotedJwt = ConvertTo-PowerShellLiteral -Value $DefaultLocalJwtSecret
-  $commandLine = "if (-not `$env:JWT_SECRET) { `$env:JWT_SECRET = $quotedJwt }; if (-not `$env:ALLOW_PUBLIC_REGISTRATION) { `$env:ALLOW_PUBLIC_REGISTRATION = 'false' }; Set-Location -LiteralPath $quotedProject; & $quotedFile $quotedArgs > $quotedOut 2> $quotedErr"
+  $commandLine = "if (-not `$env:JWT_SECRET) { `$env:JWT_SECRET = $quotedJwt }; if (-not `$env:ALLOW_PUBLIC_REGISTRATION) { `$env:ALLOW_PUBLIC_REGISTRATION = 'true' }; Set-Location -LiteralPath $quotedProject; & $quotedFile $quotedArgs > $quotedOut 2> $quotedErr"
 
   return Start-Process `
     -FilePath $powershell `
@@ -278,7 +278,7 @@ function Start-NodeFallbackHidden {
   $quotedOut = ConvertTo-PowerShellLiteral -Value $NodeOutLog
   $quotedErr = ConvertTo-PowerShellLiteral -Value $NodeErrLog
   $quotedJwt = ConvertTo-PowerShellLiteral -Value $DefaultLocalJwtSecret
-  $commandLine = "if (-not `$env:JWT_SECRET) { `$env:JWT_SECRET = $quotedJwt }; if (-not `$env:ALLOW_PUBLIC_REGISTRATION) { `$env:ALLOW_PUBLIC_REGISTRATION = 'false' }; `$env:LOCAL_PREVIEW_PORT = '$Port'; `$env:LOCAL_PREVIEW_HOST = '$HostName'; Set-Location -LiteralPath $quotedProject; & $quotedNode $quotedServer > $quotedOut 2> $quotedErr"
+  $commandLine = "if (-not `$env:JWT_SECRET) { `$env:JWT_SECRET = $quotedJwt }; if (-not `$env:ALLOW_PUBLIC_REGISTRATION) { `$env:ALLOW_PUBLIC_REGISTRATION = 'true' }; `$env:LOCAL_PREVIEW_PORT = '$Port'; `$env:LOCAL_PREVIEW_HOST = '$HostName'; Set-Location -LiteralPath $quotedProject; & $quotedNode $quotedServer > $quotedOut 2> $quotedErr"
 
   return Start-Process `
     -FilePath $powershell `

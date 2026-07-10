@@ -3,6 +3,7 @@ import { normalizeSafeBaseUrl, safeUpstreamEndpoint } from '../_lib/upstream-url
 async function loadSettings(db, userId) { const rows = await db.prepare('SELECT key, value FROM user_settings WHERE user_id = ?').bind(userId).all(); const settings = {}; (rows.results || []).forEach(row => { try { settings[row.key] = JSON.parse(row.value); } catch (e) { settings[row.key] = row.value; } }); return settings; }
 function asBool(value, fallback = false) { return value === undefined || value === null ? fallback : !!value; }
 function asNum(value, fallback) { const n = Number(value); return Number.isFinite(n) ? n : fallback; }
+function normalizeImageQuality(value, fallback = 'high') { const normalized = String(value || '').trim().toLowerCase(); if (['auto', 'low', 'medium', 'high'].includes(normalized)) return normalized; if (normalized === 'hd') return 'high'; if (normalized === 'standard') return 'medium'; return ['auto', 'low', 'medium', 'high'].includes(fallback) ? fallback : 'high'; }
 function firstString() { for (let i = 0; i < arguments.length; i++) { const v = arguments[i]; if (typeof v === 'string' && v.trim()) return v.trim(); } return ''; }
 function findProfileById(settings, profileId) { const profiles = Array.isArray(settings.profiles) ? settings.profiles : []; if (!profileId) return null; return profiles.find(p => p && (p.id === profileId || p.name === profileId)) || null; }
 function normalizeAgentMode(value) { value = String(value || 'off'); if (value === 'same') return 'native'; if (value === 'custom') return 'hybrid'; return value === 'native' || value === 'hybrid' ? value : 'off'; }
@@ -179,6 +180,7 @@ async function proxyMultipartBody(request, headers, apiPath, profile) {
     for (const [key, value] of input.entries()) {
       if (key === 'model') continue;
       if (value && value.name) out.append(key, value, value.name);
+      else if (key === 'quality') out.append(key, normalizeImageQuality(value));
       else if (value !== null && value !== undefined) out.append(key, value);
     }
   } else {
@@ -198,7 +200,8 @@ async function proxyMultipartBody(request, headers, apiPath, profile) {
       appendIfPresent('resolution', firstValue('resolution', 'image_size', 'size') || '2k');
       appendIfPresent('aspect_ratio', firstValue('aspect_ratio', 'aspectRatio', 'ratio') || '1:1');
     }
-    appendIfPresent('quality', firstValue('quality', 'image_quality'));
+    const requestedQuality = firstValue('quality', 'image_quality');
+    appendIfPresent('quality', requestedQuality ? normalizeImageQuality(requestedQuality) : '');
     appendIfPresent('output_format', firstValue('output_format', 'format'));
     appendIfPresent('moderation', firstValue('moderation'));
     const format = String(firstValue('output_format', 'format') || '').toLowerCase();
@@ -247,6 +250,7 @@ async function proxyBody(request, headers, apiPath, profile) {
         headers.set('X-GPT-Image-Mobile-Stream-Disabled', '1');
       }
       if (isImageApiPath(apiPath)) {
+        if (body.quality !== undefined) body.quality = normalizeImageQuality(body.quality);
         const wantsB64 = headerBool(headers, 'X-GPT-Image-Response-B64', profile.responseFormatB64Json);
         const wantsStream = headerBool(headers, 'X-GPT-Image-Stream', profile.streamImages);
         const partialImages = Math.max(0, Math.min(3, headerNum(headers, 'X-GPT-Image-Partial-Images', profile.streamPartialImages || 1)));
@@ -300,9 +304,44 @@ function requiresNodeDuplex(body) {
   if (typeof body[Symbol.asyncIterator] === 'function') return true;
   return false;
 }
+function streamBodyWithTimeout(body, controller, clearTimeoutState) {
+  const reader = body?.getReader?.();
+  if (!reader || typeof ReadableStream === 'undefined') {
+    clearTimeoutState();
+    return body;
+  }
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    clearTimeoutState();
+  };
+  return new ReadableStream({
+    async pull(output) {
+      try {
+        const { value, done } = await reader.read();
+        if (done) {
+          finish();
+          output.close();
+          return;
+        }
+        output.enqueue(value);
+      } catch (error) {
+        finish();
+        output.error(error);
+      }
+    },
+    async cancel(reason) {
+      finish();
+      controller.abort();
+      await reader.cancel?.(reason).catch?.(() => {});
+    }
+  });
+}
 
 export async function onRequest(ctx) {
   const proxyStart = Date.now();
+  let clearProxyTimeout = () => {};
   if (!isSameOriginRequest(ctx.request)) {
     return json({ error: 'Cross-origin proxy requests are not allowed' }, 403, corsHeaders(ctx.request));
   }
@@ -343,6 +382,14 @@ export async function onRequest(ctx) {
     const controller = new AbortController();
     const timeoutMs = Math.max(1000, Math.min(Number(timeoutOverride || profile.timeout || settings.timeout || 600) * 1000, 6000 * 1000));
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    timeoutId.unref?.();
+    let timeoutCleared = false;
+    clearProxyTimeout = () => {
+      if (timeoutCleared) return;
+      timeoutCleared = true;
+      clearTimeout(timeoutId);
+    };
+    const wantsImageStream = isImageApiPath(apiPath) && headerBool(headers, 'X-GPT-Image-Stream', profile.streamImages);
     const body = await proxyBody(ctx.request, headers, apiPath, profile);
     headers.delete('X-GPT-Image-Response-B64');
     headers.delete('X-GPT-Image-Stream');
@@ -351,14 +398,10 @@ export async function onRequest(ctx) {
     const upstreamStart = Date.now();
     const fetchInit = { method: ctx.request.method, headers, body, redirect: 'manual', signal: controller.signal };
     if (ctx.request.method !== 'GET' && ctx.request.method !== 'HEAD' && requiresNodeDuplex(body)) fetchInit.duplex = 'half';
-    let upstream;
-    try {
-      upstream = await fetch(targetUrl, fetchInit);
-    } finally {
-      clearTimeout(timeoutId);
-    }
+    const upstream = await fetch(targetUrl, fetchInit);
     const upstreamMs = Date.now() - upstreamStart;
     if (upstream.status >= 300 && upstream.status < 400) {
+      clearProxyTimeout();
       return upstreamError(
         ctx.request,
         '上游 API 返回了重定向。为防止凭据被转发到未验证目标，代理不会自动跟随重定向；请将配置改为最终 HTTPS API 地址。',
@@ -379,15 +422,24 @@ export async function onRequest(ctx) {
       'X-GPT-Image-Profile-Id': String(profile.id || ''),
       'X-GPT-Image-Profile-Name': encodeURIComponent(String(profile.name || ''))
     })).forEach(([k, v]) => responseHeaders.set(k, v));
-    if (isEventStream(upstream.headers) && upstream.ok) return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers: responseHeaders });
+    if ((isEventStream(upstream.headers) || wantsImageStream) && upstream.ok && upstream.body) {
+      if (wantsImageStream && !isEventStream(upstream.headers)) responseHeaders.set('X-GPT-Image-Stream-Content-Type-Sniffed', '1');
+      responseHeaders.set('X-GPT-Image-Proxy-Streamed', '1');
+      return new Response(streamBodyWithTimeout(upstream.body, controller, clearProxyTimeout), { status: upstream.status, statusText: upstream.statusText, headers: responseHeaders });
+    }
     const upstreamContentType = String(upstream.headers.get('Content-Type') || '').toLowerCase();
     if (upstream.ok && isImageApiPath(apiPath) && upstream.body && upstreamContentType.includes('application/json')) {
       responseHeaders.set('Content-Type', 'application/json; charset=utf-8');
       responseHeaders.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
       responseHeaders.set('X-GPT-Image-Proxy-Streamed', '1');
-      return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers: responseHeaders });
+      return new Response(streamBodyWithTimeout(upstream.body, controller, clearProxyTimeout), { status: upstream.status, statusText: upstream.statusText, headers: responseHeaders });
     }
-    const bodyText = await upstream.text();
+    let bodyText = '';
+    try {
+      bodyText = await upstream.text();
+    } finally {
+      clearProxyTimeout();
+    }
     try { JSON.parse(bodyText); responseHeaders.set('Content-Type', 'application/json; charset=utf-8'); return new Response(bodyText, { status: upstream.status, statusText: upstream.statusText, headers: responseHeaders }); } catch (parseError) {
       if (looksLikeCloudflareTimeout(bodyText, upstream.status)) return upstreamError(
         ctx.request,
@@ -417,6 +469,7 @@ export async function onRequest(ctx) {
       );
     }
   } catch (e) {
+    clearProxyTimeout();
     if (e.name === 'AbortError') return upstreamError(ctx.request, '本站代理等待 API 响应超时。请降低生成张数/图片尺寸，或更换响应更稳定的 API 服务商。', 'PROXY_TIMEOUT', 'proxy_timeout', 504, null, { proxyMs: Date.now() - proxyStart });
     return upstreamError(ctx.request, proxyFetchFailedMessage(e, profile, apiPath, ctx.request, new Headers(ctx.request.headers)), 'PROXY_FETCH_FAILED', 'proxy_error', 502, null, { proxyMs: Date.now() - proxyStart });
   }

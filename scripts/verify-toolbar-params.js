@@ -34,10 +34,11 @@ function assertProxyContains(name, needle) {
 // JSON and multipart image requests must share the same visible composer params.
 assertContains('JSON sends image output params', 'appendImageOutputParams(body, requestParams, profile)');
 assertContains('multipart sends image output params', 'appendImageOutputParams(fd, requestParams, profile)');
-assertContains('OpenAI edits use image field', "const imageFieldName = provider === 'google' ? 'image[]' : 'image'");
+assertContains('OpenAI-compatible edits default to repeated image[] fields', "IMAGE_STREAM_RUNTIME?.defaultEditImageField?.(currentProvider) || 'image[]'");
+assertContains('legacy image field retry is guarded', "if (imageFieldName === 'image' || !shouldRetryEditImageField(error)) throw error");
 assertContains('JSON sends provider payload', 'Object.assign(body, providerPayload(provider, requestParams))');
 assertContains('multipart sends provider payload', 'appendProviderParams(fd, provider, requestParams)');
-assertPattern('output params include quality', /quality:\s*firstDefined\(/);
+assertPattern('output params include normalized quality', /quality:\s*normalizeImageQuality\(firstDefined\(/);
 assertContains('output params include format', 'output_format: format');
 assertContains('non-png converts output quality to compression', 'out.output_compression = outputCompressionFromQuality(outputQuality, 90)');
 assertContains('native transparency requires explicit capability', "profile?.supportsNativeTransparency === true");
