@@ -5,16 +5,29 @@ const ENTRY_ADVANCED_PREFIX = 'nexgen-entry-advanced.';
 const PERSISTED_PROMPT_KEY = 'gpt-image2.home.v3.persisted-prompt';
 const DB_NAME = 'gpt-image2-home-v3';
 const DB_STORE = 'blobs';
+const DB_AGENT_STORE = 'agentThreads';
+const BLOB_RESERVATION_KEY = 'gpt-image2.home.v3.blob-reservations';
+const BLOB_RESERVATION_PREFIX = `${BLOB_RESERVATION_KEY}.`;
+const BLOB_RESERVATION_TTL_MS = 90 * 1000;
 const PROMPT_PAGE_SIZE = 36;
 const PROMPT_VIRTUAL_THRESHOLD = 108;
 const PROMPT_VIRTUAL_BUFFER_ROWS = 3;
 const PROMPT_REPO_CACHE_LIMIT = 24;
-const PROMPT_FAST_VERSION = 'home-v3-20260709-standalone-prompts-r83';
+const PROMPT_FAST_VERSION = 'home-v3-20260710-full-audit-r84';
 const PROMPT_FAST_BOOTSTRAP_URL = `/prompts_fast/bootstrap.json?v=${PROMPT_FAST_VERSION}`;
 const PROMPT_FAST_PREVIEWS_URL = `/prompts_fast/category_previews.json?v=${PROMPT_FAST_VERSION}`;
 const PROMPT_FAST_SEARCH_URL = `/prompts_fast/search_index.json?v=${PROMPT_FAST_VERSION}`;
 const GALLERY_VIRTUAL_BUFFER_ROWS = 4;
 const GALLERY_VIRTUAL_THRESHOLD = 42;
+const IMAGE_OBJECT_URL_CACHE_LIMIT = 72;
+const REFERENCE_OBJECT_URL_CACHE_LIMIT = 48;
+const STREAM_IMAGE_LIMIT = 8;
+const IMAGE_STREAM_EVENT_LIMIT = 32 * 1024 * 1024;
+const STREAM_EVENT_METADATA_LIMIT = 24;
+const AGENT_STREAM_TEXT_LIMIT = 4 * 1024 * 1024;
+const AGENT_STREAM_EVENT_LIMIT = 8 * 1024 * 1024;
+const transientObjectUrls = new Set();
+const localBlobReservations = new Map();
 const COMPOSER_SETTING_KEYS = ['quality', 'output_format', 'output_compression', 'n', 'transparent_output', 'moderation', 'openaiSize', 'openaiAspectRatio', 'googleBaseResolution', 'googleAspectRatio', 'xaiResolution', 'xaiAspectRatio'];
 const COMPOSER_SESSION_FIELDS = ['activeImageProfileId', 'activeProfileId'];
 
@@ -150,8 +163,17 @@ const uid = (prefix) => `${prefix}-${Date.now().toString(36)}-${Math.random().to
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
 const cssEscape = (value) => (typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(String(value ?? '')) : String(value ?? '').replace(/["\\]/g, '\\$&'));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const MODAL_FOCUSABLE_SELECTOR = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+const modalOpenerSnapshots = new Map();
 const AGENT_DEFAULT_TIMEOUT_SECONDS = 60;
+const AGENT_RENDER_MESSAGE_LIMIT = 80;
+const AGENT_THREAD_MESSAGE_LIMIT = 240;
+const AGENT_THREAD_STORAGE_CHAR_LIMIT = 512 * 1024;
+const AGENT_TOTAL_STORAGE_CHAR_LIMIT = 1536 * 1024;
 let storeWriteTimer = 0;
+let agentHistoryWriteTimer = 0;
+let agentHistoryPersistChain = Promise.resolve();
+let promptRepoResizeObserver = null;
 
 function makeAgentThread(projectId, overrides = {}) {
   const createdAt = overrides.createdAt || Date.now();
@@ -170,10 +192,10 @@ function agentBranchTitle(message) {
   if (text) return text.slice(0, 18);
   return `分支 ${new Date(message?.createdAt || Date.now()).toLocaleTimeString('zh-CN', { hour12: false })}`;
 }
-function normalizeAgentMessage(message, threadId, projectId) {
+function normalizeAgentMessage(message, threadId, projectId, options = {}) {
   const createdAt = message?.createdAt || Date.now();
   const pending = !!message?.pending;
-  if (pending && createdAt && Date.now() - createdAt > AGENT_DEFAULT_TIMEOUT_SECONDS * 1000) {
+  if (pending && options.interruptPending) {
     return {
       ...message,
       id: message?.id || uid('msg'),
@@ -183,6 +205,8 @@ function normalizeAgentMessage(message, threadId, projectId) {
       text: '对话已中断，可重试。',
       createdAt,
       pending: false,
+      status: 'interrupted',
+      error: true,
       errorDetail: message?.errorDetail || '页面刷新或上游长时间未返回导致本次 Agent 对话中断。'
     };
   }
@@ -197,7 +221,7 @@ function normalizeAgentMessage(message, threadId, projectId) {
     pending
   };
 }
-function migrateAgentThreads(agent = {}) {
+function migrateAgentThreads(agent = {}, options = { interruptPending: true }) {
   const migrated = { ...agent };
   const projects = Array.isArray(migrated.projects) && migrated.projects.length ? migrated.projects : [{ id: 'default', name: '默认项目', prompt: '', createdAt: Date.now(), updatedAt: Date.now() }];
   const legacyConversations = migrated.conversations && typeof migrated.conversations === 'object' ? migrated.conversations : {};
@@ -215,11 +239,11 @@ function migrateAgentThreads(agent = {}) {
         updatedAt: legacyMessages[legacyMessages.length - 1]?.createdAt || project.updatedAt || Date.now()
       });
       threads = [thread];
-      messagesByThread[thread.id] = legacyMessages.map((message) => normalizeAgentMessage(message, thread.id, projectId));
+      messagesByThread[thread.id] = legacyMessages.map((message) => normalizeAgentMessage(message, thread.id, projectId, options));
     }
     for (const thread of threads) {
       const current = Array.isArray(messagesByThread[thread.id]) ? messagesByThread[thread.id] : [];
-      messagesByThread[thread.id] = current.map((message) => normalizeAgentMessage(message, thread.id, projectId));
+      messagesByThread[thread.id] = current.map((message) => normalizeAgentMessage(message, thread.id, projectId, options));
     }
     threadsByProject[projectId] = threads;
     const activeThreadId = activeThreadIdByProject[projectId];
@@ -318,6 +342,114 @@ function revokeMapEntry(map, key) {
   revokeObjectUrl(map.get(key));
   map.delete(key);
 }
+function compactAgentMessageForStorage(message) {
+  const attachments = Array.isArray(message?.attachments)
+    ? message.attachments.map(({ url, file, dataUrl, image_url, imageUrl, ...attachment }) => attachment)
+    : message?.attachments;
+  const promptOptions = Array.isArray(message?.promptOptions)
+    ? message.promptOptions.map((option) => ({
+      ...option,
+      prompt: String(option?.prompt || '').slice(0, 48 * 1024),
+      negativePrompt: String(option?.negativePrompt || '').slice(0, 24 * 1024),
+      reason: String(option?.reason || '').slice(0, 8 * 1024)
+    }))
+    : message?.promptOptions;
+  return {
+    ...message,
+    text: String(message?.text || '').slice(0, 128 * 1024),
+    errorDetail: String(message?.errorDetail || '').slice(0, 32 * 1024),
+    retryInput: String(message?.retryInput || '').slice(0, 32 * 1024),
+    promptOptions,
+    attachments
+  };
+}
+function compactAgentThreadMessages(messages = [], charLimit = AGENT_THREAD_STORAGE_CHAR_LIMIT) {
+  const compacted = [];
+  let chars = 0;
+  const source = Array.isArray(messages) ? messages.slice(-AGENT_THREAD_MESSAGE_LIMIT) : [];
+  for (let index = source.length - 1; index >= 0; index -= 1) {
+    let message = compactAgentMessageForStorage(source[index]);
+    let size = JSON.stringify(message).length;
+    if (size > charLimit) {
+      message = {
+        id: message.id,
+        threadId: message.threadId,
+        projectId: message.projectId,
+        role: message.role,
+        text: String(message.text || '').slice(0, Math.max(1024, charLimit - 4096)),
+        createdAt: message.createdAt,
+        pending: false,
+        storageTruncated: true
+      };
+      size = JSON.stringify(message).length;
+    }
+    if (chars + size > charLimit) break;
+    compacted.unshift(message);
+    chars += size;
+  }
+  return compacted;
+}
+function compactAgentMessagesByThreadForStorage(messagesByThread = {}) {
+  const entries = Object.entries(messagesByThread)
+    .map(([threadId, messages]) => [threadId, compactAgentThreadMessages(messages)])
+    .sort((a, b) => {
+      const aTime = Number(a[1].at(-1)?.createdAt || 0);
+      const bTime = Number(b[1].at(-1)?.createdAt || 0);
+      return bTime - aTime;
+    });
+  const output = {};
+  let totalChars = 0;
+  for (const [threadId, messages] of entries) {
+    const remaining = AGENT_TOTAL_STORAGE_CHAR_LIMIT - totalChars;
+    if (remaining <= 0) {
+      output[threadId] = [];
+      continue;
+    }
+    const bounded = compactAgentThreadMessages(messages, Math.min(AGENT_THREAD_STORAGE_CHAR_LIMIT, remaining));
+    const size = JSON.stringify(bounded).length;
+    output[threadId] = bounded;
+    totalChars += size;
+  }
+  return output;
+}
+function archiveAgentMessage(message) {
+  const attachments = Array.isArray(message?.attachments)
+    ? message.attachments.map(({ url, file, dataUrl, image_url, imageUrl, ...attachment }) => attachment)
+    : message?.attachments;
+  return { ...message, attachments };
+}
+function trackTransientObjectUrl(url) {
+  if (url) transientObjectUrls.add(url);
+  return url;
+}
+function revokeTransientObjectUrl(url) {
+  transientObjectUrls.delete(url);
+  revokeObjectUrl(url);
+}
+function rememberObjectUrl(map, key, url, limit) {
+  if (!map || !key || !url) return url;
+  if (map.has(key)) revokeObjectUrl(map.get(key));
+  map.delete(key);
+  map.set(key, url);
+  while (map.size > limit) revokeMapEntry(map, map.keys().next().value);
+  return url;
+}
+function touchObjectUrl(map, key) {
+  if (!map?.has(key)) return '';
+  const url = map.get(key);
+  map.delete(key);
+  map.set(key, url);
+  return url;
+}
+function revokeAllObjectUrls() {
+  for (const map of [state?.imageUrls, state?.refUrls]) {
+    if (!map) continue;
+    for (const url of map.values()) revokeObjectUrl(url);
+    map.clear();
+  }
+  for (const url of transientObjectUrls) revokeObjectUrl(url);
+  transientObjectUrls.clear();
+}
 function scheduleStoreWrite(delay = 260) {
   if (storeWriteTimer) clearTimeout(storeWriteTimer);
   storeWriteTimer = setTimeout(() => {
@@ -331,24 +463,103 @@ function shouldCloseModalFromClick(actionTarget, originalTarget) {
 }
 
 let dbPromise = null;
+const agentArchiveBaselines = new Map();
+const knownAgentArchiveThreadIds = new Set();
 function openDb() {
   if (dbPromise) return dbPromise;
   dbPromise = new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
-    req.onupgradeneeded = () => req.result.createObjectStore(DB_STORE);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    const req = indexedDB.open(DB_NAME, 2);
+    let settled = false;
+    let blockedTimer = 0;
+    const rejectOpen = (error) => {
+      if (settled) return;
+      settled = true;
+      if (blockedTimer) clearTimeout(blockedTimer);
+      dbPromise = null;
+      reject(error);
+    };
+    req.onupgradeneeded = () => {
+      const database = req.result;
+      if (!database.objectStoreNames?.contains?.(DB_STORE)) database.createObjectStore(DB_STORE);
+      if (!database.objectStoreNames?.contains?.(DB_AGENT_STORE)) database.createObjectStore(DB_AGENT_STORE);
+    };
+    req.onblocked = () => {
+      console.warn('[home-v3] IndexedDB upgrade is waiting for an older tab to close');
+      blockedTimer = setTimeout(() => {
+        rejectOpen(new Error('本地数据库升级被旧标签页阻塞，请关闭其他 NexGen 页面后重试'));
+      }, 1800);
+    };
+    req.onsuccess = () => {
+      const database = req.result;
+      if (settled) {
+        database.close();
+        return;
+      }
+      settled = true;
+      if (blockedTimer) clearTimeout(blockedTimer);
+      database.onversionchange = () => {
+        database.close();
+        if (dbPromise) dbPromise = null;
+      };
+      resolve(database);
+    };
+    req.onerror = () => rejectOpen(req.error);
   });
   return dbPromise;
 }
+function readBlobReservations() {
+  const now = Date.now();
+  for (const [id, expiresAt] of localBlobReservations) {
+    if (Number(expiresAt || 0) <= now) localBlobReservations.delete(id);
+  }
+  const reservations = Object.fromEntries(localBlobReservations);
+  try {
+    const legacy = JSON.parse(localStorage.getItem(BLOB_RESERVATION_KEY) || '{}');
+    for (const [id, expiresAt] of Object.entries(legacy).slice(-256)) {
+      if (Number(expiresAt || 0) > now) reservations[id] = Number(expiresAt);
+    }
+    const reservationKeys = [];
+    for (let index = 0; index < Number(localStorage.length || 0); index += 1) {
+      const key = localStorage.key(index);
+      if (key?.startsWith(BLOB_RESERVATION_PREFIX)) reservationKeys.push(key);
+    }
+    for (const key of reservationKeys) {
+      if (!key?.startsWith(BLOB_RESERVATION_PREFIX)) continue;
+      const id = key.slice(BLOB_RESERVATION_PREFIX.length);
+      const expiresAt = Number(localStorage.getItem(key) || 0);
+      if (expiresAt > now) reservations[id] = expiresAt;
+      else localStorage.removeItem(key);
+    }
+    return reservations;
+  } catch {
+    return reservations;
+  }
+}
+function reserveBlobId(id) {
+  if (!id) return;
+  const expiresAt = Date.now() + BLOB_RESERVATION_TTL_MS;
+  localBlobReservations.set(id, expiresAt);
+  try { localStorage.setItem(`${BLOB_RESERVATION_PREFIX}${id}`, String(expiresAt)); } catch {}
+}
+function releaseBlobReservation(id) {
+  if (!id) return;
+  localBlobReservations.delete(id);
+  try { localStorage.removeItem(`${BLOB_RESERVATION_PREFIX}${id}`); } catch {}
+}
 async function putBlob(blob, id = uid('blob')) {
-  const db = await openDb();
-  await new Promise((resolve, reject) => {
-    const tx = db.transaction(DB_STORE, 'readwrite');
-    tx.objectStore(DB_STORE).put(blob, id);
-    tx.oncomplete = resolve;
-    tx.onerror = () => reject(tx.error);
-  });
+  reserveBlobId(id);
+  try {
+    const db = await openDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, 'readwrite');
+      tx.objectStore(DB_STORE).put(blob, id);
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (error) {
+    releaseBlobReservation(id);
+    throw error;
+  }
   return id;
 }
 async function getBlob(id) {
@@ -363,6 +574,7 @@ async function getBlob(id) {
 }
 async function deleteBlob(id) {
   if (!id) return;
+  releaseBlobReservation(id);
   const db = await openDb();
   await new Promise((resolve, reject) => {
     const tx = db.transaction(DB_STORE, 'readwrite');
@@ -399,18 +611,290 @@ function collectReferencedBlobIds() {
   }
   return ids;
 }
+function deleteStoreKeysNotIn(store, keep, normalizeKey = (key) => key, isProtected = () => false) {
+  if (typeof store.openKeyCursor === 'function') {
+    const cursorRequest = store.openKeyCursor();
+    cursorRequest.onsuccess = () => {
+      const cursor = cursorRequest.result;
+      if (!cursor) return;
+      if (!keep.has(normalizeKey(cursor.key)) && !isProtected(cursor.key)) cursor.delete();
+      cursor.continue();
+    };
+    return;
+  }
+  if (typeof store.getAllKeys === 'function') {
+    const keysRequest = store.getAllKeys();
+    keysRequest.onsuccess = () => {
+      for (const key of keysRequest.result || []) {
+        if (!keep.has(normalizeKey(key)) && !isProtected(key)) store.delete(key);
+      }
+    };
+  }
+}
+function agentArchiveMessageKey(message, index = 0) {
+  return String(message?.id || `${message?.createdAt || 0}:${message?.role || ''}:${index}`);
+}
+function agentArchiveSnapshot(threadId, messages, options = {}) {
+  const archivedMessages = (Array.isArray(messages) ? messages : []).map(archiveAgentMessage);
+  return {
+    threadId: String(threadId),
+    messages: archivedMessages,
+    deleted: options.deleted === true,
+    updatedAt: Number(options.updatedAt || archivedMessages.at(-1)?.createdAt || Date.now()),
+    revision: Number(options.revision || 0)
+  };
+}
+function agentArchiveFingerprint(snapshot) {
+  return JSON.stringify({
+    deleted: snapshot?.deleted === true,
+    messages: snapshot?.messages || []
+  });
+}
+function agentArchiveMessageFingerprint(message) {
+  if (!message) return 'null';
+  const normalized = { ...message };
+  if (normalized.pending !== true) delete normalized.pending;
+  return JSON.stringify(normalized);
+}
+function rememberAgentArchiveBaseline(snapshot) {
+  const threadId = String(snapshot?.threadId || '');
+  if (!threadId) return;
+  knownAgentArchiveThreadIds.add(threadId);
+  agentArchiveBaselines.set(threadId, {
+    fingerprint: agentArchiveFingerprint(snapshot),
+    messageKeys: new Set((snapshot.messages || []).map(agentArchiveMessageKey)),
+    messageFingerprints: new Map((snapshot.messages || []).map((message, index) => [
+      agentArchiveMessageKey(message, index),
+      agentArchiveMessageFingerprint(message)
+    ])),
+    revision: Number(snapshot.revision || 0),
+    deleted: snapshot.deleted === true
+  });
+}
+function mergeAgentArchiveMessages(remoteMessages, localMessages) {
+  const merged = new Map();
+  (Array.isArray(remoteMessages) ? remoteMessages : []).forEach((message, index) => merged.set(agentArchiveMessageKey(message, index), message));
+  (Array.isArray(localMessages) ? localMessages : []).forEach((message, index) => merged.set(agentArchiveMessageKey(message, index), message));
+  return [...merged.values()].sort((a, b) => Number(a?.createdAt || 0) - Number(b?.createdAt || 0));
+}
+function mergeAgentArchiveChanges(remoteMessages, localMessages, baseline) {
+  const merged = new Map();
+  (Array.isArray(remoteMessages) ? remoteMessages : []).forEach((message, index) => merged.set(agentArchiveMessageKey(message, index), message));
+  (Array.isArray(localMessages) ? localMessages : []).forEach((message, index) => {
+    const key = agentArchiveMessageKey(message, index);
+    const baselineFingerprint = baseline?.messageFingerprints?.get(key);
+    const localChanged = baselineFingerprint
+      ? agentArchiveMessageFingerprint(message) !== baselineFingerprint
+      : !merged.has(key);
+    if (localChanged || !merged.has(key)) merged.set(key, message);
+  });
+  return [...merged.values()].sort((a, b) => Number(a?.createdAt || 0) - Number(b?.createdAt || 0));
+}
+function agentArchiveLocalChanges(messages, baseline, since = 0) {
+  return (Array.isArray(messages) ? messages : []).filter((message, index) => {
+    const key = agentArchiveMessageKey(message, index);
+    const baselineFingerprint = baseline?.messageFingerprints?.get(key);
+    if (baselineFingerprint) return agentArchiveMessageFingerprint(message) !== baselineFingerprint;
+    if (baseline?.messageKeys?.has(key)) return false;
+    return !since || Math.max(Number(message?.updatedAt || 0), Number(message?.createdAt || 0)) > since;
+  });
+}
+function recoveredAgentThread(threadId, messages) {
+  const projectEntry = Object.entries(state.agent?.threadsByProject || {}).find(([, threads]) =>
+    (Array.isArray(threads) ? threads : []).some((thread) => thread.id === threadId));
+  if (!projectEntry) return null;
+  const [projectId, threads] = projectEntry;
+  const sourceThread = threads.find((thread) => thread.id === threadId);
+  const recovered = makeAgentThread(projectId, {
+    title: `${sourceThread?.title || '对话'}（恢复）`,
+    sourceThreadId: threadId,
+    createdAt: Date.now(),
+    updatedAt: Math.max(Date.now(), Number(messages.at(-1)?.createdAt || 0))
+  });
+  const recoveredMessages = messages.map((message) => ({
+    ...message,
+    threadId: recovered.id,
+    projectId
+  }));
+  return { projectId, sourceThread, thread: recovered, messages: recoveredMessages };
+}
+function applyRecoveredAgentThread(recovery) {
+  if (!recovery?.thread?.id || !recovery?.projectId) return;
+  const { projectId, sourceThread, thread, messages } = recovery;
+  const threads = Array.isArray(state.agent.threadsByProject?.[projectId])
+    ? state.agent.threadsByProject[projectId]
+    : [];
+  const sourceIndex = threads.findIndex((item) => item.id === sourceThread?.id);
+  const nextThreads = threads.filter((item) => item.id !== sourceThread?.id && item.id !== thread.id);
+  nextThreads.splice(sourceIndex >= 0 ? sourceIndex : nextThreads.length, 0, thread);
+  state.agent.threadsByProject[projectId] = nextThreads;
+  delete state.agent.messagesByThread[sourceThread?.id];
+  state.agent.messagesByThread[thread.id] = messages;
+  if (state.agent.activeThreadIdByProject?.[projectId] === sourceThread?.id) {
+    state.agent.activeThreadIdByProject[projectId] = thread.id;
+  }
+}
+function removeArchivedAgentThread(threadId) {
+  delete state.agent.messagesByThread[threadId];
+  for (const [projectId, threads] of Object.entries(state.agent.threadsByProject || {})) {
+    const filtered = (Array.isArray(threads) ? threads : []).filter((thread) => thread.id !== threadId);
+    if (filtered.length === threads.length) continue;
+    if (!filtered.length) {
+      const replacement = makeAgentThread(projectId, { title: newAgentThreadTitle() });
+      filtered.push(replacement);
+      state.agent.messagesByThread[replacement.id] = [];
+    }
+    state.agent.threadsByProject[projectId] = filtered;
+    if (!filtered.some((thread) => thread.id === state.agent.activeThreadIdByProject?.[projectId])) {
+      state.agent.activeThreadIdByProject[projectId] = filtered[0].id;
+    }
+  }
+}
+async function performAgentHistoryPersist() {
+  const database = await openDb();
+  const snapshots = Object.entries(state.agent?.messagesByThread || {}).map(([threadId, messages]) => agentArchiveSnapshot(threadId, messages));
+  const activeIds = new Set(snapshots.map((item) => item.threadId));
+  const changedSnapshots = snapshots.filter((snapshot) => agentArchiveBaselines.get(snapshot.threadId)?.fingerprint !== agentArchiveFingerprint(snapshot));
+  const deletedIds = [...knownAgentArchiveThreadIds].filter((threadId) => !activeIds.has(threadId) && !agentArchiveBaselines.get(threadId)?.deleted);
+  if (!changedSnapshots.length && !deletedIds.length) return;
+  const committed = new Map();
+  const recoveries = [];
+  await new Promise((resolve, reject) => {
+    const tx = database.transaction(DB_AGENT_STORE, 'readwrite');
+    const store = tx.objectStore(DB_AGENT_STORE);
+    for (const snapshot of changedSnapshots) {
+      const baseline = agentArchiveBaselines.get(snapshot.threadId);
+      const localFingerprint = agentArchiveFingerprint(snapshot);
+      const localKeys = new Set(snapshot.messages.map(agentArchiveMessageKey));
+      const request = store.get(snapshot.threadId);
+      request.onsuccess = () => {
+        const remote = request.result;
+        if (remote?.deleted === true) {
+          const localChanges = agentArchiveLocalChanges(snapshot.messages, baseline, Number(remote.updatedAt || 0));
+          const recovery = localChanges.length ? recoveredAgentThread(snapshot.threadId, localChanges) : null;
+          if (recovery) {
+            const recoveredSnapshot = agentArchiveSnapshot(recovery.thread.id, recovery.messages, {
+              updatedAt: recovery.thread.updatedAt,
+              revision: 1
+            });
+            store.put(recoveredSnapshot, recovery.thread.id);
+            recoveries.push(recovery);
+            committed.set(recovery.thread.id, { snapshot: recoveredSnapshot, localFingerprint: agentArchiveFingerprint(recoveredSnapshot) });
+          }
+          committed.set(snapshot.threadId, { snapshot: remote, localFingerprint });
+          return;
+        }
+        const localIsAdditive = !baseline || (!baseline.deleted && [...baseline.messageKeys].every((key) => localKeys.has(key)));
+        const remoteHasDestructiveChange = baseline
+          && Number(remote?.revision || 0) > Number(baseline.revision || 0)
+          && [...baseline.messageKeys].some((key) => !(remote?.messages || []).some((message, index) => agentArchiveMessageKey(message, index) === key));
+        const localAdditions = remoteHasDestructiveChange
+          ? snapshot.messages.filter((message, index) => !baseline.messageKeys.has(agentArchiveMessageKey(message, index)))
+          : snapshot.messages;
+        const messages = localIsAdditive && remote && !remote.deleted
+          ? mergeAgentArchiveChanges(remote.messages, localAdditions, remoteHasDestructiveChange ? null : baseline)
+          : snapshot.messages;
+        const next = {
+          ...snapshot,
+          messages,
+          deleted: false,
+          updatedAt: Math.max(Number(snapshot.updatedAt || 0), Number(remote?.updatedAt || 0), Date.now()),
+          revision: Math.max(Number(remote?.revision || 0), Number(baseline?.revision || 0)) + 1
+        };
+        store.put(next, snapshot.threadId);
+        committed.set(snapshot.threadId, { snapshot: next, localFingerprint });
+      };
+    }
+    for (const threadId of deletedIds) {
+      const request = store.get(threadId);
+      request.onsuccess = () => {
+        const remote = request.result;
+        const tombstone = agentArchiveSnapshot(threadId, [], {
+          deleted: true,
+          updatedAt: Date.now(),
+          revision: Math.max(Number(remote?.revision || 0), Number(agentArchiveBaselines.get(threadId)?.revision || 0)) + 1
+        });
+        store.put(tombstone, threadId);
+        committed.set(threadId, { snapshot: tombstone, localFingerprint: '' });
+      };
+    }
+    tx.oncomplete = () => {
+      const recoveredSourceIds = new Set(recoveries.map((recovery) => recovery.sourceThread?.id).filter(Boolean));
+      for (const [threadId, result] of committed) {
+        const snapshot = result.snapshot;
+        if (snapshot.deleted) {
+          if (!recoveredSourceIds.has(threadId)) removeArchivedAgentThread(threadId);
+        } else {
+          const currentMessages = state.agent?.messagesByThread?.[threadId];
+          const currentSnapshot = agentArchiveSnapshot(threadId, currentMessages);
+          if (agentArchiveFingerprint(currentSnapshot) === result.localFingerprint) {
+            state.agent.messagesByThread[threadId] = snapshot.messages;
+          }
+        }
+        rememberAgentArchiveBaseline(snapshot);
+      }
+      recoveries.forEach(applyRecoveredAgentThread);
+      resolve();
+    };
+    tx.onerror = () => reject(tx.error);
+  });
+}
+function persistAgentHistorySnapshots() {
+  const run = agentHistoryPersistChain
+    .catch(() => {})
+    .then(() => performAgentHistoryPersist());
+  agentHistoryPersistChain = run;
+  return run;
+}
+function scheduleAgentHistoryPersist() {
+  clearTimeout(agentHistoryWriteTimer);
+  agentHistoryWriteTimer = setTimeout(() => {
+    persistAgentHistorySnapshots().catch((err) => console.warn('[home-v3] Agent history archive skipped', err));
+  }, 350);
+}
+async function hydrateAgentHistoryFromDb() {
+  const database = await openDb();
+  const snapshots = await new Promise((resolve, reject) => {
+    const tx = database.transaction(DB_AGENT_STORE, 'readonly');
+    const store = tx.objectStore(DB_AGENT_STORE);
+    if (typeof store.getAll !== 'function') {
+      resolve([]);
+      return;
+    }
+    const request = store.getAll();
+    request.onsuccess = () => resolve(request.result || []);
+    request.onerror = () => reject(request.error);
+  });
+  for (const snapshot of snapshots) {
+    const threadId = String(snapshot?.threadId || '');
+    if (!threadId) continue;
+    knownAgentArchiveThreadIds.add(threadId);
+    const local = Array.isArray(state.agent?.messagesByThread?.[threadId]) ? state.agent.messagesByThread[threadId] : [];
+    if (snapshot.deleted === true) {
+      const localChanges = agentArchiveLocalChanges(local, null, Number(snapshot.updatedAt || 0));
+      const recovery = localChanges.length ? recoveredAgentThread(threadId, localChanges) : null;
+      if (recovery) applyRecoveredAgentThread(recovery);
+      else removeArchivedAgentThread(threadId);
+      rememberAgentArchiveBaseline(snapshot);
+      continue;
+    }
+    if (!Object.prototype.hasOwnProperty.call(state.agent?.messagesByThread || {}, threadId)) {
+      rememberAgentArchiveBaseline(snapshot);
+      continue;
+    }
+    const archived = Array.isArray(snapshot.messages) ? snapshot.messages : [];
+    state.agent.messagesByThread[threadId] = mergeAgentArchiveMessages(archived, local);
+    rememberAgentArchiveBaseline({ ...snapshot, messages: state.agent.messagesByThread[threadId] });
+  }
+}
 async function cleanupOrphanBlobs() {
   const db = await openDb();
   const keep = collectReferencedBlobIds();
+  const protectedIds = new Set(Object.keys(readBlobReservations()));
   await new Promise((resolve, reject) => {
     const tx = db.transaction(DB_STORE, 'readwrite');
     const store = tx.objectStore(DB_STORE);
-    const req = store.getAllKeys();
-    req.onsuccess = () => {
-      for (const key of req.result || []) {
-        if (!keep.has(key)) store.delete(key);
-      }
-    };
+    deleteStoreKeysNotIn(store, keep, (key) => key, (key) => protectedIds.has(String(key)));
     tx.oncomplete = resolve;
     tx.onerror = () => reject(tx.error);
   });
@@ -728,12 +1212,15 @@ function normalizeRestoredTask(task) {
   const hasCompletionEvidence = hasImages || completedStatus || (!!task.finishedAt && hasRawCompletion);
   const hasRecoverableSuccessEvidence = hasImages || completedStatus || (!!task.finishedAt && hasRawCompletion);
   const expected = Number(task.expectedCount || task.requestedParams?.count || task.count || 0);
+  const hasTransparentFailure = Number(task.transparentFailedCount || 0) > 0
+    || !!String(task.transparentPostProcessError || '').trim()
+    || (Array.isArray(task.partialErrors) && task.partialErrors.some((item) => item?.stage === 'transparent-postprocess'));
   if (hasImages && expected > 0) {
-    const partial = images.length < expected;
+    const partial = task.status === 'partial_success' || images.length < expected || hasTransparentFailure;
     return { ...task, images, status: partial ? 'partial_success' : 'success', error: partial ? task.error || '' : '', errorDetail: partial ? task.errorDetail || '' : '' };
   }
   if ((hasCompletionEvidence && (!hasError || isRefreshInterruptionError)) || (isRefreshInterruptionError && hasRecoverableSuccessEvidence)) {
-    const partial = task.status === 'partial_success' || (expected > 0 && images.length > 0 && images.length < expected);
+    const partial = task.status === 'partial_success' || hasTransparentFailure || (expected > 0 && images.length > 0 && images.length < expected);
     return { ...task, images, status: partial ? 'partial_success' : 'success', error: partial ? task.error || '' : '', errorDetail: partial ? task.errorDetail || '' : '' };
   }
   if (hasError && !hasImages && task.status !== 'queued' && task.status !== 'running') return { ...task, images, status: 'error' };
@@ -858,8 +1345,13 @@ function compactTaskForStorage(task, mode = 'normal') {
   };
 }
 function writeStore() {
+  const agentForStorage = {
+    ...state.agent,
+    messagesByThread: compactAgentMessagesByThreadForStorage(state.agent?.messagesByThread)
+  };
   const clean = JSON.parse(JSON.stringify({
     ...state,
+    agent: agentForStorage,
     popover: null,
     modal: null,
     viewer: null,
@@ -908,6 +1400,7 @@ function writeStore() {
     }
   }
   writePersistedPrompt();
+  scheduleAgentHistoryPersist();
 }
 function writeComposerSessionSettings() {
   if (typeof sessionStorage === 'undefined') return;
@@ -965,7 +1458,7 @@ function streamSupported(profile = imageProfile()) {
   return key === 'openai' && profileMode(profile) === 'images';
 }
 function openAiTransparentBackgroundSupported(profile = imageProfile()) {
-  return providerKey(profile) === 'openai';
+  return providerKey(profile) === 'openai' && profile?.supportsNativeTransparency === true;
 }
 function transparentBackgroundUnsupportedMessage(profile = imageProfile()) {
   return `当前模型 ${profile?.name || profile?.id || profile?.model || '未命名模型'} / ${profile?.model || 'model'} 不能确认支持透明背景。请切换 OpenAI 图片模型，或关闭透明背景后重试。`;
@@ -1156,7 +1649,7 @@ function activeAgentThread(projectId = state.agent.activeProjectId) {
 }
 function ensureAgentProjectThread(projectId = state.agent.activeProjectId) {
   if (!projectId) return null;
-  state.agent = migrateAgentThreads(state.agent);
+  state.agent = migrateAgentThreads(state.agent, { interruptPending: false });
   const threads = projectThreads(projectId);
   if (threads.length) return threads[0];
   const thread = makeAgentThread(projectId, { title: '主对话' });
@@ -1167,7 +1660,7 @@ function ensureAgentProjectThread(projectId = state.agent.activeProjectId) {
 }
 function setActiveAgentThread(projectId, threadId) {
   if (!projectId || !threadId) return;
-  state.agent = migrateAgentThreads(state.agent);
+  state.agent = migrateAgentThreads(state.agent, { interruptPending: false });
   if (!projectThreads(projectId).some((thread) => thread.id === threadId)) return;
   state.agent.activeThreadIdByProject[projectId] = threadId;
 }
@@ -1247,6 +1740,53 @@ function requestedParamsFromSettings(profile = activeProfile(), settings = state
     count: Number(source.n) || 1
   };
 }
+function normalizeRequestedParamsToComposerSettings(params = {}, baseSettings = state.settings) {
+  const next = { ...settingsForSummary(baseSettings) };
+  const provider = String(params.provider || providerKey(activeProfile()) || 'openai').toLowerCase();
+  if (params.quality !== undefined && params.quality !== null && params.quality !== '') next.quality = params.quality;
+  if (params.format !== undefined && params.format !== null && params.format !== '') next.output_format = params.format;
+  if (params.compression !== undefined && params.compression !== null && params.compression !== '') next.output_compression = params.compression;
+  if (params.transparent !== undefined) next.transparent_output = !!params.transparent;
+  if (params.moderation !== undefined && params.moderation !== null && params.moderation !== '') next.moderation = params.moderation;
+  if (params.count !== undefined && params.count !== null && params.count !== '') next.n = Math.max(1, Math.min(8, Number(params.count) || 1));
+  if (provider === 'google') {
+    if (params.resolution) next.googleBaseResolution = params.resolution;
+    if (params.aspectRatio) next.googleAspectRatio = params.aspectRatio;
+  } else if (provider === 'xai') {
+    if (params.resolution) next.xaiResolution = params.resolution;
+    if (params.aspectRatio) next.xaiAspectRatio = params.aspectRatio;
+  } else {
+    if (params.resolution) next.openaiSize = params.resolution;
+    if (params.aspectRatio) next.openaiAspectRatio = params.aspectRatio;
+  }
+  return next;
+}
+async function restoreTaskToComposer(task, options = {}) {
+  if (!task) return false;
+  const mode = options.mode || 'reuse';
+  const requested = task.requestedParams && typeof task.requestedParams === 'object' ? task.requestedParams : {};
+  const profile = resolveTaskProfile(task);
+  if (state.preferences?.reuseTaskApiProfileTemporarily && profile) {
+    const id = profileId(profile);
+    state.activeImageProfileId = id;
+    state.activeProfileId = id;
+  }
+  state.settings = normalizeRequestedParamsToComposerSettings(requested, state.settings);
+  state.composerPrompt = task.prompt || '';
+  state.references = await cloneReferenceSnapshots(taskReferenceSnapshots(task));
+  state.mode = 'gallery';
+  state.modal = null;
+  writeComposerSessionSettings();
+  if (mode === 'edit' && state.references.length) {
+    openMaskEditor(state.references[0].id);
+    persistRender();
+    toast('已恢复原任务配置，并进入参考图编辑状态');
+    return true;
+  }
+  persistRender();
+  toast('已复用提示词和参数');
+  return true;
+}
 function requestedParams(profile = activeProfile()) {
   return requestedParamsFromSettings(profile, state.settings);
 }
@@ -1258,11 +1798,24 @@ function cloneGalleryImageSettingsForAgent() {
     initializedAt: Date.now()
   };
 }
+function initialAgentImageSettings() {
+  const configuredProfile = state.agentConfig?.mode === 'hybrid'
+    ? findImageProfileById(state.agentConfig?.imageProfileId)
+    : null;
+  if (!configuredProfile) return cloneGalleryImageSettingsForAgent();
+  return {
+    ...settingsForSummary(state.settings),
+    profileId: profileId(configuredProfile),
+    initializedFromGallery: false,
+    initializedFromAgentConfig: true,
+    initializedAt: Date.now()
+  };
+}
 function agentImageSettings() {
   state.agent = state.agent || {};
   const existing = state.agent.imageSettings && typeof state.agent.imageSettings === 'object' ? state.agent.imageSettings : null;
   if (!existing) {
-    state.agent.imageSettings = cloneGalleryImageSettingsForAgent();
+    state.agent.imageSettings = initialAgentImageSettings();
     return state.agent.imageSettings;
   }
   state.agent.imageSettings = {
@@ -1476,6 +2029,17 @@ const TRANSPARENT_KEY_PROMPT = [
 function wantsTransparentOutput(params = {}) {
   const format = String(firstDefined(params.format, params.output_format, state.settings.output_format) || '').toLowerCase();
   return format === 'png' && !!firstDefined(params.transparent, params.transparent_background, params.transparent_output, state.settings.transparent_output, false);
+}
+function mergeGenerationPartialErrors(partialErrors = [], transparentPostProcessError = '') {
+  const merged = [...(Array.isArray(partialErrors) ? partialErrors : [])];
+  if (transparentPostProcessError) {
+    merged.push({
+      summary: '透明背景后处理失败，已保留原图',
+      detail: transparentPostProcessError,
+      stage: 'transparent-postprocess'
+    });
+  }
+  return merged;
 }
 function buildTransparentKeyPrompt(prompt) {
   return `${String(prompt || '').trim()}\n\n${TRANSPARENT_KEY_PROMPT}`;
@@ -1787,7 +2351,12 @@ function extractResponseText(data, fallback = '') {
 function render() {
   const app = $('#app');
   if (!app) return;
+  const previousModalKeys = visibleModalKeys();
+  const nextModalKeys = stateModalKeys();
   const focusState = captureFocusState();
+  const openingKey = nextModalKeys.find((key) => !previousModalKeys.includes(key));
+  const closingKey = [...previousModalKeys].reverse().find((key) => !nextModalKeys.includes(key));
+  if (openingKey && focusState) modalOpenerSnapshots.set(openingKey, focusState);
   const galleryScrollState = captureGalleryScrollState();
   captureAgentScrollState();
   const workspaceMode = state.mode === 'agent' ? 'is-agent' : state.mode === 'pro' ? 'is-pro' : state.mode === 'workflow' ? 'is-workflow' : 'is-gallery';
@@ -1817,7 +2386,15 @@ function render() {
   `;
   hydrateImages();
   bindTransientEvents();
-  restoreFocusState(focusState);
+  syncModalAccessibility();
+  const topDialog = topVisibleModal();
+  if (topDialog) {
+    if (!restoreFocusState(focusState, topDialog)) focusTopModal(topDialog);
+  } else if (closingKey) {
+    restoreModalOpener(closingKey);
+  } else {
+    restoreFocusState(focusState);
+  }
   restoreGalleryScrollState(galleryScrollState);
   restoreAgentScrollState();
 }
@@ -1831,23 +2408,163 @@ function nextRenderFrame(fn) {
 }
 function captureFocusState() {
   const active = document.activeElement;
-  if (!active || active.id !== 'promptRepoSearch') return null;
+  if (!active || active === document.body || active === document.documentElement) return null;
+  const action = active.dataset?.action || '';
+  const modalKey = active.closest?.('[data-modal-key]')?.dataset?.modalKey || '';
+  const stableDataset = {};
+  for (const key of ['id', 'index', 'field', 'scope', 'entry', 'type', 'value', 'mode', 'cat']) {
+    if (active.dataset?.[key] !== undefined) stableDataset[key] = active.dataset[key];
+  }
+  const selector = focusStateSelector(active, action, stableDataset);
+  const scope = modalKey ? document.querySelector(`[data-modal-key="${cssEscape(modalKey)}"]`) : document;
+  const matches = selector ? $$(selector, scope || document) : [];
+  const ordinal = matches.indexOf(active);
   return {
-    id: active.id,
-    value: active.value,
+    id: active.id || '',
+    tag: active.tagName || '',
+    action,
+    modalKey,
+    selector,
+    ordinal: ordinal >= 0 ? ordinal : 0,
+    ariaLabel: active.getAttribute?.('aria-label') || '',
+    value: typeof active.value === 'string' ? active.value : undefined,
     start: active.selectionStart,
-    end: active.selectionEnd
+    end: active.selectionEnd,
+    scrollTop: active.scrollTop || 0
   };
 }
-function restoreFocusState(focusState) {
-  if (!focusState) return;
-  const node = document.getElementById(focusState.id);
-  if (!node) return;
+function focusStateSelector(active, action, stableDataset = {}) {
+  if (active.id) return `#${cssEscape(active.id)}`;
+  if (action) {
+    let selector = `[data-action="${cssEscape(action)}"]`;
+    for (const [key, value] of Object.entries(stableDataset)) {
+      selector += `[data-${key.replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`)}="${cssEscape(value)}"]`;
+    }
+    return selector;
+  }
+  const modalKey = active.dataset?.modalKey;
+  if (modalKey) return `[data-modal-key="${cssEscape(modalKey)}"]`;
+  const ariaLabel = active.getAttribute?.('aria-label');
+  if (ariaLabel && /^(BUTTON|A)$/.test(active.tagName || '')) return `${active.tagName.toLowerCase()}[aria-label="${cssEscape(ariaLabel)}"]`;
+  return '';
+}
+function resolveFocusState(focusState, scope = document) {
+  if (!focusState) return null;
+  if (focusState.id) {
+    const byId = document.getElementById(focusState.id);
+    if (byId && (!scope || scope === document || scope.contains(byId) || scope === byId)) return byId;
+  }
+  if (!focusState.selector) return null;
+  const matches = $$(focusState.selector, scope || document);
+  return matches[focusState.ordinal] || matches[0] || null;
+}
+function restoreFocusState(focusState, scope = document) {
+  const node = resolveFocusState(focusState, scope);
+  if (!node) return false;
   node.focus({ preventScroll: true });
-  const length = node.value.length;
-  const start = Math.min(focusState.start ?? length, length);
-  const end = Math.min(focusState.end ?? start, length);
-  try { node.setSelectionRange(start, end); } catch {}
+  if (typeof node.value === 'string') {
+    const length = node.value.length;
+    const start = Math.min(focusState.start ?? length, length);
+    const end = Math.min(focusState.end ?? start, length);
+    try { node.setSelectionRange(start, end); } catch {}
+  }
+  if (focusState.scrollTop) node.scrollTop = focusState.scrollTop;
+  return document.activeElement === node;
+}
+function stateModalKeys() {
+  const keys = [];
+  if (state.modal) keys.push('task-detail');
+  if (state.viewer) keys.push('gallery-viewer');
+  if (state.promptRepo?.open) keys.push('prompt-repo');
+  if (state.promptRepo?.detail) keys.push('prompt-detail');
+  if (state.promptRepo?.imageViewer) keys.push('prompt-viewer');
+  if (state.workflowDraft) keys.push('workflow-editor');
+  if (state.workflowInvoke) keys.push('workflow-invoke');
+  if (state.confirmDialog) keys.push('confirm-dialog');
+  if (state.entryAdvancedModal) keys.push('entry-advanced');
+  if (state.maskEditor) keys.push('mask-editor');
+  return keys;
+}
+function visibleModalKeys() {
+  return $$('[data-modal-key][role="dialog"][aria-modal="true"]')
+    .filter((node) => node.getClientRects?.().length || node.offsetParent !== null)
+    .map((node) => node.dataset.modalKey)
+    .filter(Boolean);
+}
+function topVisibleModal() {
+  const dialogs = $$('[role="dialog"][aria-modal="true"]')
+    .filter((node) => (node.getClientRects?.().length || node.offsetParent !== null) && !node.hidden);
+  return dialogs[dialogs.length - 1] || null;
+}
+function modalFocusableNodes(dialog = topVisibleModal()) {
+  if (!dialog) return [];
+  return $$(MODAL_FOCUSABLE_SELECTOR, dialog)
+    .filter((node) => !node.disabled && !node.closest('[inert]') && (node.getClientRects?.().length || node.offsetParent !== null));
+}
+function focusTopModal(dialog = topVisibleModal()) {
+  if (!dialog) return false;
+  const target = $('[data-modal-autofocus]', dialog) || modalFocusableNodes(dialog)[0] || dialog;
+  if (!target?.focus) return false;
+  try { target.focus({ preventScroll: true }); } catch { target.focus(); }
+  return dialog.contains(document.activeElement) || dialog === document.activeElement;
+}
+function setManagedInert(node) {
+  if (!node || node.dataset.modalManagedInert === '1' || node.inert) return;
+  node.dataset.modalManagedInert = '1';
+  node.dataset.modalPreviousAriaHidden = node.getAttribute('aria-hidden') ?? '';
+  node.inert = true;
+  node.setAttribute('aria-hidden', 'true');
+}
+function clearManagedInert() {
+  $$('[data-modal-managed-inert="1"]').forEach((node) => {
+    node.inert = false;
+    if (node.dataset.modalPreviousAriaHidden) node.setAttribute('aria-hidden', node.dataset.modalPreviousAriaHidden);
+    else node.removeAttribute('aria-hidden');
+    delete node.dataset.modalManagedInert;
+    delete node.dataset.modalPreviousAriaHidden;
+  });
+}
+function syncModalAccessibility() {
+  clearManagedInert();
+  const topDialog = topVisibleModal();
+  if (!topDialog) return null;
+  const app = $('#app');
+  if (app) {
+    [...app.children].forEach((child) => {
+      if (child !== topDialog && !child.contains(topDialog)) setManagedInert(child);
+    });
+  }
+  $$('[role="dialog"][aria-modal="true"]').forEach((dialog) => {
+    if (dialog !== topDialog && !dialog.contains(topDialog)) setManagedInert(dialog);
+  });
+  if (!topDialog.contains(document.activeElement)) focusTopModal(topDialog);
+  return topDialog;
+}
+function rememberModalOpener(key, node = document.activeElement) {
+  const snapshot = captureFocusStateForNode(node);
+  if (key && snapshot) modalOpenerSnapshots.set(key, snapshot);
+}
+function captureFocusStateForNode(node) {
+  if (!node || node === document.body || node === document.documentElement) return null;
+  const previous = document.activeElement;
+  if (node !== previous && node.focus) {
+    try { node.focus({ preventScroll: true }); } catch {}
+  }
+  const snapshot = captureFocusState();
+  if (previous && previous !== node && previous.focus) {
+    try { previous.focus({ preventScroll: true }); } catch {}
+  }
+  return snapshot;
+}
+function restoreModalOpener(key) {
+  const snapshot = modalOpenerSnapshots.get(key);
+  modalOpenerSnapshots.delete(key);
+  const topDialog = syncModalAccessibility();
+  if (topDialog) {
+    if (!restoreFocusState(snapshot, topDialog)) focusTopModal(topDialog);
+    return;
+  }
+  restoreFocusState(snapshot);
 }
 function currentThemeMode() {
   return window.GptShellTheme?.currentThemeMode?.(state?.preferences?.themeMode || 'light')
@@ -2117,7 +2834,7 @@ function taskActionIcon(name, active = false) {
 function galleryMetrics() {
   const width = typeof window !== 'undefined' ? window.innerWidth || 1280 : 1280;
   if (width <= 760) return { columns: 1, cardHeight: 338, gap: 10 };
-  if (width <= 1100) return { columns: 2, cardHeight: 318, gap: 8 };
+  if (width <= 1180) return { columns: 2, cardHeight: 318, gap: 8 };
   return { columns: 3, cardHeight: 306, gap: 8 };
 }
 function galleryVirtualWindow(totalItems) {
@@ -2142,6 +2859,10 @@ function galleryVirtualWindow(totalItems) {
     bottomPad: Math.max(0, (totalRows - endRow) * pitch),
     totalRows
   };
+}
+function galleryVirtualRangeChanged(windowState, virtualState = state.galleryVirtual) {
+  return virtualState?.renderedStartIndex !== windowState.startIndex
+    || virtualState?.renderedEndIndex !== windowState.endIndex;
 }
 function renderWorkflowSidebar(project) {
   const workflows = currentProjectWorkflows(project?.id);
@@ -2172,6 +2893,11 @@ function renderGalleryStage() {
   const hasSelection = state.selectedTaskIds.length > 0;
   const windowState = galleryVirtualWindow(tasks.length);
   const visibleTasks = tasks.slice(windowState.startIndex, windowState.endIndex);
+  state.galleryVirtual = {
+    ...(state.galleryVirtual || {}),
+    renderedStartIndex: windowState.startIndex,
+    renderedEndIndex: windowState.endIndex
+  };
   return `
     <section class="gallery-stage">
       <div class="asset-toolbar">
@@ -2213,14 +2939,20 @@ function updateBatchActionsDom() {
     toolbar.insertAdjacentHTML('beforeend', html);
   }
 }
-function renderGalleryListOnly() {
+function renderGalleryListOnly(options = {}) {
   const scroll = $('.gallery-scroll');
   if (!scroll) return render();
   const galleryScrollState = captureGalleryScrollState();
   state.galleryVirtual = { ...(state.galleryVirtual || {}), scrollTop: galleryScrollState?.scrollTop || 0, viewportHeight: scroll.clientHeight || state.galleryVirtual?.viewportHeight || 720 };
   const tasks = filteredTasks();
   const windowState = galleryVirtualWindow(tasks.length);
+  if (options.virtualScroll && !galleryVirtualRangeChanged(windowState)) return false;
   const visibleTasks = tasks.slice(windowState.startIndex, windowState.endIndex);
+  state.galleryVirtual = {
+    ...(state.galleryVirtual || {}),
+    renderedStartIndex: windowState.startIndex,
+    renderedEndIndex: windowState.endIndex
+  };
   scroll.dataset.virtual = windowState.shouldVirtualize ? '1' : '0';
   if (galleryImageObserver) galleryImageObserver.disconnect();
   scroll.innerHTML = tasks.length
@@ -2228,13 +2960,14 @@ function renderGalleryListOnly() {
     : `<div class="empty-state"><div><strong>没有匹配的任务</strong><span>换一个关键词，或清空搜索查看全部画廊资产。</span></div></div>`;
   hydrateImages();
   restoreGalleryScrollState(galleryScrollState);
+  return true;
 }
 function scheduleGalleryVirtualRender() {
   if (state.galleryVirtual?.scheduled) return;
   state.galleryVirtual = { ...(state.galleryVirtual || {}), scheduled: true };
   nextRenderFrame(() => {
     state.galleryVirtual = { ...(state.galleryVirtual || {}), scheduled: false };
-    renderGalleryListOnly();
+    renderGalleryListOnly({ virtualScroll: true });
   });
 }
 
@@ -2529,11 +3262,11 @@ function renderEntryAdvancedModal(entry) {
   const modelName = profile.name || profile.model || profileId(profile) || '未选择模型';
   return `
     <div class="modal-layer" data-action="close-entry-advanced">
-      <div class="entry-advanced-modal" role="dialog" aria-modal="true" data-stop>
-        <button class="modal-close" data-action="close-entry-advanced">×</button>
+      <div class="entry-advanced-modal" role="dialog" aria-modal="true" aria-labelledby="entryAdvancedTitle" tabindex="-1" data-modal-key="entry-advanced" data-stop>
+        <button class="modal-close" aria-label="关闭高级配置" data-modal-autofocus data-action="close-entry-advanced">×</button>
         <div class="entry-advanced-head">
           <div>
-            <h2>${esc(title)}</h2>
+            <h2 id="entryAdvancedTitle">${esc(title)}</h2>
             <p>这些选项会覆盖当前入口的模型默认值，只影响后续提交。</p>
           </div>
           <div class="entry-advanced-summary">
@@ -2590,6 +3323,9 @@ function renderAgentStage() {
   const threads = projectThreads(project?.id);
   const activeThread = threads.find((thread) => thread.id === threadId) || threads[0];
   const messages = agentMessages(project?.id);
+  const visibleLimit = Math.max(AGENT_RENDER_MESSAGE_LIMIT, Number(state.agent.visibleMessageLimitByThread?.[threadId]) || AGENT_RENDER_MESSAGE_LIMIT);
+  const visibleMessages = messages.slice(-visibleLimit);
+  const hiddenMessageCount = Math.max(0, messages.length - visibleMessages.length);
   const textProfile = agentTextProfile();
   const configuredTextProfile = configuredAgentTextProfile();
   const invalidTextReason = textProfile ? '' : agentTextProfileInvalidReason(configuredTextProfile);
@@ -2615,7 +3351,7 @@ function renderAgentStage() {
         </div>
       </div>
       <div class="agent-log workflow-stage-scroll">
-        ${messages.length ? `<div class="agent-conversation">${messages.map(renderAgentMessage).join('')}</div>` : ''}
+        ${messages.length ? `<div class="agent-conversation">${hiddenMessageCount ? `<button class="agent-history-window-note" data-action="agent-load-earlier" data-thread-id="${esc(threadId)}">加载更早 ${Math.min(AGENT_RENDER_MESSAGE_LIMIT, hiddenMessageCount)} 条 · 尚有 ${hiddenMessageCount} 条</button>` : ''}${visibleMessages.map(renderAgentMessage).join('')}</div>` : ''}
         ${!messages.length ? `<div class="empty-state"><div><strong>Agent 项目对话</strong><span>这里现在只保留项目对话。批量生图和工作流请从左侧“工作流”分页进入。</span></div></div>` : ''}
       </div>
     </section>
@@ -2638,6 +3374,8 @@ function renderWorkflowWorkspace(project, runs) {
   const workflows = currentProjectWorkflows(project?.id);
   const visible = filteredWorkflows(project?.id);
   const categories = workflowCategories(workflows);
+  const workflowProfile = imageProfile();
+  const workflowAdvanced = effectiveAdvanced('workflow', workflowProfile);
   return `
     <section class="agent-stage workflow-workspace">
       <div class="workflow-workspace-head">
@@ -2650,12 +3388,13 @@ function renderWorkflowWorkspace(project, runs) {
           <button class="workflow-project-menu-trigger" data-action="open-agent-project-menu" title="项目菜单" aria-label="项目菜单">
             <span>${esc(project?.name || '默认项目')}</span><i aria-hidden="true">⌄</i>
           </button>
+          <button class="control-icon control-advanced workflow-advanced-trigger" data-action="open-entry-advanced" data-entry="workflow" title="工作流高级配置" aria-label="工作流高级配置">⚙</button>
           <button class="toolbar-button" data-action="agent-workflow">AI 创建</button>
           <button class="toolbar-button" data-action="new-series-workflow">新建多图</button>
           <button class="generate-button compact" data-action="new-workflow-draft">新建工作流</button>
         </div>
       </div>
-      ${renderEntryAdvancedControls('workflow')}
+      <div class="workflow-advanced-summary">高级 · b64 ${workflowAdvanced.responseFormatB64Json ? '开' : '关'} · 流式 ${workflowAdvanced.streamImages && streamSupported(workflowProfile) ? '开' : '关'} · ${esc(workflowAdvanced.timeout)}s</div>
       <div class="workflow-filters">
         <select class="workflow-filter-select" data-action="workflow-category-input">
           ${categories.map((cat) => `<option value="${esc(cat)}" ${cat === (state.agent.workflowCategory || '全部分类') ? 'selected' : ''}>${esc(cat)}</option>`).join('')}
@@ -2891,7 +3630,8 @@ async function agentAttachmentParts(attachments = []) {
   return { imageParts: parts, textNote: textNotes.join('\n\n') };
 }
 function agentMessages(projectId = state.agent.activeProjectId) {
-  const thread = ensureAgentProjectThread(projectId);
+  ensureAgentProjectThread(projectId);
+  const thread = activeAgentThread(projectId);
   if (!thread) return [];
   const messages = state.agent.messagesByThread?.[thread.id];
   return Array.isArray(messages) ? messages : [];
@@ -2904,9 +3644,14 @@ function agentRequestTimeoutSeconds(profile = agentTextProfile()) {
 }
 function agentFailureDetail({ normalized, textProfile, startedAt, timeoutSeconds, upstreamStatus, code } = {}) {
   const requestMs = startedAt ? Math.max(0, Date.now() - Number(startedAt)) : 0;
+  const configSource = (state.agentConfig?.mode || 'off') === 'hybrid'
+    ? `hybrid.agentTextProfileId (${state.agentConfig?.textProfileId || '未设置'})`
+    : `activeProfileId (${state.activeProfileId || '未设置'})`;
+  const profileLabel = textProfile ? (textProfile.name || profileId(textProfile) || '未命名') : '未选择';
   const rows = [
-    `文本模型配置：${profileId(textProfile) || '未选择'}`,
+    `文本模型配置：${profileLabel} / ${profileId(textProfile) || '未选择'}`,
     `模型 slug：${textProfile?.model || '未知'}`,
+    `配置来源：${configSource}`,
     `供应商：${textProfile?.provider || '未知'}`,
     `请求耗时：${requestMs ? formatElapsed({ elapsedMs: requestMs }) : '未知'}`,
     `超时设置：${Number(timeoutSeconds) || AGENT_DEFAULT_TIMEOUT_SECONDS} 秒`
@@ -2921,7 +3666,7 @@ function branchAgentThreadFromMessage(agentStateOrProjectId, projectIdOrMessageI
   const agentState = typeof agentStateOrProjectId === 'string' ? state.agent : agentStateOrProjectId;
   const projectId = typeof agentStateOrProjectId === 'string' ? agentStateOrProjectId : projectIdOrMessageId;
   const messageId = typeof agentStateOrProjectId === 'string' ? projectIdOrMessageId : maybeMessageId;
-  const nextAgent = migrateAgentThreads(JSON.parse(JSON.stringify(agentState || {})));
+  const nextAgent = migrateAgentThreads(JSON.parse(JSON.stringify(agentState || {})), { interruptPending: false });
   const threads = Array.isArray(nextAgent.threadsByProject?.[projectId]) ? nextAgent.threadsByProject[projectId] : [];
   const sourceThreadId = nextAgent.activeThreadIdByProject?.[projectId] || threads[0]?.id;
   const sourceMessages = Array.isArray(nextAgent.messagesByThread?.[sourceThreadId]) ? nextAgent.messagesByThread[sourceThreadId] : [];
@@ -2934,7 +3679,9 @@ function branchAgentThreadFromMessage(agentStateOrProjectId, projectIdOrMessageI
     sourceMessageId: messageId
   });
   nextAgent.threadsByProject[projectId] = [...threads, branch];
-  nextAgent.messagesByThread[branch.id] = sourceMessages.slice(0, pivotIndex + 1).map((message) => normalizeAgentMessage({ ...message }, branch.id, projectId));
+  nextAgent.messagesByThread[branch.id] = compactAgentThreadMessages(
+    sourceMessages.slice(0, pivotIndex + 1).map((message) => normalizeAgentMessage({ ...message }, branch.id, projectId))
+  );
   nextAgent.activeThreadIdByProject[projectId] = branch.id;
   return nextAgent;
 }
@@ -2950,7 +3697,7 @@ function createAgentThread(agentStateOrProjectId = state.agent, projectIdOrTitle
   const agentState = useGlobal ? state.agent : agentStateOrProjectId;
   const projectId = useGlobal ? agentStateOrProjectId : projectIdOrTitle;
   const title = useGlobal ? projectIdOrTitle : maybeTitle;
-  const nextAgent = migrateAgentThreads(JSON.parse(JSON.stringify(agentState || {})));
+  const nextAgent = migrateAgentThreads(JSON.parse(JSON.stringify(agentState || {})), { interruptPending: false });
   const project = (nextAgent.projects || []).find((item) => item.id === projectId) || (nextAgent.projects || [])[0];
   if (!project) return nextAgent;
   const threads = Array.isArray(nextAgent.threadsByProject?.[project.id]) ? nextAgent.threadsByProject[project.id] : [];
@@ -2966,7 +3713,7 @@ function deleteAgentThread(agentStateOrProjectId = state.agent, projectIdOrThrea
   const agentState = useGlobal ? state.agent : agentStateOrProjectId;
   const projectId = useGlobal ? agentStateOrProjectId : projectIdOrThreadId;
   const threadId = useGlobal ? projectIdOrThreadId : maybeThreadId;
-  const nextAgent = migrateAgentThreads(JSON.parse(JSON.stringify(agentState || {})));
+  const nextAgent = migrateAgentThreads(JSON.parse(JSON.stringify(agentState || {})), { interruptPending: false });
   const project = (nextAgent.projects || []).find((item) => item.id === projectId) || (nextAgent.projects || [])[0];
   if (!project || !threadId) return nextAgent;
   const threads = Array.isArray(nextAgent.threadsByProject?.[project.id]) ? nextAgent.threadsByProject[project.id] : [];
@@ -2997,13 +3744,31 @@ function confirmDeleteAgentThread(threadId) {
   });
 }
 function clearAgentThreadMessages(agentState, threadId) {
-  const nextAgent = migrateAgentThreads(JSON.parse(JSON.stringify(agentState || {})));
+  const nextAgent = migrateAgentThreads(JSON.parse(JSON.stringify(agentState || {})), { interruptPending: false });
   nextAgent.messagesByThread[threadId] = [];
   for (const projectThreads of Object.values(nextAgent.threadsByProject || {})) {
     const thread = (projectThreads || []).find((item) => item.id === threadId);
     if (thread) thread.updatedAt = Date.now();
   }
   return nextAgent;
+}
+function loadEarlierAgentMessages(threadId = activeAgentThreadId()) {
+  const messages = Array.isArray(state.agent?.messagesByThread?.[threadId]) ? state.agent.messagesByThread[threadId] : [];
+  if (!messages.length) return;
+  const currentLimit = Math.max(AGENT_RENDER_MESSAGE_LIMIT, Number(state.agent.visibleMessageLimitByThread?.[threadId]) || AGENT_RENDER_MESSAGE_LIMIT);
+  const oldFirst = messages.slice(-currentLimit)[0];
+  const oldNode = oldFirst ? $(`.agent-message[data-agent-message-id="${cssEscape(oldFirst.id)}"]`) : null;
+  const oldTop = oldNode?.getBoundingClientRect?.().top;
+  state.agent.visibleMessageLimitByThread = {
+    ...(state.agent.visibleMessageLimitByThread || {}),
+    [threadId]: Math.min(messages.length, currentLimit + AGENT_RENDER_MESSAGE_LIMIT)
+  };
+  render();
+  if (oldFirst && Number.isFinite(oldTop)) {
+    const newNode = $(`.agent-message[data-agent-message-id="${cssEscape(oldFirst.id)}"]`);
+    const log = $('.agent-log');
+    if (newNode && log) log.scrollTop += newNode.getBoundingClientRect().top - oldTop;
+  }
 }
 async function clearActiveAgentThread() {
   const thread = activeAgentThread();
@@ -3363,7 +4128,7 @@ function renderAgentTaskCard(task) {
 function renderWorkflowEditorModal(workflow) {
   return `
     <div class="modal-layer" data-action="cancel-workflow-draft">
-      <div class="workflow-editor-modal" data-stop>
+      <div class="workflow-editor-modal" role="dialog" aria-modal="true" aria-labelledby="workflowEditorTitle" tabindex="-1" data-modal-key="workflow-editor" data-stop>
         ${renderWorkflowEditor(workflow)}
       </div>
     </div>
@@ -3408,7 +4173,7 @@ function renderConfirmDialog() {
   const confirmText = dialog.confirmText || (type === 'confirm' ? '确认删除' : '确认');
   return `
     <div class="modal-layer" data-action="cancel-confirm">
-      <div class="confirm-modal ${type !== 'confirm' ? 'dialog-modal' : ''}" role="dialog" aria-modal="true" data-stop>
+      <div class="confirm-modal ${type !== 'confirm' ? 'dialog-modal' : ''}" role="dialog" aria-modal="true" aria-labelledby="confirmDialogTitle" tabindex="-1" data-modal-key="confirm-dialog" data-stop>
         <div class="confirm-glow"></div>
         <div class="confirm-head">
           <div class="confirm-icon" aria-hidden="true">
@@ -3416,7 +4181,7 @@ function renderConfirmDialog() {
           </div>
           <div class="confirm-copy">
             <div class="detail-section-label">${esc(dialog.kicker || (type === 'copy-link' ? '复制链接' : type === 'text-input' ? '输入内容' : '确认操作'))}</div>
-            <h2>${esc(dialog.title || '确认删除？')}</h2>
+            <h2 id="confirmDialogTitle">${esc(dialog.title || '确认删除？')}</h2>
             <p>${esc(dialog.message || (type === 'confirm' ? '此操作不可恢复。' : ''))}</p>
           </div>
         </div>
@@ -3435,7 +4200,7 @@ function renderConfirmDialog() {
         ` : ''}
         <div class="confirm-actions">
           ${type === 'copy-link' ? `<button class="confirm-secondary" data-action="copy-dialog-link">复制</button>` : ''}
-          <button class="confirm-secondary" data-action="cancel-confirm">${esc(dialog.cancelText || '取消')}</button>
+          <button class="confirm-secondary" data-modal-autofocus data-action="cancel-confirm">${esc(dialog.cancelText || '取消')}</button>
           <button class="${confirmClass}" data-action="confirm-dialog">${esc(confirmText)}</button>
         </div>
       </div>
@@ -3481,8 +4246,8 @@ function renderWorkflowEditor(workflow) {
     <div class="workflow-editor" data-workflow-id="${esc(workflow.id)}">
       <div class="workflow-editor-head">
         <div>
-          <div class="detail-section-label">${workflow.persisted ? '编辑工作流' : '工作流草稿'}</div>
-          <input class="workflow-title-input" data-action="workflow-name-input" value="${esc(workflow.name || '')}" placeholder="工作流名称">
+          <div class="detail-section-label" id="workflowEditorTitle">${workflow.persisted ? '编辑工作流' : '工作流草稿'}</div>
+          <input class="workflow-title-input" data-action="workflow-name-input" data-modal-autofocus value="${esc(workflow.name || '')}" placeholder="工作流名称">
         </div>
         <div class="workflow-editor-actions">
           <button class="toolbar-button" data-action="cancel-workflow-draft">取消</button>
@@ -3602,13 +4367,13 @@ function renderDetailModal(taskId) {
     : param('压缩/质量', 'compression', requested.compression, { type: 'number', aliases: ['outputCompression', 'output_compression', 'compressionQuality'] });
   return `
     <div class="modal-layer" data-action="close-modal-bg">
-      <div class="detail-modal" role="dialog" aria-modal="true" data-stop>
+      <div class="detail-modal" role="dialog" aria-modal="true" aria-label="生图任务详情" tabindex="-1" data-modal-key="task-detail" data-stop>
         <div class="detail-media">
           <div class="detail-media-badges">
             <span>${esc(imageRatioLabel || requested.aspectRatio || 'auto')}</span>
             <span>${esc(imageSizeLabel || requested.resolution || 'auto')}</span>
           </div>
-          ${image ? `<img data-action="open-viewer" data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="${esc(imageIndex)}" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(image.url || image.remoteUrl || '')}" alt="">` : '<div class="asset-placeholder"><div class="progress-ring"></div></div>'}
+          ${image ? `<img data-action="open-viewer" role="button" tabindex="0" aria-label="查看生成图片大图" data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="${esc(imageIndex)}" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(image.url || image.remoteUrl || '')}" alt="">` : '<div class="asset-placeholder"><div class="progress-ring"></div></div>'}
           ${isTransparentPng && image ? `<button class="detail-download original" data-action="download-image" data-task-id="${esc(task.id)}" data-index="${esc(imageIndex)}">下载原图</button><button class="detail-download orig" data-action="download-image" data-task-id="${esc(task.id)}" data-index="${esc(imageIndex)}" data-original="true">ORIG</button>` : ''}
           ${renderReferenceBadge(task, 'detail')}
           ${images.length > 1 ? `
@@ -3655,10 +4420,10 @@ function renderDetailModal(taskId) {
 function renderViewer(viewer) {
   if (typeof viewer === 'object' && viewer.kind === 'reference') {
     return `
-      <div class="viewer-layer" data-action="close-viewer">
-        <button class="viewer-close" data-action="close-viewer">×</button>
+      <div class="viewer-layer" role="dialog" aria-modal="true" aria-label="参考图原图" tabindex="-1" data-modal-key="gallery-viewer" data-action="close-viewer">
+        <button class="viewer-close" aria-label="关闭大图" data-modal-autofocus data-action="close-viewer">×</button>
         <div class="viewer-index">${esc(viewer.name || '参考图原图')}</div>
-        <img class="viewer-image" data-action="viewer-image" data-image-kind="task-reference-original" data-blob-id="${esc(viewer.blobId || '')}" alt="">
+        <img class="viewer-image" data-action="viewer-image" data-image-kind="task-reference-original" data-blob-id="${esc(viewer.blobId || '')}" alt="${esc(viewer.name || '参考图原图')}">
       </div>
     `;
   }
@@ -3670,10 +4435,10 @@ function renderViewer(viewer) {
   const image = images[safeIndex];
   if (!image) return '';
   return `
-    <div class="viewer-layer" data-action="close-viewer">
-      <button class="viewer-close" data-action="close-viewer">×</button>
+    <div class="viewer-layer" role="dialog" aria-modal="true" aria-label="生成图片大图" tabindex="-1" data-modal-key="gallery-viewer" data-action="close-viewer">
+      <button class="viewer-close" aria-label="关闭大图" data-modal-autofocus data-action="close-viewer">×</button>
       ${images.length > 1 ? `<button class="viewer-nav prev" data-action="viewer-prev" aria-label="上一张">‹</button><button class="viewer-nav next" data-action="viewer-next" aria-label="下一张">›</button><div class="viewer-index">${esc(safeIndex + 1)} / ${esc(images.length)}</div>` : ''}
-      <img class="viewer-image" data-action="viewer-image" data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="${esc(safeIndex)}" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(image.url || image.remoteUrl || '')}" alt="">
+      <img class="viewer-image" data-action="viewer-image" data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="${esc(safeIndex)}" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(image.url || image.remoteUrl || '')}" alt="生成图片 ${esc(safeIndex + 1)}">
     </div>
   `;
 }
@@ -4263,10 +5028,10 @@ function renderPromptRepo() {
   const loadingLabel = state.promptRepo.loadingLabel || (state.promptRepo.query ? '搜索提示词中...' : '加载提示词中...');
   return `
     <div class="modal-layer prompt-repo-layer">
-      <div class="prompt-modal" role="dialog" aria-modal="true" aria-label="提示词仓库" tabindex="-1" data-stop>
+      <div class="prompt-modal" role="dialog" aria-modal="true" aria-labelledby="promptRepoTitle" tabindex="-1" data-modal-key="prompt-repo" data-stop>
         <div class="prompt-head">
-          <div><strong>提示词仓库</strong><span>${esc(state.promptRepo.total || 0)} 条 · ${esc(activeCategory === 'all' ? '全部分类' : activeCategory)}</span></div>
-          <input id="promptRepoSearch" value="${esc(state.promptRepo.query || '')}" placeholder="搜索中文关键词、标题或提示词..." data-action="prompt-search" autocomplete="off" spellcheck="false">
+          <div><strong id="promptRepoTitle">提示词仓库</strong><span>${esc(state.promptRepo.total || 0)} 条 · ${esc(activeCategory === 'all' ? '全部分类' : activeCategory)}</span></div>
+          <input id="promptRepoSearch" value="${esc(state.promptRepo.query || '')}" placeholder="搜索中文关键词、标题或提示词..." data-action="prompt-search" data-modal-autofocus autocomplete="off" spellcheck="false">
           <button class="toolbar-button" data-action="close-prompt-repo">关闭</button>
         </div>
         <div class="prompt-repo-body">
@@ -4274,23 +5039,28 @@ function renderPromptRepo() {
             ${categories.map((cat) => `<button class="${cat === activeCategory ? 'active' : ''}" data-action="prompt-category" data-cat="${esc(cat)}">${esc(cat === 'all' ? '全部' : cat)}</button>`).join('')}
             ${state.promptRepo.categoriesLoading ? '<div class="prompt-category-loading">分类加载中...</div>' : ''}
           </aside>
-          <div class="prompt-list ${promptWindow.shouldVirtualize ? 'is-virtual' : ''}" id="promptList" data-virtual="${promptWindow.shouldVirtualize ? '1' : '0'}">
-            ${promptWindow.topPad ? `<div class="prompt-spacer" style="height:${esc(promptWindow.topPad)}px"></div>` : ''}
-            ${isInitialLoading ? `<div class="prompt-status-row">${esc(loadingLabel)}</div>${renderPromptSkeletonCards()}` : promptItems.map((item, index) => renderPromptCard(item, promptWindow.startIndex + index)).join('')}
-            ${isAppending ? '<div class="prompt-loading-row">继续加载提示词...</div>' : ''}
-            ${(!state.promptRepo.loading && !state.promptRepo.items.length) ? '<div class="prompt-empty">没有匹配的提示词</div>' : ''}
-            ${promptWindow.bottomPad ? `<div class="prompt-spacer" style="height:${esc(promptWindow.bottomPad)}px"></div>` : ''}
-          </div>
+          <div class="prompt-list ${promptWindow.shouldVirtualize ? 'is-virtual' : ''}" id="promptList" data-virtual="${promptWindow.shouldVirtualize ? '1' : '0'}">${renderPromptRepoListContents(promptWindow, promptItems, { isInitialLoading, isAppending, loadingLabel })}</div>
         </div>
       </div>
       <div id="promptRepoOverlays">${renderPromptRepoOverlays()}</div>
     </div>
   `;
 }
+function renderPromptRepoListContents(promptWindow, promptItems, options = {}) {
+  state.promptRepo.renderedStartIndex = promptWindow.startIndex;
+  state.promptRepo.renderedEndIndex = promptWindow.endIndex;
+  return `
+    ${promptWindow.topPad ? `<div class="prompt-spacer" style="height:${esc(promptWindow.topPad)}px"></div>` : ''}
+    ${options.isInitialLoading ? `<div class="prompt-status-row">${esc(options.loadingLabel || '')}</div>${renderPromptSkeletonCards()}` : promptItems.map((item, index) => renderPromptCard(item, promptWindow.startIndex + index)).join('')}
+    ${options.isAppending ? '<div class="prompt-loading-row">继续加载提示词...</div>' : ''}
+    ${(!state.promptRepo.loading && !state.promptRepo.items.length) ? '<div class="prompt-empty">没有匹配的提示词</div>' : ''}
+    ${promptWindow.bottomPad ? `<div class="prompt-spacer" style="height:${esc(promptWindow.bottomPad)}px"></div>` : ''}
+  `;
+}
 function renderPromptRepoOverlays() {
   return `
     ${state.promptRepo.detail ? renderPromptDetail(state.promptRepo.detail) : ''}
-    ${state.promptRepo.imageViewer ? `<div class="viewer-layer" role="dialog" aria-modal="true" aria-label="提示词大图" data-action="prompt-image-close"><button class="viewer-close" aria-label="关闭" data-action="prompt-image-close">×</button><img class="viewer-image" src="${esc(state.promptRepo.imageViewer)}" alt=""></div>` : ''}
+    ${state.promptRepo.imageViewer ? `<div class="viewer-layer" role="dialog" aria-modal="true" aria-label="提示词大图" tabindex="-1" data-modal-key="prompt-viewer" data-action="prompt-image-close"><button class="viewer-close" aria-label="关闭提示词大图" data-modal-autofocus data-action="prompt-image-close">×</button><img class="viewer-image" src="${esc(state.promptRepo.imageViewer)}" alt=""></div>` : ''}
   `;
 }
 function syncPromptRepoView() {
@@ -4301,7 +5071,9 @@ function syncPromptRepoView() {
   const viewportSnapshot = capturePromptRepoViewportSnapshot();
   mount.innerHTML = renderPromptRepo();
   bindPromptRepoTransientEvents();
-  restoreFocusState(focusState);
+  syncModalAccessibility();
+  const topDialog = topVisibleModal();
+  if (!restoreFocusState(focusState, topDialog || document) && topDialog) focusTopModal(topDialog);
   restorePromptRepoViewportSnapshot({
     ...viewportSnapshot,
     categoryScrollTop: state.promptRepo.categoryScrollTop || viewportSnapshot.categoryScrollTop || 0
@@ -4312,24 +5084,12 @@ function syncPromptRepoOverlays() {
   if (!state.promptRepo?.open) return false;
   const host = $('#promptRepoOverlays');
   if (!host) return false;
+  const focusState = captureFocusState();
   host.innerHTML = renderPromptRepoOverlays();
+  syncModalAccessibility();
+  const topDialog = topVisibleModal();
+  if (!restoreFocusState(focusState, topDialog || document) && topDialog) focusTopModal(topDialog);
   return true;
-}
-function focusPromptRepoOverlay() {
-  nextRenderFrame(() => {
-    const target = $('.size-modal') || $('.viewer-close') || $('#promptRepoOverlays');
-    if (target?.focus) {
-      try { target.focus({ preventScroll: true }); } catch { target.focus(); }
-    }
-  });
-}
-function focusPromptRepoShell() {
-  nextRenderFrame(() => {
-    const target = $('.prompt-modal') || $('#promptRepoSearch') || $('#promptList');
-    if (target?.focus) {
-      try { target.focus({ preventScroll: true }); } catch { target.focus(); }
-    }
-  });
 }
 function renderPromptSkeletonCards(count = 12) {
   return Array.from({ length: count }, () => `
@@ -4343,8 +5103,15 @@ function renderPromptSkeletonCards(count = 12) {
 }
 function promptRepoVirtualWindow(totalItems) {
   const width = typeof window !== 'undefined' ? window.innerWidth || 1280 : 1280;
-  const columns = width <= 700 ? 1 : width <= 1040 ? 2 : 3;
-  const rowHeight = width <= 700 ? 230 : 252;
+  const measured = state.promptRepo.virtualLayout;
+  const hasReliableMeasurement = !!(measured
+    && Number(measured.columns) > 0
+    && Number(measured.rowPitch) > 0
+    && Math.abs(Number(measured.viewportWidth || width) - width) < 80);
+  const fallbackColumns = width <= 760 ? 1 : width <= 1100 ? 2 : width <= 1500 ? 3 : 4;
+  const columns = hasReliableMeasurement ? Number(measured.columns) : fallbackColumns;
+  const rowHeight = hasReliableMeasurement ? Number(measured.rowPitch) : 370;
+  const rowGap = hasReliableMeasurement ? Math.max(0, Number(measured.rowGap) || 0) : 10;
   const scrollTop = Math.max(0, Number(state.promptRepo.scrollTop) || 0);
   const viewportHeight = Math.max(320, Number(state.promptRepo.viewportHeight) || 620);
   const shouldVirtualize = totalItems > PROMPT_VIRTUAL_THRESHOLD;
@@ -4357,9 +5124,67 @@ function promptRepoVirtualWindow(totalItems) {
     shouldVirtualize,
     startIndex: startRow * columns,
     endIndex: Math.min(totalItems, endRow * columns),
-    topPad: startRow * rowHeight,
-    bottomPad: Math.max(0, (totalRows - endRow) * rowHeight)
+    topPad: startRow > 0 ? Math.max(0, startRow * rowHeight - rowGap) : 0,
+    bottomPad: endRow < totalRows ? Math.max(0, (totalRows - endRow) * rowHeight - rowGap) : 0
   };
+}
+function promptRepoVirtualRangeChanged(windowState) {
+  return state.promptRepo.renderedStartIndex !== windowState.startIndex
+    || state.promptRepo.renderedEndIndex !== windowState.endIndex;
+}
+function syncPromptRepoListOnly(options = {}) {
+  const promptList = $('#promptList');
+  if (!promptList || !state.promptRepo?.open) return false;
+  const promptWindow = promptRepoVirtualWindow(state.promptRepo.items.length);
+  if (options.virtualScroll && !promptRepoVirtualRangeChanged(promptWindow)) return false;
+  const scrollTop = promptList.scrollTop;
+  const focusedCardId = document.activeElement?.closest?.('.prompt-card')?.dataset?.id || '';
+  const promptItems = state.promptRepo.items.slice(promptWindow.startIndex, promptWindow.endIndex);
+  promptList.dataset.virtual = promptWindow.shouldVirtualize ? '1' : '0';
+  promptList.classList.toggle('is-virtual', promptWindow.shouldVirtualize);
+  promptList.innerHTML = renderPromptRepoListContents(promptWindow, promptItems, {
+    isInitialLoading: !!state.promptRepo.loading && !state.promptRepo.items.length,
+    isAppending: !!state.promptRepo.loading && !!state.promptRepo.items.length,
+    loadingLabel: state.promptRepo.loadingLabel || (state.promptRepo.query ? '搜索提示词中...' : '加载提示词中...')
+  });
+  promptList.scrollTop = scrollTop;
+  if (focusedCardId) {
+    const restoredCard = promptList.querySelector(`.prompt-card[data-id="${cssEscape(focusedCardId)}"]`);
+    if (restoredCard) {
+      try { restoredCard.focus({ preventScroll: true }); } catch { restoredCard.focus(); }
+    }
+  }
+  return true;
+}
+function schedulePromptRepoVirtualRender() {
+  if (state.promptRepo.virtualRenderScheduled) return;
+  state.promptRepo.virtualRenderScheduled = true;
+  nextRenderFrame(() => {
+    state.promptRepo.virtualRenderScheduled = false;
+    syncPromptRepoListOnly({ virtualScroll: true });
+  });
+}
+function measurePromptRepoVirtualLayout(promptList = $('#promptList')) {
+  if (!promptList) return null;
+  const cards = [...promptList.querySelectorAll('.prompt-card:not(.prompt-skeleton)')].slice(0, 12);
+  if (!cards.length) return null;
+  const rects = cards.map((card) => card.getBoundingClientRect()).filter((rect) => rect.width > 0 && rect.height > 0);
+  if (!rects.length) return null;
+  const firstTop = rects[0].top;
+  const columns = Math.max(1, rects.filter((rect) => Math.abs(rect.top - firstTop) < 2).length);
+  const nextRow = rects.find((rect) => rect.top - firstTop > 2);
+  const styles = typeof getComputedStyle === 'function' ? getComputedStyle(promptList) : null;
+  const rowGap = Number.parseFloat(styles?.rowGap || styles?.gap || '') || 0;
+  const rowPitch = nextRow ? nextRow.top - firstTop : rects[0].height + rowGap;
+  if (!Number.isFinite(rowPitch) || rowPitch <= 0) return null;
+  state.promptRepo.virtualLayout = {
+    columns,
+    rowPitch,
+    rowGap,
+    viewportWidth: typeof window !== 'undefined' ? window.innerWidth || promptList.clientWidth : promptList.clientWidth,
+    containerWidth: promptList.clientWidth
+  };
+  return state.promptRepo.virtualLayout;
 }
 function promptItemImageSource(item) {
   const images = Array.isArray(item?.images) ? item.images : [];
@@ -4395,7 +5220,7 @@ function renderPromptCard(item, index = 0) {
     <button class="prompt-card" data-action="prompt-detail" data-id="${esc(item.id)}" data-index="${esc(index)}">
       ${imageUrl ? `
         <span class="prompt-card-media">
-          <img src="${esc(imageUrl)}" data-original-src="${esc(originalUrl)}" referrerpolicy="no-referrer" loading="${index < 12 ? 'eager' : 'lazy'}" decoding="sync" fetchpriority="${fetchPriority}" width="420" height="263" alt="" onerror="var f=this.dataset.originalSrc;if(f&&this.src!==f){this.src=f;this.dataset.originalSrc='';return;}var c=this.closest('.prompt-card');if(c)c.classList.add('image-failed');this.remove();">
+          <img src="${esc(imageUrl)}" data-original-src="${esc(originalUrl)}" referrerpolicy="no-referrer" loading="${index < 12 ? 'eager' : 'lazy'}" decoding="async" fetchpriority="${fetchPriority}" width="420" height="263" alt="" onerror="var f=this.dataset.originalSrc;if(f&&this.src!==f){this.src=f;this.dataset.originalSrc='';return;}var c=this.closest('.prompt-card');if(c)c.classList.add('image-failed');this.remove();">
           <span class="prompt-image-fallback">预览图加载失败</span>
         </span>
       ` : ''}
@@ -4408,10 +5233,10 @@ function renderPromptDetail(item) {
   const imageUrl = normalizePromptImageUrl(promptItemImageSource(item));
   return `
     <div class="modal-layer" style="background:rgba(0,0,0,.18)" data-action="prompt-detail-close">
-      <div class="size-modal prompt-full-modal" role="dialog" aria-modal="true" aria-label="提示词详情" tabindex="-1" data-stop>
-        <button class="modal-close" aria-label="关闭" data-action="prompt-detail-close">×</button>
-        <h2>${esc(item.t || '提示词详情')}</h2>
-        ${imageUrl ? `<img src="${esc(imageUrl)}" referrerpolicy="no-referrer" loading="eager" decoding="async" data-action="prompt-image-view" style="width:100%;max-height:320px;object-fit:contain;border-radius:18px;background:rgba(0,0,0,.05)" alt="">` : ''}
+      <div class="size-modal prompt-full-modal" role="dialog" aria-modal="true" aria-labelledby="promptDetailTitle" tabindex="-1" data-modal-key="prompt-detail" data-stop>
+        <button class="modal-close" aria-label="关闭提示词详情" data-modal-autofocus data-action="prompt-detail-close">×</button>
+        <h2 id="promptDetailTitle">${esc(item.t || '提示词详情')}</h2>
+        ${imageUrl ? `<button type="button" class="prompt-detail-image-button" data-action="prompt-image-view" aria-label="查看提示词原图"><img src="${esc(imageUrl)}" referrerpolicy="no-referrer" loading="eager" decoding="async" alt=""></button>` : ''}
         <div class="prompt-detail-text-label">完整提示词</div>
         <div class="prompt-detail-text">${esc(item.p || '')}</div>
         <div class="detail-actions"><button class="reuse" data-action="use-prompt" data-id="${esc(item.id)}">使用提示词</button></div>
@@ -4428,18 +5253,18 @@ function renderWorkflowInvokeModal() {
   const totalImages = Math.max(0, rows.length) * Math.max(1, Number(invoke.countPerRow) || 1);
   return `
     <div class="modal-layer" data-action="close-workflow-invoke">
-      <div class="workflow-invoke-modal" data-stop>
-        <button class="modal-close" data-action="close-workflow-invoke">×</button>
+      <div class="workflow-invoke-modal" role="dialog" aria-modal="true" aria-labelledby="workflowInvokeTitle" tabindex="-1" data-modal-key="workflow-invoke" data-stop>
+        <button class="modal-close" aria-label="关闭工作流调用" data-action="close-workflow-invoke">×</button>
         <div class="workflow-editor-head">
           <div>
             <div class="detail-section-label">调用工作流</div>
-            <h2>${esc(workflow?.name || '未命名工作流')}</h2>
+            <h2 id="workflowInvokeTitle">${esc(workflow?.name || '未命名工作流')}</h2>
             <p class="project-meta">像 skill 一样复用当前项目工作流。确认变量、预算和并发后才会开始批量生图。</p>
           </div>
           <div class="workflow-estimate">预计 ${esc(totalImages)} 张</div>
         </div>
         <div class="workflow-settings-grid">
-          <label class="control-chip"><small>每行数量</small><input type="number" min="1" max="8" value="${esc(invoke.countPerRow || 1)}" data-action="workflow-invoke-number" data-field="countPerRow"></label>
+          <label class="control-chip"><small>每行数量</small><input type="number" min="1" max="8" value="${esc(invoke.countPerRow || 1)}" data-action="workflow-invoke-number" data-field="countPerRow" data-modal-autofocus></label>
           <label class="control-chip"><small>并发</small><input type="number" min="1" max="5" value="${esc(invoke.concurrency || 2)}" data-action="workflow-invoke-number" data-field="concurrency"></label>
           <label class="control-chip"><small>最大步骤</small><input type="number" min="1" max="20" value="${esc(invoke.maxSteps || 5)}" data-action="workflow-invoke-number" data-field="maxSteps"></label>
           <label class="control-chip"><small>最大图片</small><input type="number" min="1" max="80" value="${esc(invoke.maxImages || 8)}" data-action="workflow-invoke-number" data-field="maxImages"></label>
@@ -4469,9 +5294,9 @@ function renderMaskEditor() {
   const refs = state.references;
   const active = refs.find((ref) => ref.id === editor.activeRefId) || refs[0];
   return `
-    <section class="mask-layer">
+    <section class="mask-layer" role="dialog" aria-modal="true" aria-label="编辑遮罩" tabindex="-1" data-modal-key="mask-editor">
       <div class="mask-topbar">
-        <button class="mask-close" data-action="close-mask-editor" style="position:static">×</button>
+        <button class="mask-close" aria-label="关闭遮罩编辑器" data-modal-autofocus data-action="close-mask-editor" style="position:static">×</button>
         <div class="mask-title">编辑遮罩</div>
         <div class="mask-info" title="根据官方说明，此功能仅辅助限定修改区域">i</div>
         <div class="mask-tip">根据官方文档说明，此功能仅基于提示词，无法完全控制模型编辑区域。建议附加类似“只编辑涂抹区域”的提示词以提升遵循程度。</div>
@@ -4497,6 +5322,13 @@ function renderMaskEditor() {
 }
 
 function bindTransientEvents() {
+  $$('[data-action="open-viewer"][role="button"]').forEach((node) => {
+    node.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      node.click();
+    });
+  });
   const promptInput = $('#promptInput');
   if (promptInput) {
     autoGrow(promptInput);
@@ -4621,6 +5453,21 @@ function bindTransientEvents() {
 function bindPromptRepoTransientEvents() {
   const promptList = $('#promptList');
   if (promptList && !promptList.dataset.boundPromptRepo) {
+    measurePromptRepoVirtualLayout(promptList);
+    if (typeof ResizeObserver === 'function') {
+      promptRepoResizeObserver?.disconnect();
+      promptRepoResizeObserver = new ResizeObserver((entries) => {
+        const width = Number(entries[0]?.contentRect?.width || promptList.clientWidth || 0);
+        const measuredWidth = Number(state.promptRepo.virtualLayout?.containerWidth || 0);
+        const viewportWidth = Number(window.innerWidth || width);
+        const measuredViewportWidth = Number(state.promptRepo.virtualLayout?.viewportWidth || viewportWidth);
+        const crossedMobileBreakpoint = (viewportWidth <= 760) !== (measuredViewportWidth <= 760);
+        if (!width || !measuredWidth || (!crossedMobileBreakpoint && Math.abs(width - measuredWidth) < 40)) return;
+        const updatedLayout = measurePromptRepoVirtualLayout(promptList);
+        if (updatedLayout) schedulePromptRepoVirtualRender();
+      });
+      promptRepoResizeObserver.observe(promptList);
+    }
     promptList.dataset.boundPromptRepo = '1';
     promptList.addEventListener('pointerdown', (event) => {
       if (!event.target.closest('.prompt-card')) return;
@@ -4634,6 +5481,7 @@ function bindPromptRepoTransientEvents() {
     promptList.addEventListener('scroll', () => {
       state.promptRepo.scrollTop = promptList.scrollTop;
       state.promptRepo.viewportHeight = promptList.clientHeight || state.promptRepo.viewportHeight || 620;
+      schedulePromptRepoVirtualRender();
       if (Date.now() < (state.promptRepo.scrollLockUntil || 0)) return;
       if (promptList.scrollTop + promptList.clientHeight > promptList.scrollHeight - 320) loadPromptPage();
     }, { passive: true });
@@ -4783,6 +5631,7 @@ document.addEventListener('click', async (event) => {
     return;
   }
   if (action === 'clear-agent-thread') { await clearActiveAgentThread(); return; }
+  if (action === 'agent-load-earlier') { loadEarlierAgentMessages(target.dataset.threadId); return; }
   if (action === 'pro-mode') { setProMode(target.dataset.mode); return; }
   if (action === 'switch-profile') {
     state.activeImageProfileId = target.value || target.dataset.value || state.activeImageProfileId;
@@ -4822,11 +5671,11 @@ document.addEventListener('click', async (event) => {
   }
   if (action === 'new-project') { await newProject(); return; }
   if (action === 'delete-project') { deleteProject(); return; }
-  if (action === 'new-workflow-draft') { newWorkflowDraft(); return; }
+  if (action === 'new-workflow-draft') { rememberModalOpener('workflow-editor', target); newWorkflowDraft(); return; }
   if (action === 'save-workflow-draft') { saveWorkflowDraft(); return; }
   if (action === 'cancel-workflow-draft') { state.workflowDraft = null; render(); return; }
-  if (action === 'invoke-workflow') { openWorkflowInvoke(target.dataset.id); return; }
-  if (action === 'edit-workflow') { editWorkflow(target.dataset.id); return; }
+  if (action === 'invoke-workflow') { rememberModalOpener('workflow-invoke', target); openWorkflowInvoke(target.dataset.id); return; }
+  if (action === 'edit-workflow') { rememberModalOpener('workflow-editor', target); editWorkflow(target.dataset.id); return; }
   if (action === 'duplicate-workflow') { duplicateWorkflow(target.dataset.id); return; }
   if (action === 'delete-workflow') { deleteWorkflow(target.dataset.id); return; }
   if (action === 'close-workflow-invoke') { state.workflowInvoke = null; render(); return; }
@@ -4944,7 +5793,7 @@ document.addEventListener('click', async (event) => {
   if (action === 'mask-redo') { maskRedo(); return; }
   if (action === 'mask-clear') { await maskClear(); return; }
   if (action === 'save-mask-editor') { await saveMaskEditor(); return; }
-  if (action === 'open-prompt-repo') { openPromptRepo(); return; }
+  if (action === 'open-prompt-repo') { rememberModalOpener('prompt-repo', target); openPromptRepo(); return; }
   if (action === 'close-prompt-repo') { state.promptRepo.open = false; state.promptRepo.detail = null; render(); return; }
   if (action === 'prompt-category') { setPromptCategory(target.dataset.cat || 'all'); return; }
   if (action === 'prompt-detail') {
@@ -4952,17 +5801,24 @@ document.addEventListener('click', async (event) => {
     const item = Number.isFinite(index) ? state.promptRepo.items[index] : state.promptRepo.items.find((p) => String(p.id) === String(target.dataset.id));
     if (!item) return;
     const snapshot = consumePromptRepoPointerSnapshot() || capturePromptRepoViewportSnapshot();
+    rememberModalOpener('prompt-detail', target);
     state.promptRepo.detailReturnSnapshot = snapshot;
     state.promptRepo.detail = item;
     if (!syncPromptRepoOverlays()) render();
-    focusPromptRepoOverlay();
     stabilizePromptRepoViewport(snapshot);
     if (promptItemNeedsHydration(item)) hydratePromptDetailItem(item);
     return;
   }
   if (action === 'prompt-detail-close') { closePromptRepoDetailOverlay(); return; }
   if (action === 'use-prompt') { await usePrompt(target.dataset.id); return; }
-  if (action === 'prompt-image-view') { state.promptRepo.imageViewer = target.currentSrc || target.src; if (!syncPromptRepoOverlays()) render(); return; }
+  if (action === 'prompt-image-view') {
+    rememberModalOpener('prompt-viewer', target);
+    const image = target.matches?.('img') ? target : $('img', target);
+    state.promptRepo.imageViewer = image?.currentSrc || image?.src || '';
+    if (!state.promptRepo.imageViewer) return;
+    if (!syncPromptRepoOverlays()) render();
+    return;
+  }
   if (action === 'prompt-image-close') { closePromptRepoImageViewerOverlay(); return; }
   if (action === 'agent-pick-attachment') { $('#agentAttachmentInput')?.click(); return; }
   if (action === 'agent-remove-attachment') { await removeAgentAttachment(target.dataset.id); return; }
@@ -4996,8 +5852,8 @@ document.addEventListener('click', async (event) => {
     await generateAgentImageFromMessage(target.dataset.messageId, '', { optionIndex: Number(target.dataset.optionIndex) || 0, scrollAnchor });
     return;
   }
-  if (action === 'agent-workflow' || action === 'agent-run') { await generateWorkflowFromAgent(); return; }
-  if (action === 'new-series-workflow') { newSeriesWorkflowDraft(); return; }
+  if (action === 'agent-workflow' || action === 'agent-run') { rememberModalOpener('workflow-editor', target); await generateWorkflowFromAgent(); return; }
+  if (action === 'new-series-workflow') { rememberModalOpener('workflow-editor', target); newSeriesWorkflowDraft(); return; }
 });
 document.addEventListener('input', (event) => {
   const action = event.target.dataset.action;
@@ -5113,23 +5969,25 @@ document.addEventListener('input', (event) => {
     updateMaskToolUi();
   }
 });
+document.addEventListener('focusin', (event) => {
+  const topDialog = topVisibleModal();
+  if (!topDialog || topDialog.contains(event.target)) return;
+  focusTopModal(topDialog);
+});
 document.addEventListener('keydown', (event) => {
-  const topDialog = $('.viewer-layer, .modal-layer [role="dialog"], .detail-modal, .prompt-modal, .size-modal, .workflow-editor-modal, .workflow-invoke-modal, .confirm-modal');
+  const topDialog = topVisibleModal();
   if (event.key === 'Tab' && topDialog) {
-    const focusable = $$('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])', topDialog).filter((node) => !node.disabled && node.offsetParent !== null);
-    if (focusable.length) {
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
+    const focusable = modalFocusableNodes(topDialog);
+    const first = focusable[0] || topDialog;
+    const last = focusable[focusable.length - 1] || topDialog;
+    const activeInside = topDialog.contains(document.activeElement);
+    if (!activeInside || (event.shiftKey && document.activeElement === first) || (!event.shiftKey && document.activeElement === last)) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
     }
   }
   if (event.key === 'Escape') {
+    event.preventDefault();
     if (state.imageContextMenu) { state.imageContextMenu = null; render(); return; }
     if (state.popover) { state.popover = null; render(); return; }
     if (state.viewer) { state.viewer = null; render(); return; }
@@ -5300,7 +6158,9 @@ function leavePage(url) {
   else location.href = url;
 }
 
-async function loadRuntime() {
+async function loadRuntime(options = {}) {
+  const preserveComposerSession = !!options.preserveComposerSession;
+  const previousSignature = runtimeRenderSignature();
   const [me, runtime] = await Promise.all([
     fetchJson('/api/auth/me').catch(() => null),
     fetchJson('/.well-known/img-runtime-config.json').catch(() => null)
@@ -5342,15 +6202,28 @@ async function loadRuntime() {
     scrollAfterSubmit: runtime?.agentScrollToBottomAfterSubmit !== false
   };
   if (!state.agentConfig.webSearchEnabled) state.agent.webMode = 'off';
-  const nextSettings = { ...state.settings };
-  if (runtimeHas('quality')) nextSettings.quality = runtime.quality || 'high';
-  if (runtimeHas('output_format')) nextSettings.output_format = runtime.output_format || 'png';
-  if (runtimeHas('output_compression')) nextSettings.output_compression = runtime.output_compression === null ? null : runtime.output_compression ?? 90;
-  if (runtimeHas('n')) nextSettings.n = Number(runtime.n) || 1;
-  if (runtimeHas('transparent_output')) nextSettings.transparent_output = !!runtime.transparent_output;
-  if (runtimeHas('moderation')) nextSettings.moderation = runtime.moderation || 'auto';
-  Object.assign(state.settings, nextSettings);
+  if (!preserveComposerSession) {
+    const nextSettings = { ...state.settings };
+    if (runtimeHas('quality')) nextSettings.quality = runtime.quality || 'high';
+    if (runtimeHas('output_format')) nextSettings.output_format = runtime.output_format || 'png';
+    if (runtimeHas('output_compression')) nextSettings.output_compression = runtime.output_compression === null ? null : runtime.output_compression ?? 90;
+    if (runtimeHas('n')) nextSettings.n = Number(runtime.n) || 1;
+    if (runtimeHas('transparent_output')) nextSettings.transparent_output = !!runtime.transparent_output;
+    if (runtimeHas('moderation')) nextSettings.moderation = runtime.moderation || 'auto';
+    Object.assign(state.settings, nextSettings);
+  }
   writeComposerSessionSettings();
+  return previousSignature !== runtimeRenderSignature();
+}
+function runtimeRenderSignature() {
+  return JSON.stringify({
+    user: state.user ? { id: state.user.id, username: state.user.username, role: state.user.role } : null,
+    preferences: state.preferences,
+    profiles: state.profiles,
+    activeProfileId: state.activeProfileId,
+    activeImageProfileId: state.activeImageProfileId,
+    agentConfig: state.agentConfig
+  });
 }
 async function fetchJson(url, options) {
   const res = await fetch(url, { credentials: 'same-origin', cache: 'no-store', ...options });
@@ -5412,8 +6285,25 @@ function streamEventErrorMessage(payload) {
   const error = payload?.error;
   if (error && typeof error === 'object') return error.message || error.code || error.type || null;
   if (typeof error === 'string' && error.trim()) return error.trim();
-  if (/\.failed$/i.test(type)) return payload?.message || 'Agent 流式请求失败';
+  const response = payload?.response && typeof payload.response === 'object' ? payload.response : payload;
+  const status = String(firstDefined(response?.status, payload?.status, '') || '').toLowerCase();
+  const terminalType = type.match(/response\.(incomplete|failed|cancelled|canceled)$/i)?.[1]?.toLowerCase() || '';
+  const failedStatus = ['incomplete', 'failed', 'cancelled', 'canceled'].includes(status) ? status : terminalType;
+  if (failedStatus) {
+    return firstDefined(
+      response?.error?.message,
+      response?.incomplete_details?.reason,
+      response?.incompleteDetails?.reason,
+      payload?.message,
+      `Agent Responses 请求终态为 ${failedStatus}`
+    );
+  }
   return null;
+}
+function assertSuccessfulResponseTerminal(payload) {
+  const errorMessage = streamEventErrorMessage(payload);
+  if (errorMessage) throw new Error(errorMessage);
+  return payload;
 }
 function responsePayloadFromStreamEvent(payload) {
   if (payload?.response && typeof payload.response === 'object') return payload.response;
@@ -5441,14 +6331,42 @@ async function consumeResponseTextStream(response, options = {}) {
   const reader = response?.body?.getReader?.();
   if (!reader) throw new Error('Agent 流式响应不可读取');
   const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
   let buffer = '';
+  let pendingEventBytes = 0;
   const events = [];
-  const chunks = [];
+  let eventCount = 0;
+  let outputTextBuffer = '';
   let completedPayload = null;
   let outputItems = [];
   let hasDataLine = false;
   let shouldStop = false;
   const cancelReader = () => { try { reader.cancel(); } catch {} };
+  const ensureEventWithinLimit = (text, byteLength = null) => {
+    const size = byteLength == null ? encoder.encode(String(text || '')).byteLength : byteLength;
+    if (size > AGENT_STREAM_EVENT_LIMIT) {
+      throw new Error(`Agent 流式响应单个事件超过 ${Math.round(AGENT_STREAM_EVENT_LIMIT / 1024 / 1024)}MB 安全上限`);
+    }
+  };
+  const ensureTextWithinLimit = (text) => {
+    if (String(text || '').length > AGENT_STREAM_TEXT_LIMIT) {
+      throw new Error(`Agent 流式响应文本超过 ${Math.round(AGENT_STREAM_TEXT_LIMIT / 1024 / 1024)}MB 安全上限`);
+    }
+    return text;
+  };
+  const appendOutputText = (text, prefix = '') => {
+    if (!text) return;
+    if (outputTextBuffer.length + prefix.length + text.length > AGENT_STREAM_TEXT_LIMIT) {
+      throw new Error(`Agent 流式响应文本超过 ${Math.round(AGENT_STREAM_TEXT_LIMIT / 1024 / 1024)}MB 安全上限`);
+    }
+    outputTextBuffer += `${prefix}${text}`;
+  };
+  const compactEventMetadata = (payload) => ({
+    type: String(payload?.type || payload?.event || '').slice(0, 80),
+    status: String(firstDefined(payload?.response?.status, payload?.status, '') || '').slice(0, 40),
+    id: String(firstDefined(payload?.id, payload?.response?.id, '') || '').slice(0, 120),
+    outputIndex: firstDefined(payload?.output_index, payload?.outputIndex, null)
+  });
   options.signal?.addEventListener?.('abort', cancelReader, { once: true });
   const handleEvent = (chunk) => {
     if (String(chunk || '').split(/\r?\n/).some((line) => line.startsWith('data:'))) hasDataLine = true;
@@ -5457,68 +6375,93 @@ async function consumeResponseTextStream(response, options = {}) {
     if (!data) return;
     let payload = null;
     try { payload = JSON.parse(data); } catch { throw new Error(`Agent 流式响应不是有效 JSON：${String(data).slice(0, 240)}`); }
-    events.push(payload);
+    eventCount += 1;
+    events.push(compactEventMetadata(payload));
+    if (events.length > STREAM_EVENT_METADATA_LIMIT) events.shift();
     const errorMessage = streamEventErrorMessage(payload);
     if (errorMessage) throw new Error(errorMessage);
     const type = String(payload?.type || '');
     if (type === 'response.output_text.delta') {
       const delta = typeof payload.delta === 'string' ? payload.delta : '';
-      if (delta) chunks.push(delta);
+      appendOutputText(delta);
       return;
     }
     if (/response\.web_search_call\./.test(type)) return;
     const streamPayload = responsePayloadFromStreamEvent(payload);
-    if (Array.isArray(streamPayload?.output)) {
+    if (Array.isArray(streamPayload?.output) && type !== 'response.completed') {
       const indices = type === 'response.completed' ? streamPayload.output.map((_, idx) => idx) : streamPayload.output.map(() => Number(payload.output_index));
-      outputItems = mergeOutputItems(outputItems, streamPayload.output, indices);
+      const safeItems = streamPayload.output.map((item) => {
+        const text = ensureTextWithinLimit(extractResponseText({ output: [item] }, ''));
+        return text ? { type: 'message', content: [{ type: 'output_text', text }] } : null;
+      }).filter(Boolean);
+      outputItems = mergeOutputItems(outputItems, safeItems, indices);
     }
-    if (type === 'response.completed' || payload?.response) {
-      completedPayload = streamPayload || payload.response || payload;
-      const text = extractResponseText(completedPayload, '');
+    const responseStatus = String(firstDefined(streamPayload?.status, payload?.status, '') || '').toLowerCase();
+    if (type === 'response.completed' || responseStatus === 'completed') {
+      const sourcePayload = streamPayload || payload.response || payload;
+      const text = ensureTextWithinLimit(extractResponseText(sourcePayload, ''));
+      completedPayload = {
+        id: firstDefined(sourcePayload?.id, payload?.id),
+        status: 'completed',
+        output_text: text
+      };
       if (text) shouldStop = true;
       return;
     }
     const text = responseStreamTextFromPayload(payload);
-    if (text && !type.includes('delta')) chunks.push(chunks.length ? `\n${text}` : text);
+    if (text && !type.includes('delta')) appendOutputText(text, outputTextBuffer ? '\n' : '');
   };
   try {
     while (true) {
       if (options.signal?.aborted) throw new DOMException('请求已停止', 'AbortError');
       const { value, done } = await reader.read();
       if (done) break;
+      ensureEventWithinLimit('', Number(value?.byteLength || 0));
+      pendingEventBytes += Number(value?.byteLength || 0);
       buffer += decoder.decode(value, { stream: true });
       let separatorIndex = buffer.search(/\r?\n\r?\n/);
+      let processedEvent = false;
       while (separatorIndex >= 0) {
         const separator = buffer.match(/\r?\n\r?\n/)?.[0] || '\n\n';
         const part = buffer.slice(0, separatorIndex);
         buffer = buffer.slice(separatorIndex + separator.length);
+        ensureEventWithinLimit(part);
         handleEvent(part);
+        processedEvent = true;
         if (shouldStop) {
           cancelReader();
           break;
         }
         separatorIndex = buffer.search(/\r?\n\r?\n/);
       }
+      if (processedEvent) pendingEventBytes = encoder.encode(buffer).byteLength;
+      ensureEventWithinLimit('', pendingEventBytes);
       if (shouldStop) break;
     }
     buffer += decoder.decode();
-    if (!shouldStop && buffer.trim()) handleEvent(buffer);
+    if (!shouldStop && buffer.trim()) {
+      ensureEventWithinLimit(buffer);
+      handleEvent(buffer);
+    }
+  } catch (err) {
+    cancelReader();
+    throw err;
   } finally {
     options.signal?.removeEventListener?.('abort', cancelReader);
   }
-  if (!hasDataLine && !events.length) throw new Error('未从 Agent 流式响应中解析到有效 data 事件');
+  if (!hasDataLine && !eventCount) throw new Error('未从 Agent 流式响应中解析到有效 data 事件');
   const finalPayload = completedPayload || (outputItems.length ? { output: outputItems } : null);
-  const finalText = finalPayload ? extractResponseText(finalPayload, '') : '';
-  if (finalText) return { ...finalPayload, output_text: finalText, streamEvents: events };
-  const outputText = chunks.join('').trim();
-  if (outputText) return { output_text: outputText, streamEvents: events };
+  const finalText = finalPayload ? ensureTextWithinLimit(extractResponseText(finalPayload, '')) : '';
+  if (finalText) return { ...finalPayload, output_text: finalText, streamEvents: events, streamEventCount: eventCount };
+  const outputText = outputTextBuffer.trim();
+  if (outputText) return { output_text: outputText, streamEvents: events, streamEventCount: eventCount };
   const fallback = extractResponseText({ streamEvents: events }, '');
-  if (fallback) return { output_text: fallback, streamEvents: events };
+  if (fallback) return { output_text: fallback, streamEvents: events, streamEventCount: eventCount };
   throw new Error('Agent 流式响应结束但没有返回可解析文本');
 }
 async function resolveResponsePayload(data) {
   if (data?.__stream) return consumeResponseTextStream(data.response, data);
-  return data;
+  return assertSuccessfulResponseTerminal(data);
 }
 async function saveActiveProfile() {
   writeComposerSessionSettings();
@@ -5528,11 +6471,17 @@ let galleryImageObserver = null;
 async function hydrateBlobImage(img, blobId, remoteUrl = '') {
   if (!blobId && remoteUrl) { img.src = remoteUrl; return; }
   if (!blobId) return;
-  if (!state.imageUrls.has(blobId)) {
+  const targetMatches = () => img?.isConnected !== false && String(img?.dataset?.blobId || '') === String(blobId);
+  let cachedUrl = touchObjectUrl(state.imageUrls, blobId);
+  if (!cachedUrl) {
     const blob = await getBlob(blobId).catch(() => null);
-    if (blob) state.imageUrls.set(blobId, URL.createObjectURL(blob));
+    if (!targetMatches()) return;
+    cachedUrl = touchObjectUrl(state.imageUrls, blobId);
+    if (!cachedUrl && blob) {
+      cachedUrl = rememberObjectUrl(state.imageUrls, blobId, URL.createObjectURL(blob), IMAGE_OBJECT_URL_CACHE_LIMIT);
+    }
   }
-  if (state.imageUrls.has(blobId)) img.src = state.imageUrls.get(blobId);
+  if (cachedUrl && targetMatches()) img.src = cachedUrl;
 }
 function observeGalleryImage(img) {
   if (typeof IntersectionObserver === 'undefined' || !img.closest('.gallery-scroll')) return false;
@@ -5562,9 +6511,9 @@ async function hydrateImages() {
     if (!ref) continue;
     if (!state.refUrls.has(ref.id)) {
       const blob = await getBlob(ref.blobId).catch(() => null);
-      if (blob) state.refUrls.set(ref.id, URL.createObjectURL(blob));
+      if (blob) rememberObjectUrl(state.refUrls, ref.id, URL.createObjectURL(blob), REFERENCE_OBJECT_URL_CACHE_LIMIT);
     }
-    if (state.refUrls.has(ref.id)) img.src = state.refUrls.get(ref.id);
+    if (state.refUrls.has(ref.id)) img.src = touchObjectUrl(state.refUrls, ref.id);
   }
   for (const img of $$('img[data-pro-ref-id]')) {
     const ref = (state.pro.refs || []).find((r) => r.id === img.dataset.proRefId);
@@ -5572,9 +6521,9 @@ async function hydrateImages() {
     const key = `pro:${ref.id}`;
     if (!state.refUrls.has(key)) {
       const blob = await getBlob(ref.blobId).catch(() => null);
-      if (blob) state.refUrls.set(key, URL.createObjectURL(blob));
+      if (blob) rememberObjectUrl(state.refUrls, key, URL.createObjectURL(blob), REFERENCE_OBJECT_URL_CACHE_LIMIT);
     }
-    if (state.refUrls.has(key)) img.src = state.refUrls.get(key);
+    if (state.refUrls.has(key)) img.src = touchObjectUrl(state.refUrls, key);
   }
   for (const img of $$('img[data-workflow-ref-id]')) {
     const ref = (state.workflowInvoke?.references || []).find((r) => r.id === img.dataset.workflowRefId);
@@ -5582,9 +6531,9 @@ async function hydrateImages() {
     const key = `workflow:${ref.id}`;
     if (!state.refUrls.has(key)) {
       const blob = await getBlob(ref.blobId).catch(() => null);
-      if (blob) state.refUrls.set(key, URL.createObjectURL(blob));
+      if (blob) rememberObjectUrl(state.refUrls, key, URL.createObjectURL(blob), REFERENCE_OBJECT_URL_CACHE_LIMIT);
     }
-    if (state.refUrls.has(key)) img.src = state.refUrls.get(key);
+    if (state.refUrls.has(key)) img.src = touchObjectUrl(state.refUrls, key);
   }
   for (const img of $$('img[data-agent-attachment-id]')) {
     const attachment = (state.agent.attachments || []).find((item) => item.id === img.dataset.agentAttachmentId);
@@ -5592,9 +6541,9 @@ async function hydrateImages() {
     const key = `agent:${attachment.id}:${attachment.blobId}`;
     if (!state.refUrls.has(key)) {
       const blob = await getBlob(attachment.blobId).catch(() => null);
-      if (blob) state.refUrls.set(key, URL.createObjectURL(blob));
+      if (blob) rememberObjectUrl(state.refUrls, key, URL.createObjectURL(blob), REFERENCE_OBJECT_URL_CACHE_LIMIT);
     }
-    if (state.refUrls.has(key)) img.src = state.refUrls.get(key);
+    if (state.refUrls.has(key)) img.src = touchObjectUrl(state.refUrls, key);
   }
   for (const img of $$('img[data-task-ref-task-id]')) {
     const task = state.tasks.find((item) => item.id === img.dataset.taskRefTaskId);
@@ -5605,9 +6554,9 @@ async function hydrateImages() {
     const key = `taskref:${task.id}:${ref.id}:${displayBlobId}`;
     if (!state.refUrls.has(key)) {
       const blob = await getBlob(displayBlobId).catch(() => null);
-      if (blob) state.refUrls.set(key, URL.createObjectURL(blob));
+      if (blob) rememberObjectUrl(state.refUrls, key, URL.createObjectURL(blob), REFERENCE_OBJECT_URL_CACHE_LIMIT);
     }
-    if (state.refUrls.has(key)) img.src = state.refUrls.get(key);
+    if (state.refUrls.has(key)) img.src = touchObjectUrl(state.refUrls, key);
   }
 }
 
@@ -5747,12 +6696,8 @@ async function generateImageTask(seedTask = null) {
   if (!validateReferenceCountForProfile(profile, references)) return null;
   const referenceSnapshots = await cloneReferenceSnapshots(references);
   const params = seedTask?.requestedParams || requestedParams(profile);
-  const transparentOutput = wantsTransparentOutput(params);
-  const effectiveParams = transparentOutput ? getTransparentRequestParams(params) : params;
-  if (providerKey(profile) === 'openai' && String(firstDefined(params.format, params.output_format, state.settings.output_format) || '').toLowerCase() === 'png' && firstDefined(params.transparent, params.transparent_background, state.settings.transparent_output, false) && !openAiTransparentBackgroundSupported(profile)) {
-    toast(transparentBackgroundUnsupportedMessage(profile));
-    return null;
-  }
+  const transparentRequested = wantsTransparentOutput(params);
+  const effectiveParams = transparentRequested ? getTransparentRequestParams(params) : params;
   const meta = seedTask?.workflowMeta || {};
   const task = {
     id: uid('task'),
@@ -5769,9 +6714,10 @@ async function generateImageTask(seedTask = null) {
     referenceCount: referenceSnapshots.length,
     referenceSnapshots,
     requestedParams: params,
-    transparentOutput,
-    transparentSource: transparentOutput ? 'local-key-color' : '',
-    transparentPrompt: transparentOutput ? buildTransparentKeyPrompt(prompt) : '',
+    transparentRequested,
+    transparentOutput: false,
+    transparentSource: '',
+    transparentPrompt: transparentRequested ? buildTransparentKeyPrompt(prompt) : '',
     workflowId: meta.workflowId || seedTask?.workflowId || '',
     workflowRunId: meta.workflowRunId || seedTask?.workflowRunId || '',
     workflowNodeId: meta.workflowNodeId || seedTask?.workflowNodeId || '',
@@ -5800,7 +6746,7 @@ async function generateImageTask(seedTask = null) {
       profile,
       references,
       entry: meta.entry || 'gallery',
-      transparentOutput,
+      transparentOutput: transparentRequested,
       onPartialImage: (url) => {
         task.streamPreviewUrl = url;
         renderGalleryListOnly();
@@ -5825,22 +6771,27 @@ async function generateImageTask(seedTask = null) {
     task.expectedCount = result.expectedCount || params.count || images.length;
     task.actualCount = images.length;
     task.failedCount = result.failedCount || 0;
-    task.partialErrors = result.partialErrors || [];
+    task.partialErrors = mergeGenerationPartialErrors(result.partialErrors, transparentRequested ? result.transparentPostProcessError : '');
     task.rawResponse = summarizeResponse(response);
     task.returnedPrompt = returnedPromptFromResponse(response);
-    task.returnedParams = extractReturnedParams(response, { ...params, transparent: transparentOutput || params.transparent }, images);
-    if (transparentOutput) {
-      task.returnedParams.transparent = true;
-      task.returnedParams.transparentBackground = true;
-      task.returnedParams.background = 'local-key-color';
-      if (result.transparentPostProcessError) {
-        task.transparentPostProcessError = result.transparentPostProcessError;
-        task.errorDetail = [task.errorDetail, `透明背景后处理失败，已保留原图：${result.transparentPostProcessError}`].filter(Boolean).join('\n');
-      }
+    task.returnedParams = extractReturnedParams(response, { ...params, transparent: transparentRequested || params.transparent }, images);
+    task.transparentOutput = transparentRequested && result.transparentFailedCount === 0 && result.transparentProcessedCount === images.length && images.length > 0;
+    task.transparentSource = task.transparentOutput ? 'local-key-color' : '';
+    if (transparentRequested) {
+      task.returnedParams.transparent = task.transparentOutput;
+      task.returnedParams.transparentBackground = task.transparentOutput;
+      task.returnedParams.background = task.transparentOutput ? 'local-key-color' : 'opaque';
+      task.transparentProcessedCount = result.transparentProcessedCount || 0;
+      task.transparentFailedCount = result.transparentFailedCount || 0;
+      if (result.transparentPostProcessError) task.transparentPostProcessError = result.transparentPostProcessError;
     }
-    task.error = task.failedCount ? `部分图片生成失败：${task.failedCount} 张未完成` : '';
+    const generationError = task.failedCount ? `部分图片生成失败：${task.failedCount} 张未完成` : '';
+    const transparencyError = result.transparentFailedCount
+      ? `透明背景后处理失败：${result.transparentFailedCount} 张已保留上游原图`
+      : '';
+    task.error = [generationError, transparencyError].filter(Boolean).join('；');
     task.errorDetail = task.partialErrors.map((item, idx) => `${idx + 1}. ${item.detail || item.summary || item.error || item}`).join('\n');
-    task.status = task.failedCount ? 'partial_success' : 'success';
+    task.status = task.failedCount || result.transparentFailedCount ? 'partial_success' : 'success';
     task.streamPreviewUrl = '';
     task.streamPreviewRemoteUrl = '';
     writeStore();
@@ -5886,7 +6837,9 @@ async function collectGenerationResult(prompt, params, options = {}) {
   let lastError = null;
   let apiElapsedMs = 0;
   let persistElapsedMs = 0;
-  let transparentPostProcessError = '';
+  let transparentProcessedCount = 0;
+  let transparentFailedCount = 0;
+  const transparentPostProcessErrors = [];
   for (let attempt = 0; attempt < maxAttempts && images.length < expected; attempt++) {
     const remaining = Math.max(1, expected - images.length);
     const requestParams = forceSingleRequests ? { ...params, count: 1 } : (attempt === 0 ? params : { ...params, count: remaining });
@@ -5898,11 +6851,11 @@ async function collectGenerationResult(prompt, params, options = {}) {
       const persistStartedAt = Date.now();
       let batch = await persistResponseImages(response);
       if (options.transparentOutput) {
-        try {
-          batch = await postProcessTransparentImages(batch);
-        } catch (postErr) {
-          transparentPostProcessError = normalizeError(postErr, '透明背景后处理失败').summary;
-        }
+        const transparentResult = await postProcessTransparentImages(batch);
+        batch = transparentResult.images;
+        transparentProcessedCount += transparentResult.processedCount;
+        transparentFailedCount += transparentResult.failedCount;
+        transparentPostProcessErrors.push(...transparentResult.errors);
       }
       persistElapsedMs += Date.now() - persistStartedAt;
       images.push(...batch);
@@ -5938,32 +6891,71 @@ async function collectGenerationResult(prompt, params, options = {}) {
     images: responses.flatMap((item) => Array.isArray(item?.images) ? item.images : []),
     count: images.length
   };
-  return { response, images, partialErrors, expectedCount: expected, actualCount: images.length, failedCount: Math.max(0, expected - images.length), apiElapsedMs, persistElapsedMs, transparentPostProcessError };
+  const transparentPostProcessError = transparentPostProcessErrors
+    .map((item) => item.detail || item.summary || item.error || item)
+    .filter(Boolean)
+    .join('\n');
+  return {
+    response,
+    images,
+    partialErrors,
+    expectedCount: expected,
+    actualCount: images.length,
+    failedCount: Math.max(0, expected - images.length),
+    apiElapsedMs,
+    persistElapsedMs,
+    transparentProcessedCount,
+    transparentFailedCount,
+    transparentPostProcessErrors,
+    transparentPostProcessError
+  };
 }
 async function postProcessTransparentImages(images = []) {
   const processed = [];
-  for (const image of images) {
-    const originalBlob = await getBlob(image.blobId);
-    if (!originalBlob) {
-      processed.push(image);
-      continue;
+  const errors = [];
+  let processedCount = 0;
+  for (let index = 0; index < images.length; index += 1) {
+    const image = images[index];
+    try {
+      const originalBlob = await getBlob(image.blobId);
+      if (!originalBlob) throw new Error('找不到待处理的原始图片数据');
+      const transparentBlob = await removeKeyedBackgroundFromBlob(originalBlob);
+      const blobId = await putBlob(transparentBlob);
+      const info = await imageInfoFromBlob(transparentBlob).catch(async () => ({ ...(await imageSizeFromBlob(transparentBlob).catch(() => ({}))), type: transparentBlob.type, hasAlpha: true }));
+      processed.push({
+        ...image,
+        blobId,
+        originalBlobId: image.originalBlobId || image.blobId,
+        width: info.width || image.width,
+        height: info.height || image.height,
+        type: info.type || 'image/png',
+        transparent: true,
+        transparentOutput: true,
+        transparentSource: 'local-key-color'
+      });
+      processedCount += 1;
+    } catch (err) {
+      const normalized = normalizeError(err, '透明背景后处理失败');
+      processed.push({
+        ...image,
+        transparent: false,
+        transparentOutput: false,
+        transparentSource: ''
+      });
+      errors.push({
+        index,
+        blobId: image?.blobId || '',
+        summary: normalized.summary,
+        detail: normalized.detail
+      });
     }
-    const transparentBlob = await removeKeyedBackgroundFromBlob(originalBlob);
-    const blobId = await putBlob(transparentBlob);
-    const info = await imageInfoFromBlob(transparentBlob).catch(async () => ({ ...(await imageSizeFromBlob(transparentBlob).catch(() => ({}))), type: transparentBlob.type, hasAlpha: true }));
-    processed.push({
-      ...image,
-      blobId,
-      originalBlobId: image.originalBlobId || image.blobId,
-      width: info.width || image.width,
-      height: info.height || image.height,
-      type: info.type || 'image/png',
-      transparent: true,
-      transparentOutput: true,
-      transparentSource: 'local-key-color'
-    });
   }
-  return processed;
+  return {
+    images: processed,
+    processedCount,
+    failedCount: errors.length,
+    errors
+  };
 }
 async function sendGenerationRequest(prompt, params = {}, options = {}) {
   const profile = options.profile || imageProfile();
@@ -5981,7 +6973,7 @@ async function sendGenerationRequest(prompt, params = {}, options = {}) {
     fd.append('model', profile.model || 'gpt-image-2');
     fd.append('prompt', requestPrompt);
     appendProviderParams(fd, provider, requestParams);
-    appendImageOutputParams(fd, requestParams);
+    appendImageOutputParams(fd, requestParams, profile);
     appendNegativePromptParams(fd, requestParams);
     fd.append('n', String(provider === 'google' ? 1 : (requestParams.count || state.settings.n || 1)));
     const imageFieldName = provider === 'google' ? 'image[]' : 'image';
@@ -5996,7 +6988,7 @@ async function sendGenerationRequest(prompt, params = {}, options = {}) {
     prompt: requestPrompt,
     n: provider === 'google' ? 1 : (Number(requestParams.count || state.settings.n) || 1)
   };
-  appendImageOutputParams(body, requestParams);
+  appendImageOutputParams(body, requestParams, profile);
   appendNegativePromptParams(body, requestParams);
   Object.assign(body, providerPayload(provider, requestParams));
   applyAdvancedToJsonBody(body, entry, profile);
@@ -6074,7 +7066,7 @@ function appendProviderParams(fd, provider, params = {}) {
     fd.append(k, v && typeof v === 'object' ? JSON.stringify(v) : v);
   });
 }
-function imageOutputParams(params = {}) {
+function imageOutputParams(params = {}, profile = imageProfile()) {
   const requestParams = params && typeof params === 'object' ? params : {};
   const format = String(firstDefined(requestParams.format, requestParams.output_format, state.settings.output_format) || 'png').toLowerCase();
   const out = {
@@ -6084,15 +7076,17 @@ function imageOutputParams(params = {}) {
   };
   if (format === 'png') {
     const transparent = !!firstDefined(requestParams.transparent, requestParams.transparent_background, state.settings.transparent_output, false);
-    out.transparent_background = transparent;
-    out.background = transparent ? 'transparent' : 'auto';
+    if (providerKey(profile) !== 'openai' || openAiTransparentBackgroundSupported(profile)) {
+      out.transparent_background = transparent;
+      out.background = transparent ? 'transparent' : 'auto';
+    }
   } else {
     out.output_compression = Number(firstDefined(requestParams.compression, requestParams.output_compression, state.settings.output_compression, 90)) || 90;
   }
   return out;
 }
-function appendImageOutputParams(target, params = {}) {
-  const output = imageOutputParams(params);
+function appendImageOutputParams(target, params = {}, profile = imageProfile()) {
+  const output = imageOutputParams(params, profile);
   Object.entries(output).forEach(([key, value]) => {
     if (target instanceof FormData) target.append(key, String(value));
     else target[key] = value;
@@ -6107,6 +7101,18 @@ function appendNegativePromptParams(target, params = {}) {
   } else {
     target.negative_prompt = negativePrompt;
     target.negativePrompt = negativePrompt;
+  }
+}
+async function fetchRemoteImageBlob(url) {
+  try {
+    const response = await fetch(url);
+    const contentType = String(response?.headers?.get?.('content-type') || '').split(';')[0].trim().toLowerCase();
+    if (!response?.ok || !contentType.startsWith('image/')) return null;
+    const blob = await response.blob();
+    if (!blob || !Number(blob.size)) return null;
+    return blob.type ? blob : new Blob([blob], { type: contentType });
+  } catch {
+    return null;
   }
 }
 async function persistResponseImages(response) {
@@ -6126,18 +7132,22 @@ async function persistResponseImages(response) {
     seen.add(dedupeKey);
     unique.push({ b64, dataUrl, remoteUrl });
   }
-  const images = (await Promise.all(unique.map(async ({ b64, dataUrl, remoteUrl }) => {
-    let blob = null;
-    if (b64) blob = dataUrlToBlob(String(b64).startsWith('data:') ? b64 : `data:image/png;base64,${b64}`);
-    else if (dataUrl) blob = dataUrlToBlob(dataUrl);
-    else if (remoteUrl) blob = await fetch(remoteUrl).then((res) => res.blob()).catch(() => null);
-    if (!blob) return null;
-    const blobId = await putBlob(blob);
-    const info = await imageInfoFromBlob(blob).catch(async () => ({ ...(await imageSizeFromBlob(blob).catch(() => ({}))), type: blob.type }));
-    return { blobId, remoteUrl: /^data:/i.test(String(remoteUrl || '')) ? '' : remoteUrl, width: info.width, height: info.height, type: info.type || blob.type, transparent: info.hasAlpha === undefined ? undefined : !!info.hasAlpha };
-  }))).filter(Boolean);
-  if (!images.length) throw new Error('上游未返回可解析图片');
-  return images;
+  try {
+    const images = (await Promise.all(unique.map(async ({ b64, dataUrl, remoteUrl }) => {
+      let blob = null;
+      if (b64) blob = dataUrlToBlob(String(b64).startsWith('data:') ? b64 : `data:image/png;base64,${b64}`);
+      else if (dataUrl) blob = dataUrlToBlob(dataUrl);
+      else if (remoteUrl) blob = await fetchRemoteImageBlob(remoteUrl);
+      if (!blob) return null;
+      const blobId = await putBlob(blob);
+      const info = await imageInfoFromBlob(blob).catch(async () => ({ ...(await imageSizeFromBlob(blob).catch(() => ({}))), type: blob.type }));
+      return { blobId, remoteUrl: /^blob:|^data:/i.test(String(remoteUrl || '')) ? '' : remoteUrl, width: info.width, height: info.height, type: info.type || blob.type, transparent: info.hasAlpha === undefined ? undefined : !!info.hasAlpha };
+    }))).filter(Boolean);
+    if (!images.length) throw new Error('上游未返回可解析图片');
+    return images;
+  } finally {
+    for (const url of response?.streamObjectUrls || []) revokeTransientObjectUrl(url);
+  }
 }
 function collectImageCandidates(response) {
   const out = [];
@@ -6166,35 +7176,131 @@ async function consumeImageStream(response, onPartialImage) {
   const reader = response.body?.getReader?.();
   if (!reader) throw new Error('流式响应不可读取');
   const decoder = new TextDecoder();
+  const byteEncoder = new TextEncoder();
   let buffer = '';
-  let finalPayload = null;
-  const events = [];
+  let eventCount = 0;
+  const streamEvents = [];
+  const imageCandidatesByOutput = new Map();
+  let terminalError = '';
+  const revokeAllCandidates = () => {
+    imageCandidatesByOutput.forEach((candidate) => {
+      if (candidate?.temporary) revokeTransientObjectUrl(candidate.url);
+    });
+    imageCandidatesByOutput.clear();
+  };
+  const compactEventMetadata = (payload, candidateCount) => ({
+    type: String(payload?.type || payload?.event || '').slice(0, 80),
+    status: String(payload?.status || '').slice(0, 40),
+    id: String(payload?.id || payload?.response?.id || '').slice(0, 120),
+    candidateCount,
+    outputIndex: firstDefined(payload?.output_index, payload?.outputIndex, payload?.image_index, payload?.imageIndex, payload?.index, null)
+  });
+  const candidateObjectUrl = (candidate) => {
+    const directUrl = firstDefined(candidate?.data_url, candidate?.dataUrl, candidate?.image_data_url, candidate?.imageDataUrl, candidate?.url, candidate?.image_url, candidate?.imageUrl);
+    const b64 = firstDefined(candidate?.b64_json, candidate?.b64Json, candidate?.base64, candidate?.image_base64, candidate?.imageBase64);
+    if (directUrl && !/^data:image\//i.test(String(directUrl))) return { url: String(directUrl), temporary: false };
+    const dataUrl = directUrl || (b64 ? (String(b64).startsWith('data:') ? String(b64) : `data:image/png;base64,${b64}`) : '');
+    if (!dataUrl || typeof URL?.createObjectURL !== 'function') return null;
+    return { url: trackTransientObjectUrl(URL.createObjectURL(dataUrlToBlob(dataUrl))), temporary: true };
+  };
+  const candidateOutputKey = (payload, candidate, candidateIndex) => {
+    const outputIndex = firstDefined(
+      candidate?.output_index,
+      candidate?.outputIndex,
+      candidate?.image_index,
+      candidate?.imageIndex,
+      candidate?.index,
+      payload?.output_index,
+      payload?.outputIndex,
+      payload?.image_index,
+      payload?.imageIndex,
+      payload?.index,
+      candidateIndex
+    );
+    return `output:${String(outputIndex)}`;
+  };
   const handleEvent = (chunk) => {
-    const lines = String(chunk || '').split(/\r?\n/);
-    const dataLines = lines.filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim());
-    for (const line of dataLines) {
-      if (!line || line === '[DONE]') continue;
-      let payload = null;
-      try { payload = JSON.parse(line); } catch { continue; }
-      events.push(payload);
-      const partial = collectImageCandidates(payload).at(-1);
-      const url = firstDefined(partial?.data_url, partial?.dataUrl, partial?.url, partial?.image_url, partial?.imageUrl);
-      const b64 = firstDefined(partial?.b64_json, partial?.b64Json, partial?.base64, partial?.image_base64, partial?.imageBase64);
-      if (url && onPartialImage) onPartialImage(url);
-      else if (b64 && onPartialImage) onPartialImage(String(b64).startsWith('data:') ? b64 : `data:image/png;base64,${b64}`);
-      if (collectImageCandidates(payload).length) finalPayload = payload;
+    if (terminalError) return;
+    const data = parseSseDataBlock(chunk);
+    if (!data || data === '[DONE]') return;
+    let payload = null;
+    try { payload = JSON.parse(data); } catch { return; }
+    eventCount += 1;
+    const candidates = collectImageCandidates(payload);
+    streamEvents.push(compactEventMetadata(payload, candidates.length));
+    if (streamEvents.length > STREAM_EVENT_METADATA_LIMIT) streamEvents.shift();
+    terminalError = streamEventErrorMessage(payload) || '';
+    if (terminalError) return;
+    candidates.forEach((candidate, candidateIndex) => {
+      const resolved = candidateObjectUrl(candidate);
+      if (!resolved) return;
+      const outputKey = candidateOutputKey(payload, candidate, candidateIndex);
+      const previous = imageCandidatesByOutput.get(outputKey);
+      if (previous?.temporary) revokeTransientObjectUrl(previous.url);
+      if (!previous && imageCandidatesByOutput.size >= STREAM_IMAGE_LIMIT) {
+        const oldestKey = imageCandidatesByOutput.keys().next().value;
+        const evicted = imageCandidatesByOutput.get(oldestKey);
+        if (evicted?.temporary) revokeTransientObjectUrl(evicted.url);
+        imageCandidatesByOutput.delete(oldestKey);
+      }
+      imageCandidatesByOutput.set(outputKey, { url: resolved.url, temporary: resolved.temporary });
+      if (onPartialImage) onPartialImage(resolved.url);
+    });
+  };
+  const drainEvents = () => {
+    let separatorMatch = buffer.match(/\r?\n\r?\n/);
+    while (separatorMatch) {
+      const separatorIndex = separatorMatch.index || 0;
+      const part = buffer.slice(0, separatorIndex);
+      if (byteEncoder.encode(part).byteLength > IMAGE_STREAM_EVENT_LIMIT) {
+        throw new Error('流式图片事件超过 32MB 安全上限');
+      }
+      buffer = buffer.slice(separatorIndex + separatorMatch[0].length);
+      handleEvent(part);
+      separatorMatch = buffer.match(/\r?\n\r?\n/);
+    }
+    if (byteEncoder.encode(buffer).byteLength > IMAGE_STREAM_EVENT_LIMIT) {
+      throw new Error('流式图片事件超过 32MB 安全上限');
     }
   };
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const parts = buffer.split(/\n\n/);
-    buffer = parts.pop() || '';
-    parts.forEach(handleEvent);
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (Number(value?.byteLength || 0) > IMAGE_STREAM_EVENT_LIMIT) {
+        throw new Error('流式图片数据块超过 32MB 安全上限');
+      }
+      buffer += decoder.decode(value, { stream: true });
+      drainEvents();
+      if (terminalError) {
+        await reader.cancel?.().catch?.(() => {});
+        break;
+      }
+    }
+    if (!terminalError) {
+      buffer += decoder.decode();
+      if (buffer.trim()) handleEvent(buffer);
+    }
+  } catch (err) {
+    await reader.cancel?.().catch?.(() => {});
+    revokeAllCandidates();
+    throw err;
   }
-  if (buffer.trim()) handleEvent(buffer);
-  if (finalPayload) return { ...finalPayload, streamEvents: events };
+  if (terminalError) {
+    revokeAllCandidates();
+    throw new Error(terminalError);
+  }
+  const imageCandidates = [...imageCandidatesByOutput.values()];
+  if (imageCandidates.length) {
+    const streamObjectUrls = imageCandidates.filter((item) => item.temporary).map((item) => item.url);
+    return {
+      data: imageCandidates.map(({ url }) => ({ url })),
+      streamEvents,
+      streamEventCount: eventCount,
+      streamObjectUrls,
+      streamed: true
+    };
+  }
   throw new Error('流式响应结束但没有返回可解析图片');
 }
 function returnedPromptFromResponse(response) {
@@ -6269,6 +7375,7 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     taskReferenceSnapshots,
     renderReferenceBadge,
     renderTaskReferenceStrip,
+    editOutput,
     captureAgentScrollAnchor,
     restoreAgentScrollAnchor,
     freezeAgentScrollForRender,
@@ -6277,6 +7384,10 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     renderPreservingAgentScroll,
     shouldPreserveAgentScrollForTask,
     galleryVirtualWindow,
+    galleryVirtualRangeChanged,
+    renderGalleryListOnly,
+    promptRepoVirtualWindow,
+    measurePromptRepoVirtualLayout,
     maskCanvasHasPaint,
     shouldCloseModalFromClick,
     returnedPromptFromResponse,
@@ -6291,6 +7402,22 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     removeKeyedBackgroundFromPixels,
     removeKeyedBackgroundFromBlob,
     postProcessTransparentImages,
+    putBlob,
+    cleanupOrphanBlobs,
+    persistAgentHistorySnapshots,
+    hydrateAgentHistoryFromDb,
+    compactAgentThreadMessages,
+    compactAgentMessagesByThreadForStorage,
+    mergeGenerationPartialErrors,
+    consumeImageStream,
+    fetchRemoteImageBlob,
+    rememberObjectUrl,
+    revokeAllObjectUrls,
+    hydrateBlobImage,
+    readBlobReservations,
+    reserveBlobId,
+    releaseBlobReservation,
+    agentArchiveLocalChanges,
     openAiSizePayload,
     imageOutputParams,
     openAiTransparentBackgroundSupported,
@@ -6305,6 +7432,7 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     responseStreamTextFromPayload,
     consumeResponseTextStream,
     resolveResponsePayload,
+    assertSuccessfulResponseTerminal,
     extractResponseText,
     agentTextProfile,
     configuredAgentTextProfile,
@@ -6334,6 +7462,7 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     branchAgentThreadFromMessage,
     clearAgentThreadMessages,
     agentImageSettings,
+    initialAgentImageSettings,
     agentImageParams,
     agentImageProfile,
     setAgentImageParam,
@@ -6342,7 +7471,14 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     renderAgentComposer,
     renderWorkflowWorkspace,
     renderPopover,
+    render,
+    captureFocusState,
+    restoreFocusState,
+    topVisibleModal,
+    syncModalAccessibility,
     loadRuntime,
+    runtimeRenderSignature,
+    updateRunningTimers,
     writeStore,
     setTestTasks: (tasks) => { state.tasks = Array.isArray(tasks) ? tasks : []; },
     setTestState: (patch = {}) => {
@@ -6350,13 +7486,17 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
       if (patch.activeProfileId !== undefined) state.activeProfileId = patch.activeProfileId;
       if (patch.activeImageProfileId !== undefined) state.activeImageProfileId = patch.activeImageProfileId;
       if (patch.agentConfig) state.agentConfig = { ...state.agentConfig, ...patch.agentConfig };
-      if (patch.agent) state.agent = migrateAgentThreads({ ...state.agent, ...patch.agent });
+      if (patch.agent) state.agent = migrateAgentThreads({ ...state.agent, ...patch.agent }, { interruptPending: false });
       if (patch.preferences) state.preferences = { ...state.preferences, ...patch.preferences };
       if (patch.settings) state.settings = { ...state.settings, ...patch.settings };
       if (patch.confirmDialog !== undefined) state.confirmDialog = patch.confirmDialog;
+      if (patch.workflowDraft !== undefined) state.workflowDraft = patch.workflowDraft;
+      if (patch.workflowInvoke !== undefined) state.workflowInvoke = patch.workflowInvoke;
       if (patch.mode !== undefined) state.mode = patch.mode;
       if (patch.references) state.references = patch.references;
+      if (patch.composerPrompt !== undefined) state.composerPrompt = patch.composerPrompt;
       if (patch.galleryVirtual) state.galleryVirtual = { ...state.galleryVirtual, ...patch.galleryVirtual };
+      if (patch.promptRepo) state.promptRepo = { ...state.promptRepo, ...patch.promptRepo };
     },
     getTestState: () => JSON.parse(JSON.stringify({
       profiles: state.profiles,
@@ -6369,10 +7509,14 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
       runtime: state.runtime,
       tasks: state.tasks,
       references: state.references,
+      composerPrompt: state.composerPrompt,
       galleryVirtual: state.galleryVirtual,
+      promptRepo: state.promptRepo,
       agentScrollLock: state.agentScrollLock,
       agentScrollState: state.agentScrollState,
       confirmDialog: state.confirmDialog,
+      workflowDraft: state.workflowDraft,
+      workflowInvoke: state.workflowInvoke,
       mode: state.mode
     }))
   });
@@ -6430,24 +7574,7 @@ async function topUpTask(id) {
 function reuseTask(id) {
   const task = state.tasks.find((t) => t.id === id);
   if (!task) return;
-  if (state.preferences?.reuseTaskApiProfileTemporarily && task.profileId) {
-    const profile = imageProfiles().find((item) => profileId(item) === task.profileId);
-    if (profile) {
-      state.activeImageProfileId = profileId(profile);
-      state.activeProfileId = profileId(profile);
-      writeComposerSessionSettings();
-    }
-  }
-  state.composerPrompt = task.prompt || '';
-  if (task.requestedParams) {
-    state.settings.quality = task.requestedParams.quality || state.settings.quality;
-    state.settings.output_format = task.requestedParams.format || state.settings.output_format;
-    state.settings.n = task.requestedParams.count || state.settings.n;
-  }
-  state.modal = null;
-  state.mode = 'gallery';
-  persistRender();
-  toast('已复用提示词和参数');
+  restoreTaskToComposer(task, { mode: 'reuse' }).catch(() => toast('复用配置失败'));
 }
 async function deleteTask(id) {
   const task = state.tasks.find((t) => t.id === id);
@@ -6692,9 +7819,17 @@ async function editOutput(id) {
   const blob = await getBlob(image.blobId);
   if (!blob) return toast('原图不在当前浏览器本地，无法编辑');
   const blobId = await putBlob(blob);
-  const ref = { id: uid('ref'), blobId, name: `edit-${task.id}.png`, type: blob.type, width: image.width, height: image.height };
+  const ref = {
+    id: uid('ref'),
+    blobId,
+    originalBlobId: blobId,
+    compositedBlobId: blobId,
+    name: `edit-${task.id}.png`,
+    type: blob.type,
+    width: image.width,
+    height: image.height
+  };
   state.references = [ref, ...state.references].slice(0, referenceLimit());
-  state.composerPrompt = task.prompt || state.composerPrompt;
   state.modal = null;
   persistRender();
   toast('已加入参考图，点击缩略图可进入编辑遮罩');
@@ -6720,6 +7855,7 @@ let promptSearchPromise = null;
 const promptCategoryPagePromises = new Map();
 const promptDetailChunkPromises = new Map();
 const promptPageCache = new Map();
+const promptDetailChunkCache = new Map();
 function applyLoadedPromptBootstrap(data) {
   if (!data || !Array.isArray(data.categories)) throw new Error('invalid prompt bootstrap');
   promptBootstrapCache = data;
@@ -6975,7 +8111,7 @@ async function loadPromptCategoryFullPage(category) {
   const file = bootstrap?.categoryFiles?.[cleanCategory];
   if (!file || String(file).includes('..')) return null;
   if (!promptCategoryPagePromises.has(cleanCategory)) {
-    promptCategoryPagePromises.set(cleanCategory, fetch(`/prompts_fast/${file}?v=${PROMPT_FAST_VERSION}`, {
+    const request = fetch(`/prompts_fast/${file}?v=${PROMPT_FAST_VERSION}`, {
       credentials: 'same-origin',
       cache: 'force-cache'
     }).then(async (res) => {
@@ -6983,27 +8119,36 @@ async function loadPromptCategoryFullPage(category) {
       const data = await res.json();
       rememberPromptPageCache(cacheKey, data);
       return data;
-    }).catch((err) => {
+    }).finally(() => {
       promptCategoryPagePromises.delete(cleanCategory);
-      throw err;
-    }));
+    });
+    promptCategoryPagePromises.set(cleanCategory, request);
   }
   return promptCategoryPagePromises.get(cleanCategory);
 }
 async function loadPromptDetailChunk(file) {
   const cleanFile = String(file || '');
   if (!cleanFile || cleanFile.includes('..') || !cleanFile.startsWith('details/')) return null;
+  if (promptDetailChunkCache.has(cleanFile)) {
+    const cached = promptDetailChunkCache.get(cleanFile);
+    promptDetailChunkCache.delete(cleanFile);
+    promptDetailChunkCache.set(cleanFile, cached);
+    return cached;
+  }
   if (!promptDetailChunkPromises.has(cleanFile)) {
-    promptDetailChunkPromises.set(cleanFile, fetch(`/prompts_fast/${cleanFile}?v=${PROMPT_FAST_VERSION}`, {
+    const request = fetch(`/prompts_fast/${cleanFile}?v=${PROMPT_FAST_VERSION}`, {
       credentials: 'same-origin',
       cache: 'force-cache'
     }).then(async (res) => {
       if (!res.ok) throw new Error(`prompt detail ${res.status}`);
-      return res.json();
-    }).catch((err) => {
+      const data = await res.json();
+      promptDetailChunkCache.set(cleanFile, data);
+      while (promptDetailChunkCache.size > 12) promptDetailChunkCache.delete(promptDetailChunkCache.keys().next().value);
+      return data;
+    }).finally(() => {
       promptDetailChunkPromises.delete(cleanFile);
-      throw err;
-    }));
+    });
+    promptDetailChunkPromises.set(cleanFile, request);
   }
   return promptDetailChunkPromises.get(cleanFile);
 }
@@ -7125,14 +8270,14 @@ function closePromptRepoDetailOverlay() {
   delete state.promptRepo.detailReturnSnapshot;
   state.promptRepo.detail = null;
   if (!syncPromptRepoOverlays()) render();
-  focusPromptRepoShell();
+  restoreModalOpener('prompt-detail');
   stabilizePromptRepoViewport(snapshot);
 }
 function closePromptRepoImageViewerOverlay() {
   const snapshot = capturePromptRepoViewportSnapshot();
   state.promptRepo.imageViewer = null;
   if (!syncPromptRepoOverlays()) render();
-  focusPromptRepoShell();
+  restoreModalOpener('prompt-viewer');
   stabilizePromptRepoViewport(snapshot);
 }
 function queuePromptRepoViewportRestore() {
@@ -7146,6 +8291,7 @@ function flushPromptRepoViewportRestore() {
   restorePromptRepoViewportSnapshot(snapshot);
 }
 function openPromptRepo() {
+  rememberModalOpener('prompt-repo');
   state.promptRepo = {
     open: true,
     page: 0,
@@ -7470,6 +8616,7 @@ function buildAgentRequestPayload(input, options = {}) {
   const imageParts = Array.isArray(options.attachmentImageParts) ? options.attachmentImageParts : [];
   const payload = {
     model: currentModelSlug,
+    stream: true,
     instructions: [
       '你是当前项目的 Agent，负责直接、清晰地回答用户问题。',
       '不要生成 workflow JSON，除非用户明确要求。',
@@ -7506,6 +8653,7 @@ function buildWorkflowAgentRequestPayload(input, options = {}) {
   const webSearchEnabled = agentWebSearchEnabled(textProfile);
   const payload = {
     model: currentModelSlug,
+    stream: true,
     instructions: mode === 'rewrite'
       ? [
         '你是 NexGen 工作流的提示词改写器。只输出最终生图提示词，不要解释。',
@@ -7550,7 +8698,7 @@ async function postAgentResponsesRequest(payload, textProfile) {
     const responsePayload = await fetchJson('/api-proxy/responses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-GPT-Image-Profile-Id': profileId(textProfile) },
-      body: JSON.stringify(requestBody),
+      body: JSON.stringify({ ...requestBody, stream: true }),
       signal: controller.signal
     });
     return await resolveResponsePayload(responsePayload?.__stream ? { ...responsePayload, signal: controller.signal } : responsePayload);
@@ -7937,6 +9085,7 @@ function workflowImageParams(workflow, profile, countPerRow) {
   return params;
 }
 function newWorkflowDraft() {
+  rememberModalOpener('workflow-editor');
   const project = activeProject();
   state.workflowDraft = makeFallbackWorkflowDraft('新的批量生图工作流', '按变量表批量生成商业图片。', project?.id);
   state.mode = 'workflow';
@@ -8134,6 +9283,7 @@ function performDeleteWorkflow(id) {
 function openWorkflowInvoke(id) {
   const workflow = state.agent.workflows.find((item) => item.id === id);
   if (!workflow) return;
+  rememberModalOpener('workflow-invoke');
   state.workflowInvoke = {
     workflowId: workflow.id,
     workflow: JSON.parse(JSON.stringify(workflow)),
@@ -8281,7 +9431,8 @@ async function runAgent() {
       headers: { 'Content-Type': 'application/json', 'X-GPT-Image-Profile-Id': profileId(textProfile) },
       body: JSON.stringify({
         input: `项目专属提示词：${(state.agent.projects.find((p) => p.id === projectId)?.prompt || '无')}\n请规划并改写适合生图的提示词。任务：${input}`,
-        model: textProfile.model
+        model: textProfile.model,
+        stream: true
       })
     }));
     const text = data.output_text || data.text || JSON.stringify(data).slice(0, 1200);
@@ -8729,7 +9880,7 @@ async function maskClear() {
   canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
   if (ref.maskBlobId) await deleteBlob(ref.maskBlobId).catch(() => {});
   ref.maskBlobId = '';
-  state.refUrls.delete(ref.id);
+  revokeMapEntry(state.refUrls, ref.id);
   toast('已清空当前遮罩');
 }
 async function persistCanvasToRefDraft() {
@@ -8750,7 +9901,7 @@ async function persistCanvasToRefDraft() {
   const size = await imageSizeFromBlob(blob).catch(() => ({}));
   ref.width = size.width;
   ref.height = size.height;
-  state.refUrls.delete(ref.id);
+  revokeMapEntry(state.refUrls, ref.id);
 }
 async function composeReferenceWithMask(ref) {
   if (!ref?.originalBlobId) ref.originalBlobId = ref?.blobId;
@@ -8790,7 +9941,7 @@ async function composeReferenceWithMask(ref) {
   ref.type = 'image/png';
   ref.width = canvas.width;
   ref.height = canvas.height;
-  state.refUrls.delete(ref.id);
+  revokeMapEntry(state.refUrls, ref.id);
 }
 async function saveMaskEditor() {
   await persistCanvasToRefDraft();
@@ -8856,6 +10007,28 @@ async function runGalleryMigrationBridge() {
   }
   return false;
 }
+let runtimeRefreshTimer = 0;
+function scheduleRuntimeRefresh() {
+  clearTimeout(runtimeRefreshTimer);
+  runtimeRefreshTimer = setTimeout(async () => {
+    if (document.hidden) return;
+    try {
+      const changed = await loadRuntime({ preserveComposerSession: true });
+      if (changed) render();
+    } catch (err) {
+      console.warn('[home-v3] runtime refresh skipped', err);
+    }
+  }, 120);
+}
+let runningTimerInterval = 0;
+function syncRunningTimerInterval() {
+  if (document.hidden) {
+    if (runningTimerInterval) clearInterval(runningTimerInterval);
+    runningTimerInterval = 0;
+    return;
+  }
+  if (!runningTimerInterval) runningTimerInterval = setInterval(updateRunningTimers, 1000);
+}
 
 async function init() {
   applyTheme();
@@ -8865,18 +10038,30 @@ async function init() {
     console.warn('[home-v3] runtime unavailable', err);
     toast('未登录或配置未载入，部分功能需要登录后使用');
   });
-  writeStore();
   render();
+  hydrateAgentHistoryFromDb()
+    .then(() => {
+      writeStore();
+      render();
+    })
+    .catch((err) => console.warn('[home-v3] Agent history restore skipped', err));
   setTimeout(warmPromptBootstrap, 300);
-  schedulePromptSearchWarmup(12000);
   await runGalleryMigrationBridge();
+  window.addEventListener('focus', scheduleRuntimeRefresh);
+  window.addEventListener('pageshow', scheduleRuntimeRefresh);
+  document.addEventListener('visibilitychange', () => {
+    syncRunningTimerInterval();
+    if (!document.hidden) scheduleRuntimeRefresh();
+  });
+  window.addEventListener('pagehide', revokeAllObjectUrls);
   setTimeout(() => cleanupOrphanBlobs().catch((err) => console.warn('[home-v3] blob cleanup skipped', err)), 1200);
-  setInterval(updateRunningTimers, 1000);
+  syncRunningTimerInterval();
 }
 
 init();
 
 function updateRunningTimers() {
+  if (document.hidden) return;
   for (const task of state.tasks) {
     if (task.status !== 'running' && task.status !== 'queued') continue;
     const node = document.querySelector(`[data-elapsed-id="${CSS.escape(task.id)}"]`);

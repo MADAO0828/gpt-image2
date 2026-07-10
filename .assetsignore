@@ -18,9 +18,14 @@ tests/node_modules/
 scripts/
 tests/
 docs/
+migrations/
 README.md
 init_db.sql
+*.sql
 *.md
+wrangler.toml
+wrangler.json
+wrangler.jsonc
 .deploy/
 .deploy2/
 .deploy_stage/

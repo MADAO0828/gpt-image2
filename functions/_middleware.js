@@ -12,6 +12,18 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+function withSecurityHeaders(response) {
+  const next = new Response(response.body, response);
+  const contentSecurityPolicy = "default-src 'self'; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; font-src 'self' data: https:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'";
+  next.headers.set('X-Content-Type-Options', 'nosniff');
+  next.headers.set('X-Frame-Options', 'SAMEORIGIN');
+  next.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+  next.headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+  next.headers.set('Content-Security-Policy', contentSecurityPolicy);
+  next.headers.set('Content-Security-Policy-Report-Only', contentSecurityPolicy);
+  return next;
+}
+
 function wechatCompatPage(request) {
   const url = new URL(request.url);
   const target = url.origin + url.pathname;
@@ -91,24 +103,25 @@ export async function onRequest(context) {
   const url = new URL(context.request.url);
   const path = url.pathname.replace(/\/+$/, '') || '/';
   if (
-    /^\/(?:scripts|tests|docs|\.tmp-[^/]+)(?:\/|$)/i.test(path)
-    || /^\/(?:init_db\.sql|README\.md|\.dev\.vars|\.env(?:\..*)?|\.tmp-[^/]+)$/i.test(path)
+    /^\/(?:scripts|tests|docs|migrations|\.tmp-[^/]+)(?:\/|$)/i.test(path)
+    || /\.sql$/i.test(path)
+    || /^\/(?:README\.md|wrangler\.(?:toml|jsonc?)|\.dev\.vars|\.env(?:\..*)?|\.tmp-[^/]+)$/i.test(path)
   ) {
-    return new Response('Not found', {
+    return withSecurityHeaders(new Response('Not found', {
       status: 404,
       headers: {
         'Content-Type': 'text/plain; charset=utf-8',
         'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
         'X-Robots-Tag': 'noindex, nofollow'
       }
-    });
+    }));
   }
   if (path === '/user' || path === '/user.html') {
-    return Response.redirect(`${url.origin}/admin`, 302);
+    return withSecurityHeaders(Response.redirect(`${url.origin}/admin`, 302));
   }
   if (isWeChat(context.request)) {
     const wechatBlockedPaths = new Set(['/', '/login', '/login.html', '/admin', '/admin.html', '/prompts', '/prompts.html']);
-    if (wechatBlockedPaths.has(path)) return wechatCompatPage(context.request);
+    if (wechatBlockedPaths.has(path)) return withSecurityHeaders(wechatCompatPage(context.request));
   }
-  return context.next();
+  return withSecurityHeaders(await context.next());
 }

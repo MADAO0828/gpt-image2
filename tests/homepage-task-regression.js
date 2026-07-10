@@ -8,6 +8,33 @@ const failures = [];
 const fakeIndexedDbStore = new Map([
   ['ref-blob', new Blob(['reference'], { type: 'image/png' })]
 ]);
+const fakeIndexedDbStores = new Map([
+  ['blobs', fakeIndexedDbStore],
+  ['agentThreads', new Map()]
+]);
+const createdObjectUrls = [];
+const revokedObjectUrls = [];
+const createdObjectUrlBlobs = new Map();
+class TestURL extends URL {
+  static createObjectURL(blob) {
+    const url = URL.createObjectURL(blob);
+    createdObjectUrls.push(url);
+    createdObjectUrlBlobs.set(url, blob);
+    return url;
+  }
+  static revokeObjectURL(url) {
+    revokedObjectUrls.push(url);
+    createdObjectUrlBlobs.delete(url);
+    URL.revokeObjectURL(url);
+  }
+}
+function imageResponse(body = 'image', type = 'image/png', ok = true) {
+  return {
+    ok,
+    headers: { get: (name) => String(name).toLowerCase() === 'content-type' ? type : null },
+    blob: async () => new Blob([body], { type })
+  };
+}
 
 function ok(condition, message) {
   if (!condition) failures.push(message);
@@ -17,33 +44,74 @@ const sandbox = {
   console,
   TextDecoder,
   TextEncoder,
+  AbortController,
+  DOMException,
   window: {},
-  document: { documentElement: { dataset: {}, setAttribute: () => {} }, querySelector: () => null, querySelectorAll: () => [], addEventListener: () => {}, removeEventListener: () => {} },
+  document: {
+    documentElement: { dataset: {}, setAttribute: () => {}, appendChild: (node) => node },
+    body: { appendChild: (node) => node },
+    createElement: () => ({ appendChild: () => {}, remove: () => {}, dataset: {}, style: {} }),
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    addEventListener: () => {},
+    removeEventListener: () => {}
+  },
   indexedDB: {
     open: () => {
       const req = {};
       req.result = {
-        createObjectStore: () => {},
-        transaction: () => {
+        objectStoreNames: { contains: (name) => fakeIndexedDbStores.has(name) },
+        createObjectStore: (name) => {
+          if (!fakeIndexedDbStores.has(name)) fakeIndexedDbStores.set(name, new Map());
+          return {};
+        },
+        transaction: (storeName) => {
           const tx = { oncomplete: null, onerror: null };
-          tx.objectStore = () => ({
+          let completed = false;
+          const complete = () => {
+            if (completed) return;
+            completed = true;
+            if (tx.oncomplete) tx.oncomplete();
+          };
+          setTimeout(complete, 10);
+          tx.objectStore = () => {
+            const storeData = fakeIndexedDbStores.get(storeName) || new Map();
+            fakeIndexedDbStores.set(storeName, storeData);
+            return ({
             put: (blob, id) => {
-              fakeIndexedDbStore.set(id, blob);
-              setTimeout(() => { if (tx.oncomplete) tx.oncomplete(); }, 0);
+              storeData.set(id, blob);
+              setTimeout(complete, 0);
             },
             get: (id) => {
               const getReq = {};
               setTimeout(() => {
-                getReq.result = fakeIndexedDbStore.get(id) || null;
+                getReq.result = storeData.get(id) || null;
+                if (getReq.onsuccess) getReq.onsuccess();
+              }, 0);
+              return getReq;
+            },
+            getAll: () => {
+              const getReq = {};
+              setTimeout(() => {
+                getReq.result = [...storeData.values()];
+                if (getReq.onsuccess) getReq.onsuccess();
+              }, 0);
+              return getReq;
+            },
+            getAllKeys: () => {
+              const getReq = {};
+              setTimeout(() => {
+                getReq.result = [...storeData.keys()];
                 if (getReq.onsuccess) getReq.onsuccess();
               }, 0);
               return getReq;
             },
             delete: (id) => {
-              fakeIndexedDbStore.delete(id);
-              setTimeout(() => { if (tx.oncomplete) tx.oncomplete(); }, 0);
+              storeData.delete(id);
+              setTimeout(complete, 0);
             }
           });
+          };
           return tx;
         }
       };
@@ -58,12 +126,13 @@ const sandbox = {
   sessionStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
   matchMedia: () => ({ matches: false, addEventListener: () => {}, removeEventListener: () => {} }),
   setInterval: () => 0,
+  clearInterval: () => {},
   setTimeout,
   clearTimeout,
   atob: (value) => Buffer.from(String(value), 'base64').toString('binary'),
   btoa: (value) => Buffer.from(String(value), 'binary').toString('base64'),
   Blob,
-  URL,
+  URL: TestURL,
   FormData: class {
     constructor() { this.fields = []; }
     append(key, value, filename) { this.fields.push([key, value, filename]); }
@@ -73,7 +142,7 @@ const sandbox = {
     }
     getAll(key) { return this.fields.filter((item) => item[0] === key).map((item) => item[1]); }
   },
-  fetch: async () => ({ blob: async () => new Blob(['x'], { type: 'image/png' }) }),
+  fetch: async () => imageResponse('x'),
   Image: class {
     set src(_) {
       setTimeout(() => {
@@ -93,6 +162,12 @@ const hooks = sandbox.window.__homepageV3TestHooks || {};
 ok(typeof hooks.normalizeRestoredTask === 'function', 'normalizeRestoredTask hook missing');
 ok(typeof hooks.collectImageCandidates === 'function', 'collectImageCandidates hook missing');
 ok(typeof hooks.collectGenerationResult === 'function', 'collectGenerationResult hook missing');
+ok(typeof hooks.postProcessTransparentImages === 'function', 'postProcessTransparentImages hook missing');
+ok(typeof hooks.compactAgentThreadMessages === 'function', 'compactAgentThreadMessages hook missing');
+ok(typeof hooks.compactAgentMessagesByThreadForStorage === 'function', 'compactAgentMessagesByThreadForStorage hook missing');
+ok(typeof hooks.persistAgentHistorySnapshots === 'function', 'persistAgentHistorySnapshots hook missing');
+ok(typeof hooks.hydrateAgentHistoryFromDb === 'function', 'hydrateAgentHistoryFromDb hook missing');
+ok(/agentHistoryPersistChain[\s\S]*\.then\(\(\) => performAgentHistoryPersist\(\)\)/.test(source), 'Agent archive writes should be serialized through one promise chain');
 ok(typeof hooks.persistResponseImages === 'function', 'persistResponseImages hook missing');
 ok(typeof hooks.imageInfoFromBlob === 'function', 'imageInfoFromBlob hook missing');
 ok(typeof hooks.resolveTaskProfile === 'function', 'resolveTaskProfile hook missing');
@@ -107,6 +182,7 @@ ok(typeof hooks.cloneReferenceSnapshots === 'function', 'cloneReferenceSnapshots
 ok(typeof hooks.taskCountInfo === 'function', 'taskCountInfo hook missing');
 ok(typeof hooks.renderReferenceBadge === 'function', 'renderReferenceBadge hook missing');
 ok(typeof hooks.renderTaskReferenceStrip === 'function', 'renderTaskReferenceStrip hook missing');
+ok(typeof hooks.editOutput === 'function', 'editOutput hook missing');
 ok(typeof hooks.captureAgentScrollAnchor === 'function', 'captureAgentScrollAnchor hook missing');
 ok(typeof hooks.restoreAgentScrollAnchor === 'function', 'restoreAgentScrollAnchor hook missing');
 ok(typeof hooks.freezeAgentScrollForRender === 'function', 'freezeAgentScrollForRender hook missing');
@@ -123,6 +199,20 @@ ok(typeof hooks.taskReferenceOriginalBlobId === 'function', 'taskReferenceOrigin
 ok(typeof hooks.cardParamSummary === 'function', 'cardParamSummary hook missing');
 ok(typeof hooks.renderImageContextMenu === 'function', 'renderImageContextMenu hook missing');
 ok(typeof hooks.galleryVirtualWindow === 'function', 'galleryVirtualWindow hook missing');
+ok(typeof hooks.galleryVirtualRangeChanged === 'function', 'galleryVirtualRangeChanged hook missing');
+ok(typeof hooks.promptRepoVirtualWindow === 'function', 'promptRepoVirtualWindow hook missing');
+ok(typeof hooks.render === 'function', 'render hook missing');
+ok(typeof hooks.captureFocusState === 'function', 'captureFocusState hook missing');
+ok(typeof hooks.restoreFocusState === 'function', 'restoreFocusState hook missing');
+ok(typeof hooks.topVisibleModal === 'function', 'topVisibleModal hook missing');
+ok(typeof hooks.syncModalAccessibility === 'function', 'syncModalAccessibility hook missing');
+ok(typeof hooks.consumeImageStream === 'function', 'consumeImageStream hook missing');
+ok(typeof hooks.fetchRemoteImageBlob === 'function', 'fetchRemoteImageBlob hook missing');
+ok(typeof hooks.hydrateBlobImage === 'function', 'hydrateBlobImage hook missing');
+ok(typeof hooks.rememberObjectUrl === 'function', 'rememberObjectUrl hook missing');
+ok(typeof hooks.mergeGenerationPartialErrors === 'function', 'mergeGenerationPartialErrors hook missing');
+ok(typeof hooks.runtimeRenderSignature === 'function', 'runtimeRenderSignature hook missing');
+ok(typeof hooks.updateRunningTimers === 'function', 'updateRunningTimers hook missing');
 ok(typeof hooks.maskCanvasHasPaint === 'function', 'maskCanvasHasPaint hook missing');
 ok(typeof hooks.setTestTasks === 'function', 'setTestTasks hook missing');
 ok(typeof hooks.shouldCloseModalFromClick === 'function', 'shouldCloseModalFromClick hook missing');
@@ -137,7 +227,9 @@ ok(typeof hooks.openAiSizePayload === 'function', 'openAiSizePayload hook missin
 ok(typeof hooks.googleOfficialImageSize === 'function', 'googleOfficialImageSize hook missing');
 ok(typeof hooks.summarizeResponse === 'function', 'summarizeResponse hook missing');
 ok(typeof hooks.consumeResponseTextStream === 'function', 'consumeResponseTextStream hook missing');
+ok(/req\.onblocked[\s\S]*setTimeout[\s\S]*旧标签页阻塞/.test(source), 'IndexedDB upgrade should fail fast with an actionable old-tab message when blocked');
 ok(typeof hooks.resolveResponsePayload === 'function', 'resolveResponsePayload hook missing');
+ok(typeof hooks.assertSuccessfulResponseTerminal === 'function', 'assertSuccessfulResponseTerminal hook missing');
 ok(typeof hooks.agentTextProfile === 'function', 'agentTextProfile hook missing');
 ok(typeof hooks.agentWebSearchSupported === 'function', 'agentWebSearchSupported hook missing');
 ok(typeof hooks.agentRequestTimeoutSeconds === 'function', 'agentRequestTimeoutSeconds hook missing');
@@ -154,6 +246,7 @@ ok(typeof hooks.renderSidebar === 'function', 'renderSidebar hook missing');
 ok(typeof hooks.renderPopover === 'function', 'renderPopover hook missing');
 ok(typeof hooks.agentImageParams === 'function', 'agentImageParams hook missing');
 ok(typeof hooks.agentImageSettings === 'function', 'agentImageSettings hook missing');
+ok(typeof hooks.initialAgentImageSettings === 'function', 'initialAgentImageSettings hook missing');
 ok(typeof hooks.createAgentThread === 'function', 'createAgentThread hook missing');
 ok(typeof hooks.deleteAgentThread === 'function', 'deleteAgentThread hook missing');
 ok(typeof hooks.handlePaste === 'function', 'handlePaste hook missing');
@@ -185,6 +278,25 @@ const restoredFromStaleError = hooks.normalizeRestoredTask({
 });
 ok(restoredFromStaleError.status === 'success', 'task with stale refresh-interrupted error and persisted images must restore as success');
 ok(restoredFromStaleError.error === '', 'stale refresh-interrupted error should be cleared when success evidence exists');
+
+const restoredTransparentFailure = hooks.normalizeRestoredTask({
+  id: 'task-transparent-postprocess-failed',
+  status: 'partial_success',
+  error: '透明背景后处理失败：1 张已保留上游原图',
+  errorDetail: '1. 透明背景后处理失败，已保留原图',
+  expectedCount: 1,
+  actualCount: 1,
+  transparentRequested: true,
+  transparentOutput: false,
+  transparentFailedCount: 1,
+  transparentPostProcessError: '透明背景后处理失败',
+  images: [{ blobId: 'opaque-original', width: 1024, height: 1024, transparent: false }],
+  returnedParams: { transparent: false, background: 'opaque' },
+  finishedAt: Date.now()
+});
+ok(restoredTransparentFailure.status === 'partial_success', 'transparent postprocess failure must remain partial_success after restore');
+ok(restoredTransparentFailure.transparentFailedCount === 1 && restoredTransparentFailure.images[0].transparent === false, 'transparent failure restore must preserve actual opaque result metadata');
+ok(/透明背景后处理失败/.test(restoredTransparentFailure.error) && restoredTransparentFailure.errorDetail, 'transparent failure restore must preserve its readable error');
 
   const restoredCompleteNano = hooks.normalizeRestoredTask({
   id: 'task-nano-two-success-refresh',
@@ -249,6 +361,63 @@ const interrupted = hooks.normalizeRestoredTask({
   error: ''
 });
 ok(interrupted.status === 'interrupted', 'running task without completion evidence should restore as interrupted');
+
+const sameGalleryWindow = { startIndex: 6, endIndex: 30 };
+ok(hooks.galleryVirtualRangeChanged(sameGalleryWindow, { renderedStartIndex: 6, renderedEndIndex: 30 }) === false, 'gallery virtual window should not rebuild when start/end are unchanged');
+ok(hooks.galleryVirtualRangeChanged(sameGalleryWindow, { renderedStartIndex: 3, renderedEndIndex: 30 }) === true, 'gallery virtual window should rebuild when its range changes');
+
+hooks.setTestState({ promptRepo: { scrollTop: 900, viewportHeight: 620, virtualLayout: null } });
+const estimatedPromptWindow = hooks.promptRepoVirtualWindow(180);
+ok(estimatedPromptWindow.shouldVirtualize === true && estimatedPromptWindow.endIndex - estimatedPromptWindow.startIndex <= 60, 'large prompt repositories should stay bounded with an estimated layout before measurement');
+hooks.setTestState({ promptRepo: { virtualLayout: { columns: 3, rowPitch: 287, viewportWidth: 1280 } } });
+const measuredPromptWindow = hooks.promptRepoVirtualWindow(180);
+ok(measuredPromptWindow.shouldVirtualize === true, 'prompt repository should virtualize after a reliable layout measurement');
+ok(measuredPromptWindow.topPad % 287 === 0 && measuredPromptWindow.bottomPad % 287 === 0, 'prompt virtual spacers should use the measured row pitch');
+
+const mergedTransparentErrors = hooks.mergeGenerationPartialErrors(
+  [{ summary: '上游单张失败', detail: 'provider failure' }],
+  'alpha cleanup failed'
+);
+ok(mergedTransparentErrors.length === 2, 'transparent post-process failure should merge with existing partial errors');
+ok(mergedTransparentErrors[1].stage === 'transparent-postprocess', 'transparent post-process failure should keep a dedicated stage');
+
+const runtimeSignature = hooks.runtimeRenderSignature();
+ok(runtimeSignature === hooks.runtimeRenderSignature(), 'unchanged runtime state should keep a stable render signature');
+hooks.setTestState({ activeProfileId: 'runtime-signature-change' });
+ok(runtimeSignature !== hooks.runtimeRenderSignature(), 'runtime render signature should change when visible configuration changes');
+
+const lruMap = new Map();
+const lruUrl1 = TestURL.createObjectURL(new Blob(['1']));
+const lruUrl2 = TestURL.createObjectURL(new Blob(['2']));
+const lruUrl3 = TestURL.createObjectURL(new Blob(['3']));
+const revokedBeforeLru = revokedObjectUrls.length;
+hooks.rememberObjectUrl(lruMap, 'one', lruUrl1, 2);
+hooks.rememberObjectUrl(lruMap, 'two', lruUrl2, 2);
+hooks.rememberObjectUrl(lruMap, 'three', lruUrl3, 2);
+ok(lruMap.size === 2 && !lruMap.has('one'), 'object URL cache should evict the oldest entry at its limit');
+ok(revokedObjectUrls.length === revokedBeforeLru + 1 && revokedObjectUrls.at(-1) === lruUrl1, 'object URL cache eviction should revoke the evicted URL');
+for (const url of lruMap.values()) TestURL.revokeObjectURL(url);
+
+const originalQuerySelector = sandbox.document.querySelector;
+sandbox.document.hidden = true;
+sandbox.document.querySelector = () => { throw new Error('hidden page timer scanned the DOM'); };
+try {
+  hooks.updateRunningTimers();
+  ok(true, 'hidden page timer should skip task scanning');
+} catch {
+  ok(false, 'hidden page timer should skip task scanning');
+}
+sandbox.document.querySelector = originalQuerySelector;
+sandbox.document.hidden = false;
+
+ok(!source.includes('schedulePromptSearchWarmup(12000)'), 'homepage should not preload the 5.9MB prompt search index after 12 seconds without intent');
+ok(source.includes("window.addEventListener('pagehide', revokeAllObjectUrls)"), 'pagehide should revoke all cached object URLs');
+ok(source.includes('const changed = await loadRuntime({ preserveComposerSession: true });') && source.includes('if (changed) render();'), 'focus/pageshow runtime refresh should render only after an actual configuration change');
+ok(source.includes('if (document.hidden) return;') && source.includes('clearInterval(runningTimerInterval)'), 'hidden pages should stop the running-task timer scan');
+ok(source.includes('data-modal-key="workflow-editor"') && source.includes('aria-labelledby="workflowEditorTitle"'), 'workflow editor should expose labelled modal dialog semantics');
+ok(source.includes('data-modal-key="workflow-invoke"') && source.includes('aria-labelledby="workflowInvokeTitle"'), 'workflow invoke should expose labelled modal dialog semantics');
+ok(source.includes('data-modal-key="prompt-repo"') && source.includes('data-modal-key="prompt-detail"') && source.includes('data-modal-key="prompt-viewer"'), 'prompt repository modal stack should expose stable modal keys');
+ok(source.includes("document.addEventListener('focusin'") && source.includes('function syncModalAccessibility()'), 'modal focus should be pulled back to the explicit top-level dialog');
 
 const candidates = hooks.collectImageCandidates({
   data: [{ b64_json: 'aaa' }, { b64_json: 'bbb' }],
@@ -634,6 +803,10 @@ if (typeof hooks.openAiSizePayload === 'function') {
   const virtualWindow = hooks.galleryVirtualWindow(300);
   ok(virtualWindow.shouldVirtualize === true, 'large gallery should use virtualized rendering');
   ok(virtualWindow.endIndex - virtualWindow.startIndex < 90, 'virtual gallery should render only a bounded window of cards');
+  const originalViewportWidth = sandbox.window.innerWidth;
+  sandbox.window.innerWidth = 1150;
+  ok(hooks.galleryVirtualWindow(300).columns === 2, 'gallery virtualization must match the CSS two-column breakpoint through 1180px');
+  sandbox.window.innerWidth = originalViewportWidth;
   const agentLogForAnchor = {
     scrollTop: 400,
     clientHeight: 600,
@@ -792,10 +965,12 @@ if (typeof hooks.openAiSizePayload === 'function') {
   const googlePngForm = capturedRequest?.options?.body;
   ok(String(googlePngForm.get('transparent_background')) === 'true', 'Google png reference FormData should include selected transparent background value');
   ok(googlePngForm.get('output_compression') === null, 'Google png reference FormData should not include compression');
-  ok(hooks.imageOutputParams({ format: 'png', transparent: true }).background === 'transparent', 'transparent png output params should include official OpenAI background=transparent');
-  ok(hooks.imageOutputParams({ format: 'png', transparent: false }).background === 'auto', 'opaque png output params should include background=auto');
-  ok(hooks.openAiTransparentBackgroundSupported({ provider: 'openai', model: 'gpt-image-2' }) === true, 'gpt-image-2 OpenAI-compatible profiles should allow transparent background gateway requests');
-  ok(hooks.openAiTransparentBackgroundSupported({ provider: 'openai', model: 'gpt-image-1' }) === true, 'supported OpenAI image models should allow transparent background requests');
+  const defaultOpenAiOutput = hooks.imageOutputParams({ format: 'png', transparent: true }, { provider: 'openai', model: 'gpt-image-2' });
+  ok(!Object.prototype.hasOwnProperty.call(defaultOpenAiOutput, 'background') && !Object.prototype.hasOwnProperty.call(defaultOpenAiOutput, 'transparent_background'), 'default OpenAI-compatible gpt-image-2 requests should omit native transparency fields');
+  const nativeOpenAiOutput = hooks.imageOutputParams({ format: 'png', transparent: true }, { provider: 'openai', model: 'gpt-image-2', supportsNativeTransparency: true });
+  ok(nativeOpenAiOutput.background === 'transparent' && nativeOpenAiOutput.transparent_background === true, 'OpenAI native transparency fields should require an explicit profile capability');
+  ok(hooks.openAiTransparentBackgroundSupported({ provider: 'openai', model: 'gpt-image-2' }) === false, 'gpt-image-2 OpenAI-compatible profiles should not assume native transparency support');
+  ok(hooks.openAiTransparentBackgroundSupported({ provider: 'openai', model: 'gpt-image-2', supportsNativeTransparency: true }) === true, 'explicit OpenAI native transparency capability should be honored');
   ok(hooks.openAiTransparentBackgroundSupported({ provider: 'google', model: 'gemini-3.1-flash-image-preview' }) === false, 'Google/Nano profiles should not claim OpenAI transparent-background support');
   ok(hooks.openAiTransparentBackgroundSupported({ provider: 'xai', model: 'grok-imagine-image-pro' }) === false, 'Xai/Grok profiles should not claim OpenAI transparent-background support');
 
@@ -817,7 +992,8 @@ if (typeof hooks.openAiSizePayload === 'function') {
   hooks.removeKeyedBackgroundFromPixels(magentaPixels, 3, 3, '#FF00FF');
   ok(magentaPixels[3] === 0 && magentaPixels[19] === 255, 'magenta key background should become transparent while green subject remains opaque');
 
-  await hooks.sendGenerationRequest('openai transparent png generation', {
+  const visibleTransparentPrompt = 'openai transparent png generation';
+  await hooks.sendGenerationRequest(visibleTransparentPrompt, {
     resolution: '1K',
     aspectRatio: '1:1',
     quality: 'high',
@@ -830,13 +1006,28 @@ if (typeof hooks.openAiSizePayload === 'function') {
     references: []
   });
   const openAiTransparentBody = JSON.parse(capturedRequest?.options?.body || '{}');
-  ok(openAiTransparentBody.background === 'transparent', 'OpenAI/gpt-image2 transparent png request should include background=transparent');
-  ok(openAiTransparentBody.transparent_background === true, 'OpenAI/gpt-image2 transparent png request should preserve legacy transparent_background=true for SkyAPI compatibility');
+  ok(!Object.prototype.hasOwnProperty.call(openAiTransparentBody, 'background'), 'OpenAI/gpt-image2 should omit native background by default');
+  ok(!Object.prototype.hasOwnProperty.call(openAiTransparentBody, 'transparent_background'), 'OpenAI/gpt-image2 should omit native transparent_background by default');
   ok(openAiTransparentBody.prompt.includes('openai transparent png generation') && openAiTransparentBody.prompt.includes('#00FF00'), 'transparent mode should use an internal chroma-key effective prompt');
+  ok(visibleTransparentPrompt === 'openai transparent png generation', 'internal chroma-key prompt handling should not mutate the user-visible prompt value');
   ok(hooks.promptWithCanvasConstraint('主体贴纸', 'openai', { format: 'png', transparent: true }).includes('#00FF00'), 'transparent helper should build an internal chroma-key prompt');
   ok(hooks.promptWithCanvasConstraint('主体贴纸', 'openai', { format: 'png', transparent: false }) === '主体贴纸', 'opaque prompt helper should preserve the user prompt exactly');
   const transparentParams = hooks.getTransparentRequestParams({ output_format: 'jpeg', output_compression: 80, transparent: true });
   ok(transparentParams.output_format === 'png' && transparentParams.output_compression === null && transparentParams.transparent_background === true, 'transparent params should force PNG without compression');
+
+  await hooks.sendGenerationRequest('openai native transparent generation', {
+    resolution: '1K',
+    aspectRatio: '1:1',
+    quality: 'high',
+    format: 'png',
+    transparent: true,
+    count: 1
+  }, {
+    profile: { id: 'openai-native', name: 'Native transparency gateway', provider: 'openai', apiMode: 'images', model: 'gpt-image-2', supportsNativeTransparency: true },
+    references: []
+  });
+  const nativeTransparentBody = JSON.parse(capturedRequest?.options?.body || '{}');
+  ok(nativeTransparentBody.background === 'transparent' && nativeTransparentBody.transparent_background === true, 'explicit OpenAI native transparency capability should send gateway fields');
 
   await hooks.sendGenerationRequest('openai reference edit', {
     resolution: '2K',
@@ -1003,12 +1194,20 @@ if (typeof hooks.openAiSizePayload === 'function') {
     maxActiveFetches = Math.max(maxActiveFetches, activeFetches);
     await new Promise((resolve) => setTimeout(resolve, 15));
     activeFetches -= 1;
-    return { blob: async () => new Blob(['remote-image'], { type: 'image/png' }) };
+    return imageResponse('remote-image');
   };
   const remotePersisted = await hooks.persistResponseImages({ data: [{ url: 'https://example.com/a.png' }, { url: 'https://example.com/b.png' }] });
   sandbox.fetch = originalFetch;
   ok(remotePersisted.length === 2, 'persistResponseImages should persist both remote URL images');
   ok(maxActiveFetches > 1, 'persistResponseImages should download multiple remote images concurrently');
+
+  sandbox.fetch = async () => imageResponse('not found', 'image/png', false);
+  ok(await hooks.fetchRemoteImageBlob('https://example.com/not-found.png') === null, 'remote image persistence should reject non-ok responses');
+  sandbox.fetch = async () => imageResponse('<html>not an image</html>', 'text/html', true);
+  ok(await hooks.fetchRemoteImageBlob('https://example.com/not-image') === null, 'remote image persistence should reject non-image Content-Type');
+  sandbox.fetch = async () => imageResponse('', 'image/png', true);
+  ok(await hooks.fetchRemoteImageBlob('https://example.com/empty.png') === null, 'remote image persistence should reject empty blobs');
+  sandbox.fetch = originalFetch;
 
   const inlineUrlImages = await hooks.persistResponseImages({
     data: [
@@ -1126,6 +1325,7 @@ if (typeof hooks.openAiSizePayload === 'function') {
     textProfile: strictTextProfile
   });
   ok(Array.isArray(payload.tools) && payload.tools.length === 1 && payload.tools[0].type === 'web_search', 'supported Agent web search request should send official Responses web_search tools');
+  ok(payload.stream === true, 'Agent Responses payload should explicitly request streaming');
   ok(typeof payload.currentBeijingTime === 'string' && /北京时间/.test(payload.currentBeijingTime), 'Agent payload should inject current Beijing time context');
   ok(payload.currentModelSlug === 'gpt-5.4-mini', 'Agent payload should expose the actual model slug');
   ok(payload.webSearchEnabled === true, 'Agent payload should expose the runtime web search state');
@@ -1135,6 +1335,25 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(String(payload.instructions || '').includes('默认只输出 1 个可直接使用的推荐 Prompt'), 'Agent payload should allow concise single-prompt image replies');
   ok(String(payload.instructions || '').includes('先追问，最多 3 个问题'), 'Agent payload should ask clarifying questions before prompting when requirements are incomplete');
   ok(String(payload.input || '').includes('当前北京时间') && String(payload.input || '').includes('当前文本模型 slug'), 'Agent payload input should mention Beijing time and actual model slug');
+  const workflowAgentPayload = hooks.buildWorkflowAgentRequestPayload('规划工作流', {
+    project: { id: 'project-1', name: '测试项目', prompt: '项目提示词' },
+    textProfile: strictTextProfile,
+    mode: 'planner'
+  });
+  ok(workflowAgentPayload.stream === true, 'Workflow Agent Responses payload should explicitly request streaming');
+  const fetchBeforeAgentPost = sandbox.fetch;
+  let postedAgentBody = null;
+  sandbox.fetch = async (_url, options = {}) => {
+    postedAgentBody = JSON.parse(options.body || '{}');
+    return {
+      ok: true,
+      headers: { get: () => 'application/json' },
+      text: async () => JSON.stringify({ status: 'completed', output_text: 'ok' })
+    };
+  };
+  await hooks.postAgentResponsesRequest({ model: strictTextProfile.model, input: 'test', stream: false }, strictTextProfile);
+  sandbox.fetch = fetchBeforeAgentPost;
+  ok(postedAgentBody?.stream === true, 'Agent Responses network boundary should force stream=true even if a caller passes false');
   const longAgentImageReply = '可以。先说明一点：我不能直接复刻角色。你可以直接用下面提示词生成： **中文提示词：** 一只原创的蓝色圆脸机器猫风格角色，手里抱着几枚金黄色圆形甜点，神情慌张，正在快速奔跑；后方一个原创的瘦弱男孩角色戴着圆框眼镜，穿简单休闲服，表情着急，正追赶前面的机器猫角色。整体构图有强烈的追逐动感，日系动画风，线条干净，色彩明亮，2D 插画，完整人物，全身，居中构图，透明背景，PNG，背景留空，无场景无地面无道具杂物。 **负面提示词：** 不要直接使用已有角色形象，不要版权角色，不要真实背景，不要街道。 如果你想，我还可以继续输出 Midjourney 版。';
   const extractedAgentPrompt = hooks.extractImagePromptFromAgentText(longAgentImageReply);
   ok(extractedAgentPrompt.includes('一只原创的蓝色圆脸机器猫风格角色'), 'Agent image prompt extraction should keep the labeled prompt body');
@@ -1303,6 +1522,7 @@ if (typeof hooks.openAiSizePayload === 'function') {
     history: []
   });
   ok(typeof plainAgentPayload.input === 'string', 'Agent payload without attachments should keep string input for compatibility');
+  ok(plainAgentPayload.stream === true, 'plain Agent payload should explicitly include stream=true');
   const multimodalAgentPayload = hooks.buildAgentRequestPayload('看这张图', {
     project: { name: '测试项目', prompt: '' },
     textProfile: { id: 'text', model: 'gpt-5.5', provider: 'openai', apiMode: 'responses' },
@@ -1312,6 +1532,231 @@ if (typeof hooks.openAiSizePayload === 'function') {
     attachmentImageParts: [{ type: 'input_image', image_url: 'data:image/png;base64,abc' }]
   });
   ok(Array.isArray(multimodalAgentPayload.input) && multimodalAgentPayload.input[0].content.some((part) => part.type === 'input_image'), 'Agent payload with image attachments should use Responses multimodal content');
+  ok(multimodalAgentPayload.stream === true, 'multimodal Agent payload should explicitly include stream=true');
+
+  const streamFrames = Array.from({ length: 30 }, (_, index) => Buffer.from(`frame-${index}`).toString('base64'));
+  const imageStreamText = Array.from({ length: 30 }, (_, index) => {
+    const separator = index % 2 ? '\n\n' : '\r\n\r\n';
+    return `data: ${JSON.stringify({
+      type: 'image_generation.partial_image',
+      output_index: 0,
+      partial_image_index: index,
+      b64_json: streamFrames[index]
+    })}${separator}`;
+  }).join('') + 'data: [DONE]\r\n\r\n';
+  const encodedImageStream = new TextEncoder().encode(imageStreamText);
+  const imageStreamChunks = [];
+  for (let offset = 0; offset < encodedImageStream.length; offset += 17) imageStreamChunks.push(encodedImageStream.slice(offset, offset + 17));
+  const imageStreamResponse = {
+    body: {
+      getReader() {
+        let index = 0;
+        return {
+          read: async () => index < imageStreamChunks.length
+            ? { value: imageStreamChunks[index++], done: false }
+            : { value: undefined, done: true }
+        };
+      }
+    }
+  };
+  const partialStreamUrls = [];
+  const imageStreamPayload = await hooks.consumeImageStream(
+    imageStreamResponse,
+    (url) => partialStreamUrls.push(url)
+  );
+  const imageStreamJson = JSON.stringify(imageStreamPayload);
+  ok(!streamFrames.some((frame) => imageStreamJson.includes(frame)), 'consumeImageStream should not retain base64 image payloads');
+  ok(imageStreamPayload.streamEvents.length === 24 && imageStreamPayload.streamEventCount === 30, 'consumeImageStream should retain only bounded event metadata plus the total event count');
+  ok(imageStreamPayload.data.length === 1 && /^blob:/.test(imageStreamPayload.data[0].url), 'partial_images for one output should collapse to one final artwork');
+  ok(partialStreamUrls.length === 30 && partialStreamUrls.at(-1) === imageStreamPayload.data[0].url, 'stream preview callback should receive every latest preview while final data keeps only the newest frame');
+  ok(await createdObjectUrlBlobs.get(imageStreamPayload.data[0].url)?.text() === 'frame-29', 'consumeImageStream should retain the latest frame for each output index');
+  ok(partialStreamUrls.slice(0, -1).every((url) => revokedObjectUrls.includes(url)), 'replaced partial frames should be revoked immediately');
+  const streamRevokedBeforePersist = revokedObjectUrls.length;
+  const fetchBeforeStreamPersist = sandbox.fetch;
+  sandbox.fetch = async () => imageResponse('streamed-image');
+  const persistedStreamImages = await hooks.persistResponseImages(imageStreamPayload);
+  sandbox.fetch = fetchBeforeStreamPersist;
+  ok(persistedStreamImages.length === 1, 'streamed Blob URL should remain persistable as an image result');
+  ok(revokedObjectUrls.length === streamRevokedBeforePersist + 1, 'persisting a streamed image should revoke its temporary Blob URL');
+
+  const twoOutputStreamText = [
+    { output_index: 0, partial_image_index: 0, b64_json: Buffer.from('output-0-partial').toString('base64') },
+    { output_index: 1, partial_image_index: 0, b64_json: Buffer.from('output-1-partial').toString('base64') },
+    { output_index: 0, partial_image_index: 1, b64_json: Buffer.from('output-0-final').toString('base64') },
+    { output_index: 1, partial_image_index: 1, b64_json: Buffer.from('output-1-final').toString('base64') }
+  ].map((event) => `data: ${JSON.stringify({ type: 'image_generation.partial_image', ...event })}`).join('\n\n');
+  const twoOutputPayload = await hooks.consumeImageStream(new Response(new TextEncoder().encode(twoOutputStreamText)));
+  ok(twoOutputPayload.data.length === 2, 'image stream should retain one final artwork per output index');
+  const twoOutputTexts = await Promise.all(twoOutputPayload.data.map((item) => createdObjectUrlBlobs.get(item.url)?.text()));
+  ok(twoOutputTexts.join('|') === 'output-0-final|output-1-final', 'each output index should retain only its latest final frame');
+  sandbox.fetch = async () => imageResponse('streamed-image');
+  await hooks.persistResponseImages(twoOutputPayload);
+  sandbox.fetch = fetchBeforeStreamPersist;
+
+  for (const terminalType of ['failed', 'incomplete', 'cancelled']) {
+    const terminalUrlStart = createdObjectUrls.length;
+    const terminalRevokeStart = revokedObjectUrls.length;
+    const terminalStreamText = [
+      `data: ${JSON.stringify({
+        type: 'image_generation.partial_image',
+        output_index: 0,
+        b64_json: Buffer.from(`partial-${terminalType}`).toString('base64')
+      })}`,
+      `data: ${JSON.stringify({
+        type: `response.${terminalType}`,
+        response: {
+          status: terminalType,
+          incomplete_details: terminalType === 'incomplete' ? { reason: 'max_output_tokens' } : undefined
+        },
+        error: terminalType === 'failed' ? { message: 'upstream image failed' } : undefined
+      })}`
+    ].join('\n\n');
+    await hooks.consumeImageStream(new Response(new TextEncoder().encode(terminalStreamText))).then(
+      () => ok(false, `image ${terminalType} stream should reject after a partial image`),
+      (err) => ok(
+        new RegExp(terminalType === 'failed' ? 'upstream image failed|failed' : terminalType === 'incomplete' ? 'max_output_tokens|incomplete' : 'cancelled', 'i').test(String(err?.message || err)),
+        `image ${terminalType} stream should expose its terminal failure`
+      )
+    );
+    const terminalUrls = createdObjectUrls.slice(terminalUrlStart);
+    const terminalRevoked = revokedObjectUrls.slice(terminalRevokeStart);
+    ok(terminalUrls.length === 1 && terminalRevoked.includes(terminalUrls[0]), `image ${terminalType} stream should revoke its temporary partial image URL`);
+  }
+
+  let abnormalReaderCancelled = false;
+  const abnormalStreamText = `data: ${JSON.stringify({
+    type: 'image_generation.partial_image',
+    output_index: 0,
+    b64_json: Buffer.from('callback-error-partial').toString('base64')
+  })}\n\n`;
+  const abnormalBytes = new TextEncoder().encode(abnormalStreamText);
+  let abnormalRead = false;
+  await hooks.consumeImageStream({
+    body: {
+      getReader: () => ({
+        read: async () => {
+          if (abnormalRead) return { done: true };
+          abnormalRead = true;
+          return { value: abnormalBytes, done: false };
+        },
+        cancel: async () => { abnormalReaderCancelled = true; }
+      })
+    }
+  }, () => {
+    throw new Error('preview callback failed');
+  }).then(
+    () => ok(false, 'image stream callback failure should reject'),
+    (err) => ok(/preview callback failed/.test(String(err?.message || err)), 'image stream callback failure should preserve the original error')
+  );
+  ok(abnormalReaderCancelled, 'image stream abnormal failure should cancel the upstream reader');
+
+  async function expectOversizedImageStreamRejected(chunks, label) {
+    const urlStart = createdObjectUrls.length;
+    const revokeStart = revokedObjectUrls.length;
+    let readIndex = 0;
+    let cancelled = false;
+    await hooks.consumeImageStream({
+      body: {
+        getReader: () => ({
+          read: async () => readIndex < chunks.length
+            ? { value: chunks[readIndex++], done: false }
+            : { value: undefined, done: true },
+          cancel: async () => { cancelled = true; }
+        })
+      }
+    }).then(
+      () => ok(false, `${label} should reject before retaining an oversized SSE payload`),
+      (err) => ok(/安全上限|过大|too large/i.test(String(err?.message || err)), `${label} should report its stream safety limit`)
+    );
+    const created = createdObjectUrls.slice(urlStart);
+    const revoked = revokedObjectUrls.slice(revokeStart);
+    ok(cancelled, `${label} should cancel the upstream reader`);
+    ok(created.length === 1 && revoked.includes(created[0]), `${label} should revoke the temporary partial-image URL`);
+  }
+
+  const oversizedImagePartial = new TextEncoder().encode(`data: ${JSON.stringify({
+    type: 'image_generation.partial_image',
+    output_index: 0,
+    b64_json: Buffer.from('oversized-image-partial').toString('base64')
+  })}\n\n`);
+  const fourMbImageEventHead = new TextEncoder().encode(`data: ${'x'.repeat(4 * 1024 * 1024 - 6)}`);
+  const fourMbImageEventTail = new Uint8Array(4 * 1024 * 1024).fill(120);
+  await expectOversizedImageStreamRejected(
+    [oversizedImagePartial, fourMbImageEventHead, ...Array(7).fill(fourMbImageEventTail), new Uint8Array([120])],
+    'image stream with an unterminated event over 32MB'
+  );
+  await expectOversizedImageStreamRejected(
+    [oversizedImagePartial, new Uint8Array(32 * 1024 * 1024 + 1).fill(120)],
+    'image stream with a single reader chunk over 32MB'
+  );
+
+  const missingTransparentResult = await hooks.postProcessTransparentImages([
+    { blobId: 'missing-transparent-blob', width: 1024, height: 1024, type: 'image/png' }
+  ]);
+  ok(missingTransparentResult.processedCount === 0 && missingTransparentResult.failedCount === 1, 'transparent postprocess should report a missing source blob as a failed image');
+  ok(missingTransparentResult.images[0].blobId === 'missing-transparent-blob' && missingTransparentResult.images[0].transparent === false, 'transparent postprocess failure should preserve the opaque original image');
+  ok(!missingTransparentResult.images[0].transparentSource, 'transparent postprocess failure should not claim a transparent source');
+  const reservationStorage = new Map();
+  sandbox.localStorage.getItem = (key) => reservationStorage.get(key) || null;
+  sandbox.localStorage.setItem = (key, value) => reservationStorage.set(key, String(value));
+  sandbox.localStorage.removeItem = (key) => reservationStorage.delete(key);
+  sandbox.localStorage.key = (index) => [...reservationStorage.keys()][index] || null;
+  Object.defineProperty(sandbox.localStorage, 'length', {
+    configurable: true,
+    get: () => reservationStorage.size
+  });
+  await hooks.putBlob(new Blob(['reserved'], { type: 'image/png' }), 'cleanup-race-reserved');
+  await hooks.cleanupOrphanBlobs();
+  ok(fakeIndexedDbStore.has('cleanup-race-reserved'), 'orphan cleanup must preserve a newly written blob until its state reference can be committed');
+  fakeIndexedDbStore.delete('cleanup-race-reserved');
+  const reservationPrefix = 'gpt-image2.home.v3.blob-reservations.';
+  await hooks.putBlob(new Blob(['tab-a'], { type: 'image/png' }), 'reservation-tab-a');
+  fakeIndexedDbStore.set('reservation-tab-b', new Blob(['tab-b'], { type: 'image/png' }));
+  reservationStorage.set(`${reservationPrefix}reservation-tab-b`, String(Date.now() + 60_000));
+  await hooks.putBlob(new Blob(['tab-c'], { type: 'image/png' }), 'reservation-tab-c');
+  ok(
+    ['reservation-tab-a', 'reservation-tab-b', 'reservation-tab-c']
+      .every((id) => reservationStorage.has(`${reservationPrefix}${id}`)),
+    'per-blob reservations from multiple tabs must coexist without an aggregate localStorage overwrite'
+  );
+  await hooks.cleanupOrphanBlobs();
+  ok(
+    ['reservation-tab-a', 'reservation-tab-b', 'reservation-tab-c'].every((id) => fakeIndexedDbStore.has(id)),
+    'orphan cleanup must preserve every independently reserved cross-tab blob'
+  );
+  for (const id of ['reservation-tab-a', 'reservation-tab-b', 'reservation-tab-c']) {
+    fakeIndexedDbStore.delete(id);
+    reservationStorage.delete(`${reservationPrefix}${id}`);
+  }
+
+  if (typeof hooks.hydrateBlobImage === 'function') {
+    fakeIndexedDbStore.set('hydrate-detached-blob', new Blob(['detached'], { type: 'image/png' }));
+    const detachedImg = { isConnected: true, dataset: { blobId: 'hydrate-detached-blob' }, src: '' };
+    const detachedHydration = hooks.hydrateBlobImage(detachedImg, 'hydrate-detached-blob');
+    detachedImg.isConnected = false;
+    await detachedHydration;
+    ok(detachedImg.src === '', 'hydrateBlobImage must not assign a Blob URL after the target image is detached');
+
+    fakeIndexedDbStore.set('hydrate-retargeted-blob', new Blob(['retargeted'], { type: 'image/png' }));
+    const retargetedImg = { isConnected: true, dataset: { blobId: 'hydrate-retargeted-blob' }, src: '' };
+    const retargetedHydration = hooks.hydrateBlobImage(retargetedImg, 'hydrate-retargeted-blob');
+    retargetedImg.dataset.blobId = 'new-blob-target';
+    await retargetedHydration;
+    ok(retargetedImg.src === '', 'hydrateBlobImage must not assign a stale Blob URL after the image is retargeted');
+
+    fakeIndexedDbStore.set('hydrate-shared-blob', new Blob(['shared'], { type: 'image/png' }));
+    const firstSharedImg = { isConnected: true, dataset: { blobId: 'hydrate-shared-blob' }, src: '' };
+    const secondSharedImg = { isConnected: true, dataset: { blobId: 'hydrate-shared-blob' }, src: '' };
+    const sharedUrlStart = createdObjectUrls.length;
+    await Promise.all([
+      hooks.hydrateBlobImage(firstSharedImg, 'hydrate-shared-blob'),
+      hooks.hydrateBlobImage(secondSharedImg, 'hydrate-shared-blob')
+    ]);
+    const sharedUrls = createdObjectUrls.slice(sharedUrlStart);
+    ok(sharedUrls.length === 1, 'concurrent hydrateBlobImage calls must recheck the cache after await and create one object URL per blob');
+    ok(firstSharedImg.src && firstSharedImg.src === secondSharedImg.src, 'concurrent hydrateBlobImage targets should share the same live cached object URL');
+    ok(!revokedObjectUrls.includes(firstSharedImg.src), 'hydrateBlobImage must not leave an image pointing at an object URL revoked by a concurrent hydration');
+  }
 
   const sseText = [
     'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"你好"}',
@@ -1321,10 +1766,272 @@ if (typeof hooks.openAiSizePayload === 'function') {
   const sseResponse = new Response(new TextEncoder().encode(sseText), { headers: { 'Content-Type': 'text/event-stream' } });
   const ssePayload = await hooks.consumeResponseTextStream(sseResponse);
   ok(ssePayload.output_text === '你好，已收到。', 'Agent should consume Responses SSE text deltas');
+  const manyAgentEvents = Array.from({ length: 60 }, (_, index) => `data: ${JSON.stringify({ type: 'response.output_text.delta', delta: 'x', sequence_number: index })}`).join('\n\n');
+  const manyAgentPayload = await hooks.consumeResponseTextStream(new Response(new TextEncoder().encode(manyAgentEvents)));
+  ok(manyAgentPayload.output_text.length === 60, 'Agent stream should preserve bounded response text');
+  ok(manyAgentPayload.streamEvents.length === 24 && manyAgentPayload.streamEventCount === 60, 'Agent stream should retain only bounded event metadata plus total count');
+  ok(!JSON.stringify(manyAgentPayload.streamEvents).includes('sequence_number'), 'Agent stream metadata should not retain complete delta payloads');
+  const oversizedAgentMessages = Array.from({ length: 320 }, (_, index) => ({
+    id: `history-${index}`,
+    role: index % 2 ? 'assistant' : 'user',
+    text: `message-${index}-${'x'.repeat(4096)}`,
+    createdAt: index
+  }));
+  const compactedAgentMessages = hooks.compactAgentThreadMessages(oversizedAgentMessages);
+  ok(compactedAgentMessages.length < oversizedAgentMessages.length && compactedAgentMessages.length <= 240, 'Agent thread persistence should enforce message-count and character budgets');
+  ok(compactedAgentMessages.at(-1)?.id === 'history-319', 'Agent thread compaction should preserve the newest messages');
+  const compactedAgentThreads = hooks.compactAgentMessagesByThreadForStorage({
+    old: oversizedAgentMessages.map((message) => ({ ...message, createdAt: message.createdAt })),
+    recent: oversizedAgentMessages.map((message) => ({ ...message, id: `recent-${message.id}`, createdAt: message.createdAt + 1000 }))
+  });
+  ok(JSON.stringify(compactedAgentThreads).length < 1700 * 1024, 'Agent persisted history should stay within a bounded total storage budget');
+  const strictSingleMessageBudget = hooks.compactAgentThreadMessages([{
+    id: 'single-huge-message',
+    role: 'assistant',
+    text: 'x'.repeat(2 * 1024 * 1024),
+    promptOptions: Array.from({ length: 5 }, (_, index) => ({ index: index + 1, prompt: 'p'.repeat(256 * 1024) }))
+  }]);
+  ok(JSON.stringify(strictSingleMessageBudget).length <= 512 * 1024, 'A single oversized Agent message must not bypass the localStorage thread budget');
+
+  const archiveState = hooks.getTestState();
+  const archiveProjectId = archiveState.agent.activeProjectId;
+  const archiveThreadId = archiveState.agent.activeThreadIdByProject[archiveProjectId];
+  const archiveMessages = Array.from({ length: 300 }, (_, index) => ({
+    id: `archive-${index}`,
+    threadId: archiveThreadId,
+    projectId: archiveProjectId,
+    role: index % 2 ? 'assistant' : 'user',
+    text: `archived message ${index}`,
+    createdAt: index + 1
+  }));
+  hooks.setTestState({ agent: { messagesByThread: { ...archiveState.agent.messagesByThread, [archiveThreadId]: archiveMessages } } });
+  await hooks.persistAgentHistorySnapshots();
+  const archivedStore = fakeIndexedDbStores.get('agentThreads');
+  const remoteOnlyMessage = {
+    id: 'archive-remote-only',
+    threadId: archiveThreadId,
+    projectId: archiveProjectId,
+    role: 'assistant',
+    text: 'remote tab message',
+    createdAt: 1001
+  };
+  archivedStore.set(archiveThreadId, {
+    ...archivedStore.get(archiveThreadId),
+    messages: [...archiveMessages, remoteOnlyMessage],
+    updatedAt: 1001,
+    revision: 2
+  });
+  await hooks.persistAgentHistorySnapshots();
+  ok(archivedStore.get(archiveThreadId).messages.some((message) => message.id === remoteOnlyMessage.id), 'unchanged local Agent state must not overwrite a newer cross-tab archive');
+  hooks.setTestState({ agent: { messagesByThread: { ...archiveState.agent.messagesByThread, [archiveThreadId]: archiveMessages.slice(-5) } } });
+  await hooks.hydrateAgentHistoryFromDb();
+  ok(hooks.getTestState().agent.messagesByThread[archiveThreadId].length === 301, 'IndexedDB Agent archive should restore history beyond the bounded localStorage hot window without losing cross-tab messages');
+  const remotelyCompletedMessages = archivedStore.get(archiveThreadId).messages.map((message) => (
+    message.id === 'archive-0' ? { ...message, text: 'remote completed message', pending: false } : message
+  ));
+  archivedStore.set(archiveThreadId, {
+    ...archivedStore.get(archiveThreadId),
+    messages: remotelyCompletedMessages,
+    updatedAt: 1050,
+    revision: 3
+  });
+  const localConcurrentMessage = {
+    id: 'archive-local-concurrent',
+    threadId: archiveThreadId,
+    projectId: archiveProjectId,
+    role: 'user',
+    text: 'local append while remote updates an existing message',
+    createdAt: 1060
+  };
+  hooks.setTestState({
+    agent: {
+      messagesByThread: {
+        ...hooks.getTestState().agent.messagesByThread,
+        [archiveThreadId]: [...hooks.getTestState().agent.messagesByThread[archiveThreadId], localConcurrentMessage]
+      }
+    }
+  });
+  await hooks.persistAgentHistorySnapshots();
+  ok(
+    archivedStore.get(archiveThreadId).messages.find((message) => message.id === 'archive-0')?.text === 'remote completed message'
+      && archivedStore.get(archiveThreadId).messages.some((message) => message.id === localConcurrentMessage.id),
+    'a stale tab append must not overwrite a newer remote update to the same Agent message id'
+  );
+  archivedStore.set(archiveThreadId, {
+    threadId: archiveThreadId,
+    messages: [],
+    updatedAt: 1100,
+    revision: 5
+  });
+  const localAfterRemoteClear = {
+    id: 'archive-local-after-clear',
+    threadId: archiveThreadId,
+    projectId: archiveProjectId,
+    role: 'user',
+    text: 'new message after another tab cleared the thread',
+    createdAt: 1200
+  };
+  hooks.setTestState({
+    agent: {
+      messagesByThread: {
+        ...hooks.getTestState().agent.messagesByThread,
+        [archiveThreadId]: [...hooks.getTestState().agent.messagesByThread[archiveThreadId], localAfterRemoteClear]
+      }
+    }
+  });
+  await hooks.persistAgentHistorySnapshots();
+  ok(
+    archivedStore.get(archiveThreadId).messages.length === 1 && archivedStore.get(archiveThreadId).messages[0].id === localAfterRemoteClear.id,
+    'a stale tab append must preserve the remote clear instead of resurrecting cleared Agent history'
+  );
+
+  const tombstoneProjectId = 'project-permanent-tombstone';
+  const tombstoneThreadId = 'thread-permanent-tombstone';
+  const tombstoneBaseMessage = {
+    id: 'tombstone-base-message',
+    threadId: tombstoneThreadId,
+    projectId: tombstoneProjectId,
+    role: 'assistant',
+    text: 'original message',
+    createdAt: 2_000
+  };
+  hooks.setTestState({
+    agent: {
+      activeProjectId: tombstoneProjectId,
+      projects: [
+        ...archiveState.agent.projects.filter((project) => project.id !== tombstoneProjectId),
+        { id: tombstoneProjectId, name: '永久删除测试', prompt: '', createdAt: 1_000, updatedAt: 2_000 }
+      ],
+      threadsByProject: {
+        ...archiveState.agent.threadsByProject,
+        [tombstoneProjectId]: [{
+          id: tombstoneThreadId,
+          projectId: tombstoneProjectId,
+          title: '将被远程删除',
+          createdAt: 1_000,
+          updatedAt: 2_000
+        }]
+      },
+      activeThreadIdByProject: {
+        ...archiveState.agent.activeThreadIdByProject,
+        [tombstoneProjectId]: tombstoneThreadId
+      },
+      messagesByThread: {
+        ...archiveState.agent.messagesByThread,
+        [tombstoneThreadId]: [tombstoneBaseMessage]
+      }
+    }
+  });
+  await hooks.persistAgentHistorySnapshots();
+  const tombstoneBaseline = archivedStore.get(tombstoneThreadId);
+  archivedStore.set(tombstoneThreadId, {
+    threadId: tombstoneThreadId,
+    messages: [],
+    deleted: true,
+    updatedAt: 5_000,
+    revision: Number(tombstoneBaseline?.revision || 0) + 10
+  });
+  const staleEditedMessage = {
+    ...tombstoneBaseMessage,
+    text: 'stale tab edited message',
+    createdAt: 6_000
+  };
+  const staleAddedMessage = {
+    id: 'tombstone-stale-addition',
+    threadId: tombstoneThreadId,
+    projectId: tombstoneProjectId,
+    role: 'user',
+    text: 'stale tab new message',
+    createdAt: 7_000
+  };
+  hooks.setTestState({
+    agent: {
+      messagesByThread: {
+        ...hooks.getTestState().agent.messagesByThread,
+        [tombstoneThreadId]: [staleEditedMessage, staleAddedMessage]
+      }
+    }
+  });
+  await hooks.persistAgentHistorySnapshots();
+  const permanentTombstone = archivedStore.get(tombstoneThreadId);
+  const recoveredEntries = [...archivedStore.entries()].filter(([threadId, snapshot]) => (
+    threadId !== tombstoneThreadId
+      && snapshot?.deleted !== true
+      && (snapshot?.messages || []).some((message) => message.id === staleAddedMessage.id)
+  ));
+  const [recoveredThreadId, recoveredSnapshot] = recoveredEntries[0] || [];
+  ok(permanentTombstone?.deleted === true && !(permanentTombstone?.messages || []).length, 'a remote Agent thread tombstone must never be overwritten or revived under its old thread id');
+  ok(recoveredEntries.length === 1 && recoveredThreadId !== tombstoneThreadId, 'stale-tab Agent changes after a tombstone must migrate to exactly one recovered thread id');
+  ok(
+    recoveredSnapshot?.messages?.some((message) => message.id === staleEditedMessage.id && message.text === staleEditedMessage.text)
+      && recoveredSnapshot?.messages?.some((message) => message.id === staleAddedMessage.id),
+    'the recovered Agent thread must preserve both stale-tab message edits and additions'
+  );
+  ok(
+    (recoveredSnapshot?.messages || []).every((message) => message.threadId === recoveredThreadId),
+    'messages migrated from a tombstoned Agent thread must be retargeted to the recovered thread id'
+  );
+  const recoveredState = hooks.getTestState().agent;
+  ok(
+    !Object.prototype.hasOwnProperty.call(recoveredState.messagesByThread || {}, tombstoneThreadId)
+      && Array.isArray(recoveredState.messagesByThread?.[recoveredThreadId]),
+    'runtime Agent state must drop the tombstoned id and activate the recovered thread history'
+  );
+  await hooks.persistAgentHistorySnapshots();
+  ok(archivedStore.get(tombstoneThreadId)?.deleted === true, 'a later persist must not revive a permanently tombstoned Agent thread id');
+  hooks.setTestState({ agent: archiveState.agent });
+
+  let oversizedCompletedCancelled = false;
+  const oversizedCompletedEvent = `data: ${JSON.stringify({
+    type: 'response.completed',
+    response: { status: 'completed', output_text: 'z'.repeat(4 * 1024 * 1024 + 1) }
+  })}`;
+  let oversizedCompletedRead = false;
+  await hooks.consumeResponseTextStream({
+    body: {
+      getReader: () => ({
+        read: async () => {
+          if (oversizedCompletedRead) return { done: true };
+          oversizedCompletedRead = true;
+          return { value: new TextEncoder().encode(oversizedCompletedEvent), done: false };
+        },
+        cancel: async () => { oversizedCompletedCancelled = true; }
+      })
+    }
+  }).then(
+    () => ok(false, 'oversized completed Agent payload should reject'),
+    (err) => ok(/4MB 安全上限/.test(String(err?.message || err)), 'oversized completed Agent payload should report the text safety limit')
+  );
+  ok(oversizedCompletedCancelled, 'oversized completed Agent payload should cancel the upstream reader');
+  let oversizedRawEventCancelled = false;
+  let oversizedRawEventRead = false;
+  await hooks.consumeResponseTextStream({
+    body: {
+      getReader: () => ({
+        read: async () => {
+          if (oversizedRawEventRead) return { done: true };
+          oversizedRawEventRead = true;
+          return { value: new TextEncoder().encode(`data: ${'x'.repeat(8 * 1024 * 1024 + 1)}`), done: false };
+        },
+        cancel: async () => { oversizedRawEventCancelled = true; }
+      })
+    }
+  }).then(
+    () => ok(false, 'oversized unterminated Agent SSE event should reject'),
+    (err) => ok(/8MB 安全上限/.test(String(err?.message || err)), 'oversized unterminated Agent SSE event should report the raw event safety limit')
+  );
+  ok(oversizedRawEventCancelled, 'oversized unterminated Agent SSE event should cancel the upstream reader');
 
   const completedResponse = new Response(new TextEncoder().encode('data: {"type":"response.completed","response":{"output_text":"最终回答"}}\n\n'), { headers: { 'Content-Type': 'text/event-stream' } });
   const completedPayload = await hooks.resolveResponsePayload({ __stream: true, response: completedResponse });
   ok(/最终回答/.test(completedPayload.output_text || ''), 'Agent should extract completed Responses SSE final text');
+
+  const progressingResponse = new Response(new TextEncoder().encode([
+    'data: {"type":"response.in_progress","response":{"status":"in_progress","output_text":"中间快照"}}',
+    'data: {"type":"response.completed","response":{"status":"completed","output_text":"最终完整回答"}}'
+  ].join('\n\n')), { headers: { 'Content-Type': 'text/event-stream' } });
+  const progressingPayload = await hooks.resolveResponsePayload({ __stream: true, response: progressingResponse });
+  ok(progressingPayload.output_text === '最终完整回答', 'Agent stream should not treat an in-progress response snapshot as the final answer');
 
   const completedOutputResponse = new Response(new TextEncoder().encode('data: {"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"output_text","text":"数组最终回答"}]}]}}\n\n'), { headers: { 'Content-Type': 'text/event-stream' } });
   const completedOutputPayload = await hooks.resolveResponsePayload({ __stream: true, response: completedOutputResponse });
@@ -1334,6 +2041,30 @@ if (typeof hooks.openAiSizePayload === 'function') {
   await hooks.consumeResponseTextStream(streamFailureResponse).then(
     () => ok(false, 'Agent failed stream should reject'),
     (err) => ok(/上游拒绝联网工具/.test(String(err?.message || err)), 'Agent failed stream should expose upstream error message')
+  );
+  const incompleteStreamResponse = new Response(new TextEncoder().encode([
+    'data: {"type":"response.output_text.delta","delta":"只有部分文本"}',
+    'data: {"type":"response.incomplete","response":{"status":"incomplete","output_text":"只有部分文本","incomplete_details":{"reason":"max_output_tokens"}}}'
+  ].join('\r\n\r\n')), { headers: { 'Content-Type': 'text/event-stream' } });
+  await hooks.consumeResponseTextStream(incompleteStreamResponse).then(
+    () => ok(false, 'Agent incomplete stream must reject instead of returning partial text'),
+    (err) => ok(/max_output_tokens|incomplete/i.test(String(err?.message || err)), 'Agent incomplete stream should expose its terminal failure reason')
+  );
+  const cancelledStreamResponse = new Response(new TextEncoder().encode([
+    'data: {"type":"response.output_text.delta","delta":"取消前文本"}',
+    'data: {"type":"response.cancelled","response":{"status":"cancelled","output_text":"取消前文本"}}'
+  ].join('\n\n')), { headers: { 'Content-Type': 'text/event-stream' } });
+  await hooks.consumeResponseTextStream(cancelledStreamResponse).then(
+    () => ok(false, 'Agent cancelled stream must reject instead of returning partial text'),
+    (err) => ok(/cancelled/i.test(String(err?.message || err)), 'Agent cancelled stream should report cancelled terminal status')
+  );
+  await hooks.resolveResponsePayload({ status: 'incomplete', output_text: '非流式部分文本', incomplete_details: { reason: 'content_filter' } }).then(
+    () => ok(false, 'non-streaming incomplete Responses payload must reject'),
+    (err) => ok(/content_filter|incomplete/i.test(String(err?.message || err)), 'non-streaming incomplete response should expose its failure reason')
+  );
+  await hooks.resolveResponsePayload({ status: 'failed', output_text: '失败前文本', error: { message: 'relay failed' } }).then(
+    () => ok(false, 'non-streaming failed Responses payload must reject'),
+    (err) => ok(/relay failed/.test(String(err?.message || err)), 'non-streaming failed response should expose upstream error')
   );
 
   const failureDetail = typeof hooks.agentFailureDetail === 'function' ? hooks.agentFailureDetail({
@@ -1373,6 +2104,19 @@ if (typeof hooks.openAiSizePayload === 'function') {
   });
   ok(stalePending.messagesByThread['stale-thread'][0].pending === false, 'stale pending Agent message should not remain thinking forever after restore');
   ok(stalePending.messagesByThread['stale-thread'][0].errorDetail, 'stale pending Agent message should keep an explanatory error detail');
+  const freshPending = hooks.migrateAgentThreads({
+    activeProjectId: 'project-1',
+    projects: [{ id: 'project-1', name: '测试项目', prompt: '项目提示词' }],
+    threadsByProject: { 'project-1': [{ id: 'fresh-thread', projectId: 'project-1', title: '新对话', createdAt: 1, updatedAt: 1 }] },
+    activeThreadIdByProject: { 'project-1': 'fresh-thread' },
+    messagesByThread: {
+      'fresh-thread': [
+        { id: 'fresh-pending', threadId: 'fresh-thread', projectId: 'project-1', role: 'assistant', text: '正在思考...', pending: true, createdAt: Date.now() }
+      ]
+    }
+  });
+  const interruptedFreshMessage = freshPending.messagesByThread['fresh-thread'][0];
+  ok(interruptedFreshMessage.pending === false && interruptedFreshMessage.status === 'interrupted' && interruptedFreshMessage.error === true, 'every restored Agent pending message should immediately become interrupted/error regardless of age');
 
   hooks.setTestState({
     agent: {
@@ -1417,7 +2161,8 @@ if (typeof hooks.openAiSizePayload === 'function') {
       xaiResolution: '2k',
       xaiAspectRatio: '1:1'
     },
-    activeImageProfileId: 'image-only',
+    activeProfileId: 'image-alt',
+    activeImageProfileId: 'image-alt',
     profiles: [
       { id: 'image-only', name: '画廊模型', provider: 'openai', apiMode: 'images', model: 'gpt-image-2' },
       { id: 'image-alt', name: '备用模型', provider: 'google', apiMode: 'images', model: 'nano-banana-pro' },
@@ -1467,10 +2212,13 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(compactComposerHtml.includes('data-action="open-agent-popover"') && compactComposerHtml.includes('data-action="open-agent-image-advanced"'), 'Agent image params should reuse gallery-style popovers and advanced gear');
   ok(compactComposerHtml.indexOf('文本模型') < compactComposerHtml.indexOf('生图模型') && compactComposerHtml.indexOf('生图模型') < compactComposerHtml.indexOf('data-action="agent-chat"'), 'Agent toolbar should keep text controls, image params, and send button in one row order');
   const initialAgentParams = hooks.agentImageParams();
-  ok(initialAgentParams.profileName === '画廊模型' && initialAgentParams.resolution === '4K' && initialAgentParams.aspectRatio === '3:2' && initialAgentParams.transparent === true && initialAgentParams.count === 2, 'Agent image params should initialize from gallery settings on first use');
+  ok(initialAgentParams.profileName === '画廊模型' && initialAgentParams.resolution === '4K' && initialAgentParams.aspectRatio === '3:2' && initialAgentParams.transparent === true && initialAgentParams.count === 2, 'hybrid Agent image settings should initialize from agentImageProfileId before the active gallery profile');
   hooks.setTestState({ settings: { openaiSize: '1K', openaiAspectRatio: '1:1', n: 1, transparent_output: false } });
   const independentAgentParams = hooks.agentImageParams();
   ok(independentAgentParams.resolution === '4K' && independentAgentParams.aspectRatio === '3:2' && independentAgentParams.transparent === true && independentAgentParams.count === 2, 'Agent image params should stay independent after gallery settings change');
+  hooks.setTestState({ agentConfig: { mode: 'off', imageProfileId: null }, agent: { imageSettings: null } });
+  const galleryFallbackAgentParams = hooks.agentImageParams();
+  ok(galleryFallbackAgentParams.profileName === '备用模型', 'Agent image settings should clone the active gallery profile only when no hybrid image profile is configured');
   const afterNewThread = hooks.createAgentThread('project-compact', '新对话 09:30');
   ok((afterNewThread.threadsByProject['project-compact'] || []).some((thread) => thread.title === '新对话 09:30'), 'Agent thread creation helper should add and activate a new conversation');
   const singleThreadState = hooks.deleteAgentThread({
@@ -1495,6 +2243,32 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(hooks.activeAgentHasPending() === true, 'Agent pending detector should identify active thinking messages');
   ok(hooks.renderAgentComposer().includes('正在思考') && hooks.renderAgentComposer().includes('disabled'), 'Agent composer should disable duplicate sends while a message is pending');
   ok(hooks.agentRequestTimeoutSeconds({ timeout: 3 }) === 3, 'Agent request timeout should follow the selected text profile timeout');
+
+  fakeIndexedDbStore.set('edit-source-blob', new Blob(['generated-image'], { type: 'image/png' }));
+  hooks.setTestTasks([{
+    id: 'edit-output-task',
+    status: 'success',
+    prompt: 'original task prompt',
+    requestedParams: { quality: 'high', resolution: '4K', aspectRatio: '16:9' },
+    images: [{ blobId: 'edit-source-blob', width: 1024, height: 1024, type: 'image/png' }]
+  }]);
+  hooks.setTestState({
+    composerPrompt: 'keep current composer prompt',
+    settings: { quality: 'low', openaiSize: '1K', openaiAspectRatio: '1:1' },
+    references: []
+  });
+  const beforeEditOutput = hooks.getTestState();
+  await hooks.editOutput('edit-output-task');
+  const afterEditOutput = hooks.getTestState();
+  ok(afterEditOutput.composerPrompt === beforeEditOutput.composerPrompt, 'edit output must not apply the task prompt');
+  ok(afterEditOutput.settings.quality === beforeEditOutput.settings.quality
+    && afterEditOutput.settings.openaiSize === beforeEditOutput.settings.openaiSize
+    && afterEditOutput.settings.openaiAspectRatio === beforeEditOutput.settings.openaiAspectRatio,
+  'edit output must not apply task generation parameters');
+  ok(afterEditOutput.references.length === 1
+    && afterEditOutput.references[0].originalBlobId
+    && afterEditOutput.references[0].compositedBlobId,
+  'edit output must add the generated image as a reference image');
 
   if (failures.length) {
     console.error('Homepage task regression checks failed:');

@@ -1,35 +1,46 @@
-const JWT_FALLBACK = 'gpt-image2-jwt-secret-key-2026-secure';
-function secret(env) {
-  if (env && env.JWT_SECRET) return env.JWT_SECRET;
-  if (env && env.ALLOW_INSECURE_JWT_FALLBACK === 'true') return JWT_FALLBACK;
-  return null;
-}
-function isLocalJwtRequest(request) {
-  try {
-    const hostname = new URL(request && request.url || 'http://invalid').hostname;
-    return hostname === '127.0.0.1' || hostname === 'localhost';
-  } catch {
-    return false;
-  }
-}
-function resolveSecret(env, request) {
-  const value = secret(env);
-  if (value) return value;
-  if (isLocalJwtRequest(request)) return JWT_FALLBACK;
-  throw new Error('JWT_SECRET is required');
-}
-function b64urlDecode(str) { str = String(str || '').replace(/-/g, '+').replace(/_/g, '/'); while (str.length % 4) str += '='; return Uint8Array.from(atob(str), c => c.charCodeAt(0)); }
-function getCookie(header, name) { const m = (header || '').match(new RegExp('(?:^|;\\s*)' + name + '=([^;]*)')); return m ? decodeURIComponent(m[1]) : null; }
-async function importHmacKey(value) { return crypto.subtle.importKey('raw', new TextEncoder().encode(value), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']); }
-async function verifyToken(token, env, request) { const parts = String(token || '').split('.'); if (parts.length !== 3) throw new Error('invalid token'); const key = await importHmacKey(resolveSecret(env, request)); const ok = await crypto.subtle.verify('HMAC', key, b64urlDecode(parts[2]), new TextEncoder().encode(parts[0] + '.' + parts[1])); if (!ok) throw new Error('bad signature'); const payload = JSON.parse(new TextDecoder().decode(b64urlDecode(parts[1]))); if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) throw new Error('expired'); return payload; }
-function getRequestToken(request) { return getCookie(request.headers.get('Cookie') || '', 'session') || String(request.headers.get('X-GPT-Image-Session') || '').trim() || null; }
-async function currentUser(request, env) { const token = getRequestToken(request); if (!token) return null; try { const payload = await verifyToken(token, env, request); return await env.gpt_image2_db.prepare('SELECT id, username, role FROM users WHERE id = ?').bind(payload.userId).first(); } catch { return null; } }
-function json(data, status = 200) { return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0' } }); }
+import { currentUser, json } from '../../_lib/auth.js';
+import { normalizeSafeBaseUrl, safeUpstreamEndpoint } from '../../_lib/upstream-url.js';
 async function loadSettings(db, userId) { const rows = await db.prepare('SELECT key, value FROM user_settings WHERE user_id = ?').bind(userId).all(); const settings = {}; (rows.results || []).forEach(row => { try { settings[row.key] = JSON.parse(row.value); } catch { settings[row.key] = row.value; } }); return settings; }
 function firstString() { for (let i = 0; i < arguments.length; i++) { const v = arguments[i]; if (typeof v === 'string' && v.trim()) return v.trim(); } return ''; }
 function asNum(value, fallback) { const n = Number(value); return Number.isFinite(n) ? n : fallback; }
-function normalizeBaseUrl(raw) { let value = String(raw || '').trim().replace(/\/+$/, ''); if (!value) return ''; if (!/^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(value)) value = 'https://' + value; try { const url = new URL(value); const parts = url.pathname.split('/').filter(Boolean); if (!parts.includes('v1')) parts.push('v1'); url.pathname = '/' + parts.join('/'); url.search = ''; url.hash = ''; return url.toString().replace(/\/+$/, ''); } catch { return value.replace(/\/+$/, '') + '/v1'; } }
-function selectedProfile(settings) { const profiles = Array.isArray(settings.profiles) ? settings.profiles : []; const preferredId = settings.agentTextProfileId || settings.activeProfileId || (profiles[0] && profiles[0].id) || 'default-openai'; const textProfile = profiles.find(p => p && p.id === preferredId && p.apiMode === 'responses'); const base = textProfile || profiles.find(p => p && p.apiMode === 'responses') || profiles.find(p => p && p.id === preferredId) || profiles[0] || {}; return { id: base.id || preferredId, name: base.name || '云端配置', provider: base.provider || 'openai', baseUrl: firstString(base.baseUrl, settings.baseUrl), apiKey: firstString(base.apiKey, settings.apiKey), model: firstString(base.model, settings.model) || 'gpt-5-mini', timeout: asNum(base.timeout, asNum(settings.timeout, 600)) }; }
+function normalizeBaseUrl(raw) { return normalizeSafeBaseUrl(raw, true); }
+function selectedProfile(settings, explicitProfileId = '') {
+  const profiles = Array.isArray(settings.profiles) ? settings.profiles : [];
+  const responsesProfiles = profiles.filter(profile => profile && profile.apiMode === 'responses');
+  const byId = profileId => responsesProfiles.find(profile => profile.id === profileId || profile.name === profileId);
+  const configMode = String(settings.agentApiConfigMode || 'off').toLowerCase();
+  let preferredId = '';
+  let base = null;
+
+  if (configMode === 'hybrid') {
+    preferredId = firstString(settings.agentTextProfileId);
+    base = preferredId ? byId(preferredId) : null;
+  } else {
+    const explicit = firstString(explicitProfileId);
+    preferredId = explicit || firstString(settings.activeProfileId);
+    base = (explicit ? byId(explicit) : null)
+      || byId(firstString(settings.activeProfileId))
+      || responsesProfiles[0]
+      || null;
+  }
+
+  const legacySettings = profiles.length === 0;
+  base = base || {};
+  return {
+    id: base.id || preferredId || 'default-responses',
+    name: base.name || '云端配置',
+    provider: base.provider || 'openai',
+    baseUrl: firstString(base.baseUrl, legacySettings ? settings.baseUrl : ''),
+    apiKey: firstString(base.apiKey, legacySettings ? settings.apiKey : ''),
+    model: firstString(base.model, legacySettings ? settings.model : '') || 'gpt-5-mini',
+    timeout: asNum(base.timeout, asNum(legacySettings ? settings.timeout : undefined, 600))
+  };
+}
+function upstreamTimeoutSeconds(request, profile) {
+  const headerValue = Number(request.headers.get('X-GPT-Image-Timeout-Seconds'));
+  const requested = Number.isFinite(headerValue) && headerValue > 0 ? headerValue : asNum(profile.timeout, 600);
+  return Math.max(1, Math.min(requested, 6000));
+}
 function parseJson(value, fallback) { try { return JSON.parse(String(value || '')); } catch { return fallback; } }
 function fallbackAnalysis(body) {
   const mode = body.mode === 'styleTransfer' ? '灵感迁移' : body.mode === 'manual' ? '手动模式' : 'AI 模式';
@@ -86,8 +97,13 @@ export async function onRequestPost(ctx) {
   const user = await currentUser(ctx.request, ctx.env);
   if (!user) return json({ error: 'Unauthorized' }, 401);
   const settings = await loadSettings(ctx.env.gpt_image2_db, user.id);
-  const profile = selectedProfile(settings);
-  const baseUrl = normalizeBaseUrl(profile.baseUrl);
+  const profile = selectedProfile(settings, ctx.request.headers.get('X-GPT-Image-Profile-Id') || '');
+  let baseUrl = '';
+  try {
+    baseUrl = normalizeBaseUrl(profile.baseUrl);
+  } catch (error) {
+    return json({ error: error.message || 'API URL is invalid' }, 400);
+  }
   const apiKey = String(profile.apiKey || '').trim();
   let body = {};
   let files = [];
@@ -111,6 +127,9 @@ export async function onRequestPost(ctx) {
   }
   if (!baseUrl || !apiKey) return json({ analysis: fallbackAnalysis(body), warning: 'API 配置不完整，已返回本地建议。' });
   if (!files.length) return json({ analysis: fallbackAnalysis(body), warning: '未收到可读图片，已返回本地建议。' });
+  const timeoutSeconds = upstreamTimeoutSeconds(ctx.request, profile);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutSeconds * 1000);
   try {
     const imageContent = [];
     for (const file of files.slice(0, 4)) {
@@ -123,10 +142,12 @@ export async function onRequestPost(ctx) {
         ...imageContent
       ]
     }];
-    const res = await fetch(`${baseUrl}/responses`, {
+    const res = await fetch(safeUpstreamEndpoint(baseUrl, 'responses'), {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: profile.model, input })
+      body: JSON.stringify({ model: profile.model, input }),
+      signal: controller.signal,
+      redirect: 'manual'
     });
     const text = await res.text();
     if (!res.ok) throw new Error(text.slice(0, 500));
@@ -135,6 +156,16 @@ export async function onRequestPost(ctx) {
     const analysis = jsonFromModelText(content, fallbackAnalysis(body));
     return json({ analysis, raw: data, imageCount: files.length });
   } catch (e) {
+    if (e.name === 'AbortError') {
+      return json({
+        error: '专业分析等待上游响应超时',
+        code: 'PRO_WORKBENCH_ANALYZE_TIMEOUT',
+        timeoutSeconds,
+        analysis: fallbackAnalysis(body)
+      }, 504);
+    }
     return json({ analysis: fallbackAnalysis(body), warning: e.message || String(e) });
+  } finally {
+    clearTimeout(timeoutId);
   }
 }

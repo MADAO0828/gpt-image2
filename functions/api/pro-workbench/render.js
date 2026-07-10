@@ -1,36 +1,11 @@
-const JWT_FALLBACK = 'gpt-image2-jwt-secret-key-2026-secure';
-function secret(env) {
-  if (env && env.JWT_SECRET) return env.JWT_SECRET;
-  if (env && env.ALLOW_INSECURE_JWT_FALLBACK === 'true') return JWT_FALLBACK;
-  return null;
-}
-function isLocalJwtRequest(request) {
-  try {
-    const hostname = new URL(request && request.url || 'http://invalid').hostname;
-    return hostname === '127.0.0.1' || hostname === 'localhost';
-  } catch {
-    return false;
-  }
-}
-function resolveSecret(env, request) {
-  const value = secret(env);
-  if (value) return value;
-  if (isLocalJwtRequest(request)) return JWT_FALLBACK;
-  throw new Error('JWT_SECRET is required');
-}
-function b64urlDecode(str) { str = String(str || '').replace(/-/g, '+').replace(/_/g, '/'); while (str.length % 4) str += '='; return Uint8Array.from(atob(str), c => c.charCodeAt(0)); }
-function getCookie(header, name) { const m = (header || '').match(new RegExp('(?:^|;\\s*)' + name + '=([^;]*)')); return m ? decodeURIComponent(m[1]) : null; }
-async function importHmacKey(value) { return crypto.subtle.importKey('raw', new TextEncoder().encode(value), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']); }
-async function verifyToken(token, env, request) { const parts = String(token || '').split('.'); if (parts.length !== 3) throw new Error('invalid token'); const key = await importHmacKey(resolveSecret(env, request)); const ok = await crypto.subtle.verify('HMAC', key, b64urlDecode(parts[2]), new TextEncoder().encode(parts[0] + '.' + parts[1])); if (!ok) throw new Error('bad signature'); const payload = JSON.parse(new TextDecoder().decode(b64urlDecode(parts[1]))); if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) throw new Error('expired'); return payload; }
-function getRequestToken(request) { return getCookie(request.headers.get('Cookie') || '', 'session') || String(request.headers.get('X-GPT-Image-Session') || '').trim() || null; }
-async function currentUser(request, env) { const token = getRequestToken(request); if (!token) return null; try { const payload = await verifyToken(token, env, request); return await env.gpt_image2_db.prepare('SELECT id, username, role FROM users WHERE id = ?').bind(payload.userId).first(); } catch { return null; } }
-function json(data, status = 200) { return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0' } }); }
+import { currentUser, json } from '../../_lib/auth.js';
+import { normalizeSafeBaseUrl, safeUpstreamEndpoint } from '../../_lib/upstream-url.js';
 async function loadSettings(db, userId) { const rows = await db.prepare('SELECT key, value FROM user_settings WHERE user_id = ?').bind(userId).all(); const settings = {}; (rows.results || []).forEach(row => { try { settings[row.key] = JSON.parse(row.value); } catch { settings[row.key] = row.value; } }); return settings; }
 function firstString() { for (let i = 0; i < arguments.length; i++) { const v = arguments[i]; if (typeof v === 'string' && v.trim()) return v.trim(); } return ''; }
 function asBool(value, fallback = false) { return value === undefined || value === null ? fallback : !!value; }
 function asNum(value, fallback) { const n = Number(value); return Number.isFinite(n) ? n : fallback; }
-function normalizeBaseUrl(raw) { let value = String(raw || '').trim().replace(/\/+$/, ''); if (!value) return ''; if (!/^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(value)) value = 'https://' + value; try { const url = new URL(value); const parts = url.pathname.split('/').filter(Boolean); if (!parts.includes('v1')) parts.push('v1'); url.pathname = '/' + parts.join('/'); url.search = ''; url.hash = ''; return url.toString().replace(/\/+$/, ''); } catch { return value.replace(/\/+$/, '') + '/v1'; } }
-function selectedProfile(settings, explicitProfileId = '') { const profiles = Array.isArray(settings.profiles) ? settings.profiles : []; const explicit = profiles.find(p => p && (p.id === explicitProfileId || p.name === explicitProfileId) && (p.apiMode || 'images') === 'images'); const preferredId = explicitProfileId || settings.activeImageProfileId || settings.activeProfileId || settings.agentImageProfileId || (profiles[0] && profiles[0].id) || 'default-openai'; const imageProfile = explicit || profiles.find(p => p && p.id === preferredId && (p.apiMode || 'images') === 'images'); const base = imageProfile || profiles.find(p => p && (p.apiMode || 'images') === 'images') || profiles.find(p => p && p.id === preferredId) || profiles[0] || {}; return { id: base.id || preferredId, name: base.name || '云端配置', provider: base.provider || 'openai', baseUrl: firstString(base.baseUrl, settings.baseUrl), nativeBaseUrl: firstString(base.nativeBaseUrl, base.googleNativeBaseUrl, settings.nativeBaseUrl, settings.googleNativeBaseUrl), apiKey: firstString(base.apiKey, settings.apiKey), nativeApiKey: firstString(base.nativeApiKey, base.googleNativeApiKey, settings.nativeApiKey, settings.googleNativeApiKey), model: firstString(base.model, settings.model) || 'gpt-image-2', timeout: asNum(base.timeout, asNum(settings.timeout, 600)), responseFormatB64Json: asBool(base.responseFormatB64Json, asBool(settings.responseFormatB64Json, false)), streamImages: asBool(base.streamImages, asBool(settings.streamImages, false)), streamPartialImages: asNum(base.streamPartialImages, asNum(settings.streamPartialImages, 1)) }; }
+function normalizeBaseUrl(raw) { return normalizeSafeBaseUrl(raw, true); }
+function selectedProfile(settings, explicitProfileId = '') { const profiles = Array.isArray(settings.profiles) ? settings.profiles : []; const find = id => profiles.find(p => p && (p.id === id || p.name === id)) || null; let base = null; let preferredId = ''; if (explicitProfileId) { preferredId = explicitProfileId; base = find(explicitProfileId); if (!base || (base.apiMode || 'images') !== 'images') throw new Error('Selected render profile is missing or does not support Images API'); } else if (settings.activeImageProfileId) { preferredId = settings.activeImageProfileId; base = find(preferredId); if (!base || (base.apiMode || 'images') !== 'images') throw new Error('Active image profile is missing or does not support Images API'); } else { preferredId = settings.activeProfileId || (profiles[0] && profiles[0].id) || 'default-openai'; const active = find(preferredId); base = active && (active.apiMode || 'images') === 'images' ? active : profiles.find(p => p && (p.apiMode || 'images') === 'images') || null; } base = base || {}; return { id: base.id || preferredId, name: base.name || '云端配置', provider: base.provider || 'openai', baseUrl: firstString(base.baseUrl, settings.baseUrl), nativeBaseUrl: firstString(base.nativeBaseUrl, base.googleNativeBaseUrl, settings.nativeBaseUrl, settings.googleNativeBaseUrl), apiKey: firstString(base.apiKey, settings.apiKey), nativeApiKey: firstString(base.nativeApiKey, base.googleNativeApiKey, settings.nativeApiKey, settings.googleNativeApiKey), model: firstString(base.model, settings.model) || 'gpt-image-2', timeout: asNum(base.timeout, asNum(settings.timeout, 600)), responseFormatB64Json: asBool(base.responseFormatB64Json, asBool(settings.responseFormatB64Json, false)), streamImages: asBool(base.streamImages, asBool(settings.streamImages, false)), streamPartialImages: asNum(base.streamPartialImages, asNum(settings.streamPartialImages, 1)) }; }
 function providerKey(profile) { const raw = String(profile.provider || '').toLowerCase(); if (raw.includes('google') || /gemini|banana/i.test(profile.model || '')) return 'google'; if (raw.includes('xai') || raw.includes('grok') || /grok/i.test(profile.model || '')) return 'xai'; return 'openai'; }
 function formBool(form, key, fallback) { const value = form.get(key); if (value === null || value === undefined || value === '') return fallback; return /^(1|true|yes|on|b64_json)$/i.test(String(value)); }
 function formNum(form, key, fallback) { const n = Number(form.get(key)); return Number.isFinite(n) ? n : fallback; }
@@ -95,8 +70,18 @@ export async function onRequestPost(ctx) {
   if (!user) return json({ error: 'Unauthorized' }, 401);
   const settings = await loadSettings(ctx.env.gpt_image2_db, user.id);
   const form = await ctx.request.formData();
-  const profile = selectedProfile(settings, String(form.get('profileId') || ''));
-  const baseUrl = normalizeBaseUrl(profile.baseUrl);
+  let profile;
+  try {
+    profile = selectedProfile(settings, String(form.get('profileId') || ''));
+  } catch (error) {
+    return json({ error: error?.message || 'Invalid image profile configuration', code: 'INVALID_PROFILE_CONFIGURATION' }, 400);
+  }
+  let baseUrl = '';
+  try {
+    baseUrl = normalizeBaseUrl(profile.baseUrl);
+  } catch (error) {
+    return json({ error: error.message || 'API URL is invalid' }, 400);
+  }
   const apiKey = String(profile.apiKey || '').trim();
   if (!baseUrl) return json({ error: 'API configuration is incomplete: missing API URL' }, 500);
   if (!apiKey) return json({ error: 'API configuration is incomplete: missing API Key' }, 500);
@@ -145,11 +130,12 @@ export async function onRequestPost(ctx) {
   const timeoutId = setTimeout(() => controller.abort(), Math.max(1000, Math.min(Number(timeoutOverride || profile.timeout || 600) * 1000, 6000 * 1000)));
   try {
     let data;
-    const res = await fetch(`${baseUrl}/${upstreamPath}`, {
+    const res = await fetch(safeUpstreamEndpoint(baseUrl, upstreamPath), {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${apiKey}` },
       body: fd,
-      signal: controller.signal
+      signal: controller.signal,
+      redirect: 'manual'
     });
     const text = await res.text();
     if (!res.ok) return json({ error: `上游渲染失败：${text.slice(0, 600)}` }, res.status);

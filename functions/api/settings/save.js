@@ -1,110 +1,41 @@
-const JWT_FALLBACK = 'gpt-image2-jwt-secret-key-2026-secure';
-const PASSWORD_SALT = 'gpt-image2-auth-salt-2026';
-
-function secret(env) {
-  if (env && env.JWT_SECRET) return env.JWT_SECRET;
-  if (env && env.ALLOW_INSECURE_JWT_FALLBACK === 'true') return JWT_FALLBACK;
-  return null;
-}
-function isLocalJwtRequest(request) {
-  try {
-    const hostname = new URL(request && request.url || 'http://invalid').hostname;
-    return hostname === '127.0.0.1' || hostname === 'localhost';
-  } catch (e) {
-    return false;
-  }
-}
-function resolveSecret(env, request) {
-  const value = secret(env);
-  if (value) return value;
-  if (isLocalJwtRequest(request)) return JWT_FALLBACK;
-  throw new Error('JWT_SECRET is required');
-}
-function b64url(bytes) { return btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
-function b64urlDecode(str) { str = str.replace(/-/g, '+').replace(/_/g, '/'); while (str.length % 4) str += '='; return Uint8Array.from(atob(str), c => c.charCodeAt(0)); }
-function getCookie(header, name) { const m = (header || '').match(new RegExp('(?:^|;\\s*)' + name + '=([^;]*)')); return m ? decodeURIComponent(m[1]) : null; }
-async function importHmacKey(value, usages) { return crypto.subtle.importKey('raw', new TextEncoder().encode(value), { name: 'HMAC', hash: 'SHA-256' }, false, usages); }
-async function signToken(payload, env, request) { const enc = new TextEncoder(); const head = b64url(enc.encode(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))); const body = b64url(enc.encode(JSON.stringify(payload))); const key = await importHmacKey(resolveSecret(env, request), ['sign']); const sig = await crypto.subtle.sign('HMAC', key, enc.encode(head + '.' + body)); return head + '.' + body + '.' + b64url(sig); }
-async function verifyToken(token, env, request) { const parts = String(token || '').split('.'); if (parts.length !== 3) throw new Error('invalid token'); const key = await importHmacKey(resolveSecret(env, request), ['verify']); const ok = await crypto.subtle.verify('HMAC', key, b64urlDecode(parts[2]), new TextEncoder().encode(parts[0] + '.' + parts[1])); if (!ok) throw new Error('bad signature'); const payload = JSON.parse(new TextDecoder().decode(b64urlDecode(parts[1]))); if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) throw new Error('expired'); return payload; }
-function getRequestToken(request) {
-  const cookieToken = getCookie(request.headers.get('Cookie') || '', 'session');
-  if (cookieToken) return cookieToken;
-  const headerToken = String(request.headers.get('X-GPT-Image-Session') || '').trim();
-  return headerToken || null;
-}
-async function currentUser(request, env) { const token = getRequestToken(request); if (!token) return null; try { const payload = await verifyToken(token, env, request); return await env.gpt_image2_db.prepare('SELECT id, username, role, last_login, last_ip, created_at FROM users WHERE id = ?').bind(payload.userId).first(); } catch (e) { return null; } }
-async function passwordHash(password) { const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(password + ':' + PASSWORD_SALT)); return b64url(hash); }
-function json(data, status = 200, extraHeaders = {}) { return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0', 'Pragma': 'no-cache', 'Expires': '0', ...extraHeaders } }); }
-function clientIp(request) { return request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || ''; }
+import { currentUser, json } from '../../_lib/auth.js';
+import { maskSecrets, preserveSecretPlaceholders } from '../../_lib/settings-secrets.js';
 
 async function loadSettings(db, userId) {
-  const result = await db.prepare('SELECT key, value, updated_at FROM user_settings WHERE user_id = ? ORDER BY key').bind(userId).all();
+  const result = await db
+    .prepare('SELECT key, value, updated_at FROM user_settings WHERE user_id = ? ORDER BY key')
+    .bind(userId)
+    .all();
   const settings = {};
-  (result.results || []).forEach(row => {
-    try { settings[row.key] = JSON.parse(row.value); } catch (e) { settings[row.key] = row.value; }
-  });
+  for (const row of result.results || []) {
+    try {
+      settings[row.key] = JSON.parse(row.value);
+    } catch (error) {
+      settings[row.key] = row.value;
+    }
+  }
   return settings;
 }
 
 function normalizeIncoming(body) {
-  const source = body && body.settings !== undefined ? body.settings : body;
+  const source = body?.settings !== undefined ? body.settings : body;
   if (!source || typeof source !== 'object') return [];
-  if (Array.isArray(source)) return source.filter(item => item && item.key).map(item => ({ key: String(item.key), value: item.value }));
+  if (Array.isArray(source)) {
+    return source
+      .filter(item => item?.key)
+      .map(item => ({ key: String(item.key), value: item.value }));
+  }
   return Object.keys(source).map(key => ({ key, value: source[key] }));
-}
-
-function isProxyPlaceholder(value) {
-  const s = String(value || '').trim();
-  return s === 'cloudflare-proxy' || s === 'placeholder' || /^\*+MASKED\*+$/i.test(s) || /^\*+REDACTED\*+$/i.test(s);
-}
-
-function profileKey(profile) {
-  if (!profile || typeof profile !== 'object') return '';
-  return String(profile.id || profile.name || '').trim();
-}
-
-function preserveProfileSecrets(incomingProfiles, existingProfiles) {
-  if (!Array.isArray(incomingProfiles)) return incomingProfiles;
-  const oldMap = new Map();
-  (Array.isArray(existingProfiles) ? existingProfiles : []).forEach(profile => {
-    const key = profileKey(profile);
-    if (key) oldMap.set(key, profile);
-  });
-  return incomingProfiles.map(profile => {
-    if (!profile || typeof profile !== 'object' || Array.isArray(profile)) return profile;
-    const next = { ...profile };
-    const old = oldMap.get(profileKey(next));
-    if (isProxyPlaceholder(next.apiKey)) {
-      next.apiKey = old && !isProxyPlaceholder(old.apiKey) ? (old.apiKey || '') : '';
-    }
-    if (isProxyPlaceholder(next.nativeApiKey)) {
-      next.nativeApiKey = old && !isProxyPlaceholder(old.nativeApiKey) ? (old.nativeApiKey || '') : '';
-    }
-    if (isProxyPlaceholder(next.googleNativeApiKey)) {
-      next.googleNativeApiKey = old && !isProxyPlaceholder(old.googleNativeApiKey) ? (old.googleNativeApiKey || '') : '';
-    }
-    return next;
-  });
-}
-
-function sanitizeIncomingItem(item, existingSettings) {
-  if (!item || !item.key) return item;
-  const key = String(item.key);
-  let value = item.value;
-  if (key === 'apiKey' && isProxyPlaceholder(value)) {
-    value = !isProxyPlaceholder(existingSettings.apiKey) ? (existingSettings.apiKey || '') : '';
-  }
-  if (key === 'profiles') {
-    value = preserveProfileSecrets(value, existingSettings.profiles);
-  }
-  return { key, value };
 }
 
 export async function onRequestGet(ctx) {
   const user = await currentUser(ctx.request, ctx.env);
   if (!user) return json({ error: 'Unauthorized' }, 401);
   const settings = await loadSettings(ctx.env.gpt_image2_db, user.id);
-  return json({ settings, user: { id: user.id, username: user.username, role: user.role } });
+  return json({
+    settings: maskSecrets(settings),
+    user: { id: user.id, username: user.username, role: user.role }
+  });
 }
 
 export async function onRequestPost(ctx) {
@@ -113,16 +44,25 @@ export async function onRequestPost(ctx) {
   try {
     const body = await ctx.request.json();
     const existingSettings = await loadSettings(ctx.env.gpt_image2_db, user.id);
-    const items = normalizeIncoming(body).map(item => sanitizeIncomingItem(item, existingSettings));
+    const items = normalizeIncoming(body);
     if (!items.length) return json({ error: 'No settings provided' }, 400);
+
     for (const item of items) {
       if (!item.key || item.value === undefined) continue;
-      const value = typeof item.value === 'string' ? item.value : JSON.stringify(item.value);
-      await ctx.env.gpt_image2_db.prepare("INSERT INTO user_settings (user_id, key, value) VALUES (?, ?, ?) ON CONFLICT(user_id, key) DO UPDATE SET value = ?, updated_at = datetime('now')").bind(user.id, item.key, value, value).run();
+      const preserved = preserveSecretPlaceholders(
+        item.value,
+        existingSettings[item.key],
+        item.key
+      );
+      const value = typeof preserved === 'string' ? preserved : JSON.stringify(preserved);
+      await ctx.env.gpt_image2_db
+        .prepare("INSERT INTO user_settings (user_id, key, value) VALUES (?, ?, ?) ON CONFLICT(user_id, key) DO UPDATE SET value = ?, updated_at = datetime('now')")
+        .bind(user.id, item.key, value, value)
+        .run();
     }
     return json({ success: true, message: 'settings saved', userId: user.id });
-  } catch (e) {
-    return json({ error: 'Save failed: ' + (e.message || 'unknown error') }, 400);
+  } catch (error) {
+    return json({ error: 'Save failed: ' + (error.message || 'unknown error') }, 400);
   }
 }
 

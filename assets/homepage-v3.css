@@ -1922,6 +1922,18 @@ button { cursor: pointer; }
   display: grid;
   gap: 12px;
 }
+.agent-history-window-note {
+  justify-self: center;
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0 14px;
+  color: var(--muted);
+  background: var(--panel);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
 .agent-log .empty-state {
   width: 100%;
   max-width: 100%;
@@ -3468,6 +3480,11 @@ button { cursor: pointer; }
   padding: 10px;
   background: rgba(255, 255, 255, .62);
   text-align: left;
+  height: 360px;
+  min-height: 360px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 :root[data-theme="dark"] .prompt-card { background: rgba(255, 255, 255, .07); }
 .prompt-card-media {
@@ -3549,10 +3566,14 @@ button { cursor: pointer; }
   to { transform: translateX(100%); }
 }
 .prompt-card strong {
-  display: block;
+  display: -webkit-box;
+  min-height: 38px;
   margin-bottom: 7px;
   font-size: 14px;
   line-height: 1.35;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 .prompt-card p {
   margin: 0;
@@ -3563,6 +3584,7 @@ button { cursor: pointer; }
   overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 4;
+  flex: 0 0 auto;
 }
 
 .popover {
@@ -4825,4 +4847,139 @@ button { cursor: pointer; }
   color: #dbe7f8;
   background: rgba(220, 234, 255, .12);
   box-shadow: inset 0 0 0 1px rgba(220, 234, 255, .16);
+}
+
+/* R84 UI Fixer: Firefox-safe tracks and compact workflow controls. */
+.main {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.main,
+.main > *,
+.gallery-stage,
+.agent-stage,
+.pro-stage,
+.workflow-workspace,
+.composer,
+.composer-text-wrap,
+.composer-controls {
+  min-width: 0;
+}
+
+@media (max-width: 900px) {
+  .workflow-workspace-head {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .workflow-workspace-head > :first-child {
+    flex: 1 1 260px;
+    min-width: 0;
+  }
+
+  .workflow-head-actions {
+    flex: 1 1 100%;
+    width: 100%;
+    min-width: 0;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 2px 1px 5px;
+    scrollbar-width: none;
+    overscroll-behavior-inline: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .workflow-head-actions::-webkit-scrollbar {
+    display: none;
+  }
+
+  .workflow-head-actions > * {
+    flex: 0 0 auto;
+  }
+
+  .workflow-filters {
+    display: grid;
+    grid-template-columns: minmax(120px, 168px) minmax(0, 1fr);
+    width: 100%;
+    min-width: 0;
+  }
+
+  .workflow-filter-select,
+  .workflow-search {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+  }
+}
+
+@media (max-width: 430px) {
+  .workflow-workspace {
+    padding-inline: 10px;
+  }
+
+  .workflow-workspace-head {
+    gap: 8px;
+  }
+
+  .workflow-workspace-head > :first-child {
+    flex-basis: 100%;
+  }
+
+  .workflow-head-actions {
+    margin-inline: -2px;
+  }
+
+  .workflow-filters {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .workflow-filter-select {
+    min-height: 40px;
+  }
+}
+
+@media (hover: none), (pointer: coarse) {
+  .asset-card,
+  .workflow-card,
+  .composer-param-zone,
+  .composer-action-zone {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+
+  .asset-card,
+  .workflow-card {
+    transition-property: border-color, background-color;
+  }
+
+  .asset-card:hover,
+  .workflow-card:hover {
+    transform: none;
+  }
+}
+
+.prompt-detail-image-button {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 18px;
+  background: rgba(0, 0, 0, .05);
+  overflow: hidden;
+  cursor: zoom-in;
+}
+
+.prompt-detail-image-button img {
+  display: block;
+  width: 100%;
+  max-height: 320px;
+  object-fit: contain;
+}
+
+.prompt-detail-image-button:focus-visible {
+  outline: 2px solid var(--accent, #4f8cff);
+  outline-offset: 3px;
 }

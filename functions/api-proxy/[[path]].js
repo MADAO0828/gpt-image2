@@ -1,43 +1,12 @@
-const JWT_FALLBACK = 'gpt-image2-jwt-secret-key-2026-secure';
-function secret(env) {
-  if (env && env.JWT_SECRET) return env.JWT_SECRET;
-  if (env && env.ALLOW_INSECURE_JWT_FALLBACK === 'true') return JWT_FALLBACK;
-  return null;
-}
-function isLocalJwtRequest(request) {
-  try {
-    const hostname = new URL(request && request.url || 'http://invalid').hostname;
-    return hostname === '127.0.0.1' || hostname === 'localhost';
-  } catch (e) {
-    return false;
-  }
-}
-function resolveSecret(env, request) {
-  const value = secret(env);
-  if (value) return value;
-  if (isLocalJwtRequest(request)) return JWT_FALLBACK;
-  throw new Error('JWT_SECRET is required');
-}
-function b64urlDecode(str) { str = String(str || '').replace(/-/g, '+').replace(/_/g, '/'); while (str.length % 4) str += '='; return Uint8Array.from(atob(str), c => c.charCodeAt(0)); }
-function getCookie(header, name) { const m = (header || '').match(new RegExp('(?:^|;\\s*)' + name + '=([^;]*)')); return m ? decodeURIComponent(m[1]) : null; }
-async function importHmacKey(value) { return crypto.subtle.importKey('raw', new TextEncoder().encode(value), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']); }
-async function verifyToken(token, env, request) { const parts = String(token || '').split('.'); if (parts.length !== 3) throw new Error('invalid token'); const key = await importHmacKey(resolveSecret(env, request)); const ok = await crypto.subtle.verify('HMAC', key, b64urlDecode(parts[2]), new TextEncoder().encode(parts[0] + '.' + parts[1])); if (!ok) throw new Error('bad signature'); const payload = JSON.parse(new TextDecoder().decode(b64urlDecode(parts[1]))); if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) throw new Error('expired'); return payload; }
-function getRequestToken(request) {
-  const cookieToken = getCookie(request.headers.get('Cookie') || '', 'session');
-  if (cookieToken) return cookieToken;
-  const headerToken = String(request.headers.get('X-GPT-Image-Session') || '').trim();
-  return headerToken || null;
-}
-async function currentUser(request, env) { const token = getRequestToken(request); if (!token) return null; try { const payload = await verifyToken(token, env, request); return await env.gpt_image2_db.prepare('SELECT id, username, role FROM users WHERE id = ?').bind(payload.userId).first(); } catch (e) { return null; } }
-function json(data, status = 200, extraHeaders = {}) { return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0', 'Pragma': 'no-cache', 'Expires': '0', ...extraHeaders } }); }
+import { currentUser, json } from '../_lib/auth.js';
+import { normalizeSafeBaseUrl, safeUpstreamEndpoint } from '../_lib/upstream-url.js';
 async function loadSettings(db, userId) { const rows = await db.prepare('SELECT key, value FROM user_settings WHERE user_id = ?').bind(userId).all(); const settings = {}; (rows.results || []).forEach(row => { try { settings[row.key] = JSON.parse(row.value); } catch (e) { settings[row.key] = row.value; } }); return settings; }
 function asBool(value, fallback = false) { return value === undefined || value === null ? fallback : !!value; }
 function asNum(value, fallback) { const n = Number(value); return Number.isFinite(n) ? n : fallback; }
 function firstString() { for (let i = 0; i < arguments.length; i++) { const v = arguments[i]; if (typeof v === 'string' && v.trim()) return v.trim(); } return ''; }
-function normalizeBaseUrl(raw) { let value = String(raw || '').trim().replace(/\/+$/, ''); if (!value) return ''; if (!/^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(value)) value = 'https://' + value; try { const url = new URL(value); const parts = url.pathname.split('/').filter(Boolean); if (!parts.includes('v1')) parts.push('v1'); url.pathname = '/' + parts.join('/'); url.search = ''; url.hash = ''; return url.toString().replace(/\/+$/, ''); } catch (e) { return value.replace(/\/+$/, '') + '/v1'; } }
 function findProfileById(settings, profileId) { const profiles = Array.isArray(settings.profiles) ? settings.profiles : []; if (!profileId) return null; return profiles.find(p => p && (p.id === profileId || p.name === profileId)) || null; }
 function normalizeAgentMode(value) { value = String(value || 'off'); if (value === 'same') return 'native'; if (value === 'custom') return 'hybrid'; return value === 'native' || value === 'hybrid' ? value : 'off'; }
-function selectedProfile(settings, apiPath = '', explicitProfileId = '') { const profiles = Array.isArray(settings.profiles) ? settings.profiles : []; const activeId = settings.activeProfileId || (profiles[0] && profiles[0].id) || 'default-openai'; const cleanPath = String(apiPath || '').replace(/^\/+/, ''); const mode = normalizeAgentMode(settings.agentApiConfigMode); const isResponsesPath = /^responses(?:$|\?|\/)/.test(cleanPath); const isImagesPath = /^images(?:$|\?|\/)/.test(cleanPath); const explicit = findProfileById(settings, explicitProfileId); const explicitOk = explicit && ((isResponsesPath && explicit.apiMode === 'responses') || (isImagesPath && (explicit.apiMode || 'images') === 'images')); const agentText = findProfileById(settings, settings.agentTextProfileId); const preferred = explicitOk ? explicit : (isResponsesPath && (mode === 'native' || mode === 'hybrid') && agentText ? agentText : null); const found = preferred || profiles.find(p => p && p.id === activeId) || profiles[0] || null; const base = found || {}; return {
+function selectedProfile(settings, apiPath = '', explicitProfileId = '') { const profiles = Array.isArray(settings.profiles) ? settings.profiles : []; const activeId = settings.activeProfileId || (profiles[0] && profiles[0].id) || 'default-openai'; const activeImageId = settings.activeImageProfileId || ''; const cleanPath = String(apiPath || '').replace(/^\/+/, ''); const mode = normalizeAgentMode(settings.agentApiConfigMode); const isResponsesPath = /^responses(?:$|\?|\/)/.test(cleanPath); const isImagesPath = /^images(?:$|\?|\/)/.test(cleanPath); const explicit = findProfileById(settings, explicitProfileId); let found = null; if (isResponsesPath) { if (explicitProfileId) { if (!explicit || explicit.apiMode !== 'responses') throw new Error('Selected Agent text profile is missing or does not support Responses API'); found = explicit; } else if (mode === 'hybrid') { const agentText = findProfileById(settings, settings.agentTextProfileId); if (!agentText || agentText.apiMode !== 'responses') throw new Error('Hybrid Agent text profile is missing or does not support Responses API'); found = agentText; } else { found = profiles.find(p => p && p.id === activeId) || null; if (!found || found.apiMode !== 'responses') throw new Error('Active profile does not support Responses API'); } } else if (isImagesPath) { if (explicitProfileId) { if (!explicit || (explicit.apiMode || 'images') !== 'images') throw new Error('Selected image profile is missing or does not support Images API'); found = explicit; } else if (activeImageId) { found = findProfileById(settings, activeImageId); if (!found || (found.apiMode || 'images') !== 'images') throw new Error('Active image profile is missing or does not support Images API'); } else { const active = findProfileById(settings, activeId); found = active && (active.apiMode || 'images') === 'images' ? active : profiles.find(p => p && (p.apiMode || 'images') === 'images') || null; } } else { found = explicit || profiles.find(p => p && p.id === activeId) || profiles[0] || null; } const base = found || {}; return {
   id: base.id || activeId || 'default-openai',
   name: base.name || '\u4e91\u7aef\u914d\u7f6e',
   provider: base.provider || 'openai',
@@ -74,7 +43,27 @@ function sanitizeProfiles(settings) { const profiles = Array.isArray(settings.pr
   streamPartialImages: asNum(p.streamPartialImages, asNum(settings.streamPartialImages, 1))
 })); }
 
-function corsHeaders(headers = {}) { return { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS', 'Access-Control-Allow-Headers': '*', 'Cache-Control': 'no-store', ...headers }; }
+function isSameOriginRequest(request) {
+  const origin = String(request.headers.get('Origin') || '').trim();
+  if (!origin) return true;
+  try { return origin === new URL(request.url).origin; } catch (error) { return false; }
+}
+function corsHeaders(request, headers = {}) {
+  const result = {
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, X-GPT-Image-Profile-Id, X-GPT-Image-Timeout-Seconds, X-GPT-Image-Entry, X-GPT-Image-Response-B64, X-GPT-Image-Stream, X-GPT-Image-Partial-Images',
+    'Access-Control-Expose-Headers': 'Retry-After, X-GPT-Image-Upstream-Ms, X-GPT-Image-Proxy-Ms, X-GPT-Image-Profile-Id, X-GPT-Image-Profile-Name, X-GPT-Image-Proxy-Streamed',
+    'Cache-Control': 'no-store',
+    'Vary': 'Origin',
+    ...headers
+  };
+  const origin = String(request.headers.get('Origin') || '').trim();
+  if (origin && isSameOriginRequest(request)) {
+    result['Access-Control-Allow-Origin'] = origin;
+    result['Access-Control-Allow-Credentials'] = 'true';
+  }
+  return result;
+}
 function isEventStream(headers) { return (headers.get('Content-Type') || '').toLowerCase().includes('text/event-stream'); }
 function looksLikeCloudflareTimeout(text, status) { const lower = String(text || '').toLowerCase(); return status === 524 || lower.includes('524: a timeout occurred') || lower.includes('error code 524') || (lower.includes('cloudflare') && lower.includes('timeout')) || (status >= 502 && status < 600 && lower.trim().startsWith('<!doctype')); }
 function looksLikeHtml(text, contentType) { const lowerType = String(contentType || '').toLowerCase(); const trimmed = String(text || '').trim().toLowerCase(); return lowerType.includes('text/html') || trimmed.startsWith('<!doctype') || trimmed.startsWith('<html') || trimmed.includes('<body'); }
@@ -172,7 +161,6 @@ function googleCompatExtraBody(imageSize, aspectRatio) {
 async function proxyMultipartBody(request, headers, apiPath, profile) {
   if (!isImageApiPath(apiPath) || !isMultipart(headers)) return request.body;
   const provider = providerKey(profile);
-  if (provider !== 'google' && provider !== 'xai') return request.body;
   const input = await request.formData();
   const out = new FormData();
   const firstValue = (...keys) => {
@@ -187,37 +175,45 @@ async function proxyMultipartBody(request, headers, apiPath, profile) {
   };
   const model = String(profile.model || firstValue('model') || 'gpt-image-2');
   out.append('model', model);
-  appendIfPresent('prompt', firstValue('prompt'));
-  out.append('n', '1');
-  if (provider === 'google') {
-    const imageSize = firstValue('image_size', 'resolution', 'size') || '2K';
-    const aspectRatio = firstValue('aspect_ratio', 'aspectRatio', 'ratio') || '1:1';
-    out.append('resolution', String(imageSize));
-    out.append('image_size', String(imageSize));
-    out.append('size', String(imageSize));
-    out.append('aspect_ratio', String(aspectRatio));
-    out.append('response_format', 'url');
-    appendIfPresent('target_size', firstValue('target_size', 'targetSize') || googleOfficialImageSize(imageSize, aspectRatio));
-    out.append('extra_body', JSON.stringify(googleCompatExtraBody(imageSize, aspectRatio)));
-  } else {
-    appendIfPresent('resolution', firstValue('resolution', 'image_size', 'size') || '2k');
-    appendIfPresent('aspect_ratio', firstValue('aspect_ratio', 'aspectRatio', 'ratio') || '1:1');
-  }
-  appendIfPresent('quality', firstValue('quality', 'image_quality'));
-  appendIfPresent('output_format', firstValue('output_format', 'format'));
-  appendIfPresent('moderation', firstValue('moderation'));
-  const format = String(firstValue('output_format', 'format') || '').toLowerCase();
-  if (format === 'png') {
-    const transparentValue = firstValue('transparent_background', 'transparent');
-    appendIfPresent('transparent_background', transparentValue);
-    const background = firstValue('background') || (/^(1|true|yes|on)$/i.test(String(transparentValue || '')) ? 'transparent' : '');
-    appendIfPresent('background', background);
-  }
-  else appendIfPresent('output_compression', firstValue('output_compression', 'compression'));
-  for (const [key, value] of input.entries()) {
-    if (key === 'image[]' || key === 'image' || key === 'mask') {
+  if (provider !== 'google' && provider !== 'xai') {
+    for (const [key, value] of input.entries()) {
+      if (key === 'model') continue;
       if (value && value.name) out.append(key, value, value.name);
-      else out.append(key, value);
+      else if (value !== null && value !== undefined) out.append(key, value);
+    }
+  } else {
+    appendIfPresent('prompt', firstValue('prompt'));
+    out.append('n', '1');
+    if (provider === 'google') {
+      const imageSize = firstValue('image_size', 'resolution', 'size') || '2K';
+      const aspectRatio = firstValue('aspect_ratio', 'aspectRatio', 'ratio') || '1:1';
+      out.append('resolution', String(imageSize));
+      out.append('image_size', String(imageSize));
+      out.append('size', String(imageSize));
+      out.append('aspect_ratio', String(aspectRatio));
+      out.append('response_format', 'url');
+      appendIfPresent('target_size', firstValue('target_size', 'targetSize') || googleOfficialImageSize(imageSize, aspectRatio));
+      out.append('extra_body', JSON.stringify(googleCompatExtraBody(imageSize, aspectRatio)));
+    } else {
+      appendIfPresent('resolution', firstValue('resolution', 'image_size', 'size') || '2k');
+      appendIfPresent('aspect_ratio', firstValue('aspect_ratio', 'aspectRatio', 'ratio') || '1:1');
+    }
+    appendIfPresent('quality', firstValue('quality', 'image_quality'));
+    appendIfPresent('output_format', firstValue('output_format', 'format'));
+    appendIfPresent('moderation', firstValue('moderation'));
+    const format = String(firstValue('output_format', 'format') || '').toLowerCase();
+    if (format === 'png') {
+      const transparentValue = firstValue('transparent_background', 'transparent');
+      appendIfPresent('transparent_background', transparentValue);
+      const background = firstValue('background') || (/^(1|true|yes|on)$/i.test(String(transparentValue || '')) ? 'transparent' : '');
+      appendIfPresent('background', background);
+    }
+    else appendIfPresent('output_compression', firstValue('output_compression', 'compression'));
+    for (const [key, value] of input.entries()) {
+      if (key === 'image[]' || key === 'image' || key === 'mask') {
+        if (value && value.name) out.append(key, value, value.name);
+        else out.append(key, value);
+      }
     }
   }
   headers.delete('Content-Type');
@@ -272,13 +268,13 @@ async function proxyBody(request, headers, apiPath, profile) {
   } catch (e) {}
   return raw;
 }
-function upstreamError(message, code, type, status, upstream, extra = {}) {
+function upstreamError(request, message, code, type, status, upstream, extra = {}) {
   return json({
     error: { message, type, code },
     upstreamStatus: upstream ? upstream.status : status,
     upstreamType: upstream ? upstream.headers.get('Content-Type') : undefined,
     ...extra
-  }, status, corsHeaders(extra && extra.proxyMs !== undefined ? { 'X-GPT-Image-Proxy-Ms': String(extra.proxyMs) } : {}));
+  }, status, corsHeaders(request, extra && extra.proxyMs !== undefined ? { 'X-GPT-Image-Proxy-Ms': String(extra.proxyMs) } : {}));
 }
 function proxyFetchFailedMessage(error, profile, apiPath, request, headers) {
   const provider = providerKey(profile);
@@ -291,22 +287,53 @@ function proxyFetchFailedMessage(error, profile, apiPath, request, headers) {
     : '请检查 API 地址、模型名称和服务商网关状态后重试。';
   return `${base}。模型：${profile.name || profile.id || profile.model} / ${profile.model}；供应商：${provider}；路径：${apiPath}；模式：${mode}。${suggestion}`;
 }
+function requiresNodeDuplex(body) {
+  if (body === null || body === undefined) return false;
+  if (typeof body === 'string') return false;
+  if (typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams) return false;
+  if (typeof FormData !== 'undefined' && body instanceof FormData) return false;
+  if (typeof Blob !== 'undefined' && body instanceof Blob) return false;
+  if (body instanceof ArrayBuffer) return false;
+  if (ArrayBuffer.isView(body)) return false;
+  if (typeof body.getReader === 'function') return true;
+  if (typeof body.pipe === 'function') return true;
+  if (typeof body[Symbol.asyncIterator] === 'function') return true;
+  return false;
+}
 
 export async function onRequest(ctx) {
   const proxyStart = Date.now();
-  if (ctx.request.method === 'OPTIONS') return json({ ok: true }, 200, corsHeaders());
+  if (!isSameOriginRequest(ctx.request)) {
+    return json({ error: 'Cross-origin proxy requests are not allowed' }, 403, corsHeaders(ctx.request));
+  }
+  if (ctx.request.method === 'OPTIONS') return json({ ok: true }, 200, corsHeaders(ctx.request));
   const user = await currentUser(ctx.request, ctx.env);
-  if (!user) return json({ error: 'Unauthorized' }, 401, corsHeaders());
+  if (!user) return json({ error: 'Unauthorized' }, 401, corsHeaders(ctx.request));
   const settings = await loadSettings(ctx.env.gpt_image2_db, user.id);
   const url = new URL(ctx.request.url);
   const apiPath = url.pathname.replace(/^\/api-proxy\/?/, '') + url.search;
-  if (!apiPath || apiPath === '/') return json({ error: 'API Proxy - no path specified' }, 400, corsHeaders());
-  const profile = selectedProfile(settings, apiPath, ctx.request.headers.get('X-GPT-Image-Profile-Id') || '');
-  const baseUrl = normalizeBaseUrl(profile.baseUrl);
+  if (!apiPath || apiPath === '/') return json({ error: 'API Proxy - no path specified' }, 400, corsHeaders(ctx.request));
+  let profile;
+  try {
+    profile = selectedProfile(settings, apiPath, ctx.request.headers.get('X-GPT-Image-Profile-Id') || '');
+  } catch (error) {
+    return json({ error: error?.message || 'Invalid API profile configuration', code: 'INVALID_PROFILE_CONFIGURATION' }, 400, corsHeaders(ctx.request));
+  }
+  let baseUrl;
+  try {
+    baseUrl = normalizeSafeBaseUrl(profile.baseUrl);
+  } catch (error) {
+    return json({ error: error.message || 'Unsafe API URL' }, 400, corsHeaders(ctx.request));
+  }
   const apiKey = String(profile.apiKey || '').trim();
-  if (!baseUrl) return json({ error: 'API configuration is incomplete: missing API URL' }, 500, corsHeaders());
-  if (!apiKey) return json({ error: 'API configuration is incomplete: missing API Key' }, 500, corsHeaders());
-  const targetUrl = baseUrl + '/' + apiPath.replace(/^\/+/, '');
+  if (!baseUrl) return json({ error: 'API configuration is incomplete: missing API URL' }, 500, corsHeaders(ctx.request));
+  if (!apiKey) return json({ error: 'API configuration is incomplete: missing API Key' }, 500, corsHeaders(ctx.request));
+  let targetUrl;
+  try {
+    targetUrl = safeUpstreamEndpoint(baseUrl, apiPath);
+  } catch (error) {
+    return json({ error: error.message || 'Unsafe API URL' }, 400, corsHeaders(ctx.request));
+  }
   try {
     const headers = new Headers(ctx.request.headers);
     const timeoutOverride = Number(ctx.request.headers.get('X-GPT-Image-Timeout-Seconds'));
@@ -322,15 +349,31 @@ export async function onRequest(ctx) {
     headers.delete('X-GPT-Image-Partial-Images');
     headers.delete('X-GPT-Image-Multipart-Sanitized');
     const upstreamStart = Date.now();
+    const fetchInit = { method: ctx.request.method, headers, body, redirect: 'manual', signal: controller.signal };
+    if (ctx.request.method !== 'GET' && ctx.request.method !== 'HEAD' && requiresNodeDuplex(body)) fetchInit.duplex = 'half';
     let upstream;
     try {
-      upstream = await fetch(targetUrl, { method: ctx.request.method, headers, body, redirect: 'follow', signal: controller.signal });
+      upstream = await fetch(targetUrl, fetchInit);
     } finally {
       clearTimeout(timeoutId);
     }
     const upstreamMs = Date.now() - upstreamStart;
+    if (upstream.status >= 300 && upstream.status < 400) {
+      return upstreamError(
+        ctx.request,
+        '上游 API 返回了重定向。为防止凭据被转发到未验证目标，代理不会自动跟随重定向；请将配置改为最终 HTTPS API 地址。',
+        'UPSTREAM_REDIRECT_BLOCKED',
+        'upstream_redirect',
+        502,
+        upstream,
+        { proxyMs: Date.now() - proxyStart }
+      );
+    }
     const responseHeaders = new Headers(upstream.headers);
-    Object.entries(corsHeaders({
+    responseHeaders.delete('Set-Cookie');
+    responseHeaders.delete('Set-Cookie2');
+    responseHeaders.delete('Clear-Site-Data');
+    Object.entries(corsHeaders(ctx.request, {
       'X-GPT-Image-Upstream-Ms': String(upstreamMs),
       'X-GPT-Image-Proxy-Ms': String(Date.now() - proxyStart),
       'X-GPT-Image-Profile-Id': String(profile.id || ''),
@@ -347,6 +390,7 @@ export async function onRequest(ctx) {
     const bodyText = await upstream.text();
     try { JSON.parse(bodyText); responseHeaders.set('Content-Type', 'application/json; charset=utf-8'); return new Response(bodyText, { status: upstream.status, statusText: upstream.statusText, headers: responseHeaders }); } catch (parseError) {
       if (looksLikeCloudflareTimeout(bodyText, upstream.status)) return upstreamError(
+        ctx.request,
         '上游 API 服务超时（Cloudflare 524/5xx）。这表示 API 服务商长时间未返回结果，不是本站登录或浏览器问题。请稍后重试、更换 API 供应商，或使用服务商支持的异步任务/轮询接口。',
         'UPSTREAM_CLOUDFLARE_TIMEOUT',
         'upstream_timeout',
@@ -354,6 +398,7 @@ export async function onRequest(ctx) {
         upstream
       );
       if (looksLikeHtml(bodyText, upstream.headers.get('Content-Type'))) return upstreamError(
+        ctx.request,
         '上游 API 返回了 HTML 错误页而不是 JSON。请检查 API 地址是否指向正确的 OpenAI 兼容 /v1 接口，或联系 API 服务商处理网关错误。',
         'UPSTREAM_HTML_RESPONSE',
         'upstream_non_json',
@@ -362,6 +407,7 @@ export async function onRequest(ctx) {
         { parseError: parseError.message }
       );
       return upstreamError(
+        ctx.request,
         '上游 API 返回了非 JSON 响应，无法解析为图片生成结果。请检查 API 地址、模型兼容性和服务商返回格式。',
         'UPSTREAM_NON_JSON_RESPONSE',
         'upstream_non_json',
@@ -371,7 +417,7 @@ export async function onRequest(ctx) {
       );
     }
   } catch (e) {
-    if (e.name === 'AbortError') return upstreamError('本站代理等待 API 响应超时。请降低生成张数/图片尺寸，或更换响应更稳定的 API 服务商。', 'PROXY_TIMEOUT', 'proxy_timeout', 504, null, { proxyMs: Date.now() - proxyStart });
-    return upstreamError(proxyFetchFailedMessage(e, profile, apiPath, ctx.request, new Headers(ctx.request.headers)), 'PROXY_FETCH_FAILED', 'proxy_error', 502, null, { proxyMs: Date.now() - proxyStart });
+    if (e.name === 'AbortError') return upstreamError(ctx.request, '本站代理等待 API 响应超时。请降低生成张数/图片尺寸，或更换响应更稳定的 API 服务商。', 'PROXY_TIMEOUT', 'proxy_timeout', 504, null, { proxyMs: Date.now() - proxyStart });
+    return upstreamError(ctx.request, proxyFetchFailedMessage(e, profile, apiPath, ctx.request, new Headers(ctx.request.headers)), 'PROXY_FETCH_FAILED', 'proxy_error', 502, null, { proxyMs: Date.now() - proxyStart });
   }
 }

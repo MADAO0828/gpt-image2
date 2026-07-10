@@ -9,6 +9,7 @@ let promptBootstrapCache = null;
 let promptBootstrapCacheAt = 0;
 let promptSearchCache = null;
 let promptSearchCacheAt = 0;
+const promptPageCache = new Map();
 const STATIC_PROMPTS_TTL = 5 * 60 * 1000;
 function firstPromptImage(row) {
   const images = Array.isArray(row && row.images) ? row.images : [];
@@ -60,6 +61,20 @@ async function loadPromptSearchIndex(ctx) {
   promptSearchCache = data;
   promptSearchCacheAt = now;
   return promptSearchCache;
+}
+async function loadPrebuiltPromptPage(ctx, page, limit) {
+  if (limit !== 48 || page < 2 || page > 12) return null;
+  const now = Date.now();
+  const cached = promptPageCache.get(page);
+  if (cached && (now - cached.loadedAt) < STATIC_PROMPTS_TTL) return cached.payload;
+  const pageName = String(page).padStart(3, '0');
+  const res = await ctx.env.ASSETS.fetch(new URL(`/prompts_pages/page-${pageName}.json`, ctx.request.url));
+  if (!res.ok) return null;
+  const data = await res.json();
+  if (!data || !Array.isArray(data.prompts) || Number(data.page) !== page || Number(data.limit) !== 48) return null;
+  const payload = { ...data, source: 'static-prebuilt-page' };
+  promptPageCache.set(page, { loadedAt: now, payload });
+  return payload;
 }
 function normalizeSearchText(value) {
   return String(value || '').normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
@@ -124,6 +139,10 @@ export async function onRequest(ctx) {
   // override the current bundled repository.
   if (source !== 'd1') {
     try {
+      if (!categoriesOnly && !search && (!cat || cat === 'all')) {
+        const prebuiltPage = await loadPrebuiltPromptPage(ctx, page, limit);
+        if (prebuiltPage) return json(prebuiltPage);
+      }
       const bootstrap = await loadPromptBootstrap(ctx);
       if (bootstrap && !search && page === 1) {
         if (categoriesOnly) return json({ categories: bootstrap.categories || ['all'], total: bootstrap.total || 0, source: 'prebuilt-bootstrap' });

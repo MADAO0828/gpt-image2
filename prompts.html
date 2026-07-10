@@ -247,7 +247,7 @@ html.dark .prompt-detail-media{background:radial-gradient(circle at 26% 20%,rgba
   consumeTokenFromHash();
 })();
 </script>
- <link rel="stylesheet" href="/assets/macos-design.css?v=nexgen-shared-20260704"><link rel="stylesheet" href="/assets/shell-ui.css?v=nexgen-shared-20260704"></head><body>
+ <link rel="stylesheet" href="/assets/macos-design.css?v=nexgen-shared-20260710-r84"><link rel="stylesheet" href="/assets/shell-ui.css?v=nexgen-shared-20260704"></head><body>
 <header class="h prompts-unified"><span class="hl">📚 提示词仓库</span><div class="srch top-srch"><input id="s" placeholder="🔍 搜索提示词..." /></div><div class="nav-actions"><span class="acct" id="promptAccountInfo">&#39564;&#35777;&#20013;...</span>
   <button onclick="toggleTheme()" id="theme-toggle" class="b" title="&#20999;&#25442;&#20027;&#39064;"><span class="nav-ico">&#128187;</span><span class="nav-text">&#20027;&#39064;</span></button>
   <a href="/admin" class="b" title="&#21518;&#21488;"><span class="nav-ico">&#9881;</span><span class="nav-text">&#21518;&#21488;</span></a>
@@ -263,7 +263,7 @@ html.dark .prompt-detail-media{background:radial-gradient(circle at 26% 20%,rgba
 </div>
 <div class="overlay" id="modal"><div class="modal prompt-detail-modal" role="dialog" aria-modal="true" aria-labelledby="mt">
   <div class="prompt-detail-media">
-    <img id="mi" class="modal-img" src="" alt="" referrerpolicy="no-referrer" />
+    <img id="mi" class="modal-img" src="" alt="" referrerpolicy="no-referrer" tabindex="0" role="button" aria-label="查看提示词原图" />
     <div id="mempty" class="prompt-detail-empty">&#27492;&#25552;&#31034;&#35789;&#26242;&#26080;&#39044;&#35272;&#22270;</div>
   </div>
   <div class="prompt-detail-side">
@@ -279,11 +279,15 @@ html.dark .prompt-detail-media{background:radial-gradient(circle at 26% 20%,rgba
     </div>
   </div>
 </div></div>
-<div class="overlay" id="imgViewer" style="cursor:zoom-out"><img id="vi" class="img-viewer-img" /></div>
+<div class="overlay" id="imgViewer" role="dialog" aria-modal="true" aria-label="提示词原图" tabindex="-1" style="cursor:zoom-out">
+  <button class="prompt-detail-close" id="ivclose" type="button" aria-label="关闭原图" style="position:fixed;top:18px;right:18px;z-index:2">&times;</button>
+  <img id="vi" class="img-viewer-img" alt="提示词原图" />
+</div>
 <script>
 var ITEMS_PER_PAGE = 48;
 var PREBUILT_PAGE_MAX = 12;
 var PAGE_CACHE_LIMIT = 24;
+var PAGE_CACHE_BYTES_LIMIT = 2 * 1024 * 1024;
 var PAGE_CACHE_PREFIX = "nexgen-prompts-page-v3:";
 var CATEGORY_CACHE_KEY = "nexgen-prompts-categories-v3";
 function isMobileViewport(){try{return !!(window.matchMedia&&window.matchMedia("(max-width: 760px)").matches)}catch(e){return (window.innerWidth||1024)<=760}}
@@ -292,6 +296,7 @@ function renderBatchSize(){return isMobileViewport()?8:12}
 function imageRootMargin(){return isMobileViewport()?"320px 0px":"560px 0px"}
 var filteredData = [], currentCat = "all", currentPage = 1, totalItems = 0, currentPrompt = -1, isPageLoading = false;
 var modalHistoryActive = false, suppressModalHistory = false;
+var modalOpener = null;
 var renderFrame = 0;
 var pageCache = Object.create(null);
 var pageCacheOrder = [];
@@ -373,8 +378,59 @@ function observePromptImages(root){
   Array.prototype.forEach.call(imgs,function(img){if(obs)obs.observe(img);else{img.src=img.getAttribute('data-src');img.removeAttribute('data-src')}});
 }
 function setLoading(text){document.getElementById("cats").innerHTML='<div class="ld">'+escHtml(text)+'</div>'}
-function readSessionJson(key){try{var raw=sessionStorage.getItem(key);return raw?JSON.parse(raw):null}catch(e){return null}}
-function writeSessionJson(key,value){try{sessionStorage.setItem(key,JSON.stringify(value))}catch(e){}}
+function sessionCacheKeys(){
+  var keys=[];
+  try{
+    for(var i=0;i<sessionStorage.length;i++){
+      var key=sessionStorage.key(i);
+      if(key&&(key.indexOf(PAGE_CACHE_PREFIX)===0||key===CATEGORY_CACHE_KEY))keys.push(key);
+    }
+  }catch(e){}
+  return keys;
+}
+function readSessionJson(key){
+  try{
+    var raw=sessionStorage.getItem(key),parsed=raw?JSON.parse(raw):null;
+    return parsed&&parsed.__promptCache===1?parsed.value:parsed;
+  }catch(e){return null}
+}
+function sessionCacheStamp(raw){
+  try{var parsed=JSON.parse(raw);return parsed&&parsed.__promptCache===1?Number(parsed.savedAt)||0:0}catch(e){return 0}
+}
+function trimSessionPromptCache(){
+  try{
+    var entries=sessionCacheKeys().map(function(key){
+      var raw=sessionStorage.getItem(key)||"";
+      return{key:key,bytes:raw.length*2,savedAt:sessionCacheStamp(raw),isPage:key.indexOf(PAGE_CACHE_PREFIX)===0};
+    });
+    entries.sort(function(a,b){return b.savedAt-a.savedAt});
+    var entryCount=0,totalBytes=0;
+    entries.forEach(function(entry){
+      var keepCount=entryCount<PAGE_CACHE_LIMIT;
+      var keepBytes=totalBytes+entry.bytes<=PAGE_CACHE_BYTES_LIMIT;
+      if(keepCount&&keepBytes){
+        entryCount++;
+        totalBytes+=entry.bytes;
+      }else{
+        sessionStorage.removeItem(entry.key);
+        if(entry.isPage){
+          var pageKey=entry.key.slice(PAGE_CACHE_PREFIX.length);
+          delete pageCache[pageKey];
+          pageCacheOrder=pageCacheOrder.filter(function(key){return key!==pageKey});
+        }
+      }
+    });
+  }catch(e){}
+}
+function writeSessionJson(key,value){
+  try{
+    sessionStorage.setItem(key,JSON.stringify({__promptCache:1,savedAt:Date.now(),value:value}));
+    trimSessionPromptCache();
+  }catch(e){
+    trimSessionPromptCache();
+  }
+}
+trimSessionPromptCache();
 function cachePageKey(page){var q=document.getElementById("s").value.trim().toLowerCase();return String(page)+"|"+String(ITEMS_PER_PAGE)+"|"+String(currentCat||"all")+"|"+q}
 function rememberPageCache(key,payload){
   pageCache[key]=payload;
@@ -522,8 +578,9 @@ function renderItems(rows, startIdx){
     var frag=document.createDocumentFragment();
     var limit=Math.min(i+renderBatchSize(),rows.length);
     for(;i<limit;i++){
-      var p=rows[i],idx=startIdx+i,card=document.createElement("div");
+      var p=rows[i],idx=startIdx+i,card=document.createElement("button");
       card.className="card";card.style.animationDelay=Math.min(i*10,180)+'ms';card.setAttribute("data-idx",idx);
+      card.type="button";card.setAttribute("aria-label","查看提示词："+(p.t||"未命名提示词"));
       card.onclick=function(){openModal(parseInt(this.getAttribute("data-idx")))}
       var html="";
       if(p.i){var src=escAttr(imgProxyUrl(p.i));var eager=idx<firstPaintCards(),high=idx<(isMobileViewport()?1:2);html+='<div class="card-img"><img '+(eager?'src="'+src+'"':'data-src="'+src+'"')+' referrerpolicy="no-referrer" alt="" loading="'+(eager?'eager':'lazy')+'" decoding="async" fetchpriority="'+(high?'high':'low')+'" width="640" height="360" onerror="this.style.display=\'none\'"></div>';}
@@ -560,6 +617,8 @@ function pushModalHistory(i){try{if(modalHistoryActive)return;history.pushState(
 function clearModalHistoryFlag(){try{if(modalHistoryActive&&history.state&&history.state.promptModal&&!suppressModalHistory){suppressModalHistory=true;modalHistoryActive=false;history.back();setTimeout(function(){suppressModalHistory=false},120);return}}catch(e){}modalHistoryActive=false;suppressModalHistory=false}
 function openModal(i){
   if(!filteredData[i])return;
+  var active=document.activeElement;
+  modalOpener=active&&typeof active.focus==="function"?active:null;
   currentPrompt=i;
   var p=filteredData[i],promptEl=document.getElementById("mp");
   document.getElementById("mc2").textContent=p.c||"\u672a\u5206\u7c7b";
@@ -571,6 +630,7 @@ function openModal(i){
   var img=document.getElementById("mi"),empty=document.getElementById("mempty"),modal=document.getElementById("modal");
   img.removeAttribute("src");img.removeAttribute("data-original-src");
   document.body.classList.add("modal-open");modal.classList.add("show");pushModalHistory(i);
+  requestAnimationFrame(function(){var close=document.getElementById("mclose");if(close)close.focus()});
   if(p.i){img.style.display="block";if(empty)empty.style.display="none";var modalImgSrc=imgProxyUrl(p.i);requestAnimationFrame(function(){if(currentPrompt===i&&modal.classList.contains("show")){img.decoding="async";img.loading="eager";img.src=modalImgSrc;img.setAttribute("data-original-src",p.i)}})}else{img.style.display="none";if(empty)empty.style.display="block"}
   if(promptNeedsHydration(p)){
     hydratePromptItem(i).then(function(full){
@@ -578,7 +638,23 @@ function openModal(i){
     });
   }
 }
-function closeModal(opts){if(opts&&typeof opts.preventDefault==="function")opts={};opts=opts||{};document.getElementById("modal").classList.remove("show");document.body.classList.remove("modal-open");var img=document.getElementById("mi");if(img){img.removeAttribute("src");img.removeAttribute("data-original-src")}var viEl=document.getElementById("vi");if(viEl)viEl.removeAttribute("src");var viewer=document.getElementById("imgViewer");if(viewer)viewer.classList.remove("show");currentPrompt=-1;if(!opts.fromPop)clearModalHistoryFlag()}
+function modalFocusables(){
+  var dialog=document.querySelector("#modal .prompt-detail-modal");
+  if(!dialog)return[];
+  return Array.prototype.filter.call(dialog.querySelectorAll('button:not([disabled]),a[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])'),function(el){return el.offsetParent!==null});
+}
+function closeModal(opts){
+  if(opts&&typeof opts.preventDefault==="function")opts={};
+  opts=opts||{};
+  var modal=document.getElementById("modal");
+  if(!modal||!modal.classList.contains("show"))return;
+  modal.classList.remove("show");document.body.classList.remove("modal-open");
+  var img=document.getElementById("mi");if(img){img.removeAttribute("src");img.removeAttribute("data-original-src")}
+  closeImageViewer({restore:false});
+  currentPrompt=-1;if(!opts.fromPop)clearModalHistoryFlag();
+  var opener=modalOpener;modalOpener=null;
+  requestAnimationFrame(function(){if(opener&&document.contains(opener))opener.focus()});
+}
 function copyText(text){if(navigator.clipboard&&navigator.clipboard.writeText){return navigator.clipboard.writeText(text)}var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.left="-9999px";document.body.appendChild(ta);ta.focus();ta.select();try{document.execCommand("copy")}finally{ta.remove()}return Promise.resolve()}
 function ensureCopyLinkModal(){
   var existing=document.getElementById('copyLinkModal');
@@ -615,7 +691,29 @@ function copyExternalLink(url){
 }
 document.getElementById("modal").addEventListener("click",function(e){if(e.target===this)closeModal()});
 document.getElementById("mclose").addEventListener("click",closeModal);
-document.addEventListener("keydown",function(e){if(e.key==="Escape"){closeModal();document.getElementById("imgViewer").classList.remove("show")}});
+document.addEventListener("keydown",function(e){
+  var viewer=document.getElementById("imgViewer");
+  if(viewer&&viewer.classList.contains("show")){
+    if(e.key==="Escape"){e.preventDefault();closeImageViewer();return}
+    if(e.key==="Tab"){
+      var viewerFocusables=Array.prototype.filter.call(viewer.querySelectorAll('button:not([disabled]),[tabindex]:not([tabindex="-1"])'),function(el){return el.offsetParent!==null});
+      if(!viewerFocusables.length){e.preventDefault();viewer.focus();return}
+      var viewerFirst=viewerFocusables[0],viewerLast=viewerFocusables[viewerFocusables.length-1],viewerActive=document.activeElement;
+      if(e.shiftKey&&(viewerActive===viewerFirst||!viewer.contains(viewerActive))){e.preventDefault();viewerLast.focus()}
+      else if(!e.shiftKey&&(viewerActive===viewerLast||!viewer.contains(viewerActive))){e.preventDefault();viewerFirst.focus()}
+    }
+    return
+  }
+  var modal=document.getElementById("modal");
+  if(!modal||!modal.classList.contains("show"))return;
+  if(e.key==="Escape"){e.preventDefault();closeModal();return}
+  if(e.key!=="Tab")return;
+  var focusables=modalFocusables();
+  if(!focusables.length){e.preventDefault();return}
+  var first=focusables[0],last=focusables[focusables.length-1],active=document.activeElement;
+  if(e.shiftKey&&(active===first||!modal.contains(active))){e.preventDefault();last.focus()}
+  else if(!e.shiftKey&&(active===last||!modal.contains(active))){e.preventDefault();first.focus()}
+});
 window.addEventListener("popstate",function(){if(suppressModalHistory)return;var modal=document.getElementById("modal");if(modal&&modal.classList.contains("show")){modalHistoryActive=false;closeModal({fromPop:true})}});
 document.getElementById("mcp").addEventListener("click",function(){if(currentPrompt>=0&&filteredData[currentPrompt]){hydratePromptItem(currentPrompt).then(function(p){return copyText(p.p||"")}).then(showToast).catch(showToast)}});
 document.getElementById("mus").addEventListener("click",function(){if(currentPrompt>=0&&filteredData[currentPrompt]){hydratePromptItem(currentPrompt).then(function(p){var pp=p.p||"";sessionStorage.setItem("prompt_to_use",pp);try{localStorage.setItem("gpt-image2-pending-prompt",pp)}catch(e){}location.href="/"})}});
@@ -623,13 +721,61 @@ document.getElementById("msrc").addEventListener("click",function(){var u=this.g
 function showToast(){var d=document.createElement("div");d.className="ts";d.textContent="✅ 已复制";document.body.appendChild(d);setTimeout(function(){d.remove()},1500)}
 var vi=document.getElementById("vi");
 var mi=document.getElementById("mi");
-mi.addEventListener("click",function(){
+var imageViewerOpener=null;
+function setImageViewerBackgroundInert(active){
+  var viewer=document.getElementById("imgViewer");
+  Array.prototype.forEach.call(document.body.children,function(node){
+    if(node===viewer||node.tagName==="SCRIPT")return;
+    if(active){
+      node.dataset.viewerPreviousAriaHidden=node.getAttribute("aria-hidden")||"";
+      node.inert=true;
+      node.setAttribute("aria-hidden","true")
+    }else if(node.dataset.viewerPreviousAriaHidden!==undefined){
+      node.inert=false;
+      if(node.dataset.viewerPreviousAriaHidden)node.setAttribute("aria-hidden",node.dataset.viewerPreviousAriaHidden);else node.removeAttribute("aria-hidden");
+      delete node.dataset.viewerPreviousAriaHidden
+    }
+  })
+}
+function openImageViewer(){
   if(currentPrompt>=0&&filteredData[currentPrompt]&&filteredData[currentPrompt].i){
+    imageViewerOpener=document.activeElement;
     vi.src=imgProxyUrl(filteredData[currentPrompt].i);
-    document.getElementById("imgViewer").classList.add("show")
+    var viewer=document.getElementById("imgViewer");
+    viewer.classList.add("show");
+    setImageViewerBackgroundInert(true);
+    requestAnimationFrame(function(){document.getElementById("ivclose").focus()})
   }
+}
+function closeImageViewer(options){
+  options=options||{};
+  var viewer=document.getElementById("imgViewer"),detail=document.querySelector("#modal .prompt-detail-modal");
+  if(viewer)viewer.classList.remove("show");
+  vi.removeAttribute("src");
+  setImageViewerBackgroundInert(false);
+  var opener=imageViewerOpener;imageViewerOpener=null;
+  if(options.restore!==false)requestAnimationFrame(function(){if(opener&&document.contains(opener))opener.focus();else if(detail)detail.focus()})
+}
+mi.addEventListener("click",openImageViewer);
+mi.addEventListener("keydown",function(e){if(e.key==="Enter"||e.key===" "){e.preventDefault();openImageViewer()}});
+document.getElementById("imgViewer").addEventListener("click",function(e){if(e.target===this)closeImageViewer()});
+document.getElementById("ivclose").addEventListener("click",function(){closeImageViewer()});
+var scrollingTimer=0,scrollingFrame=0;
+function markPromptScrolling(){
+  if(!scrollingFrame){
+    scrollingFrame=requestAnimationFrame(function(){
+      scrollingFrame=0;
+      document.documentElement.classList.add("is-scrolling");
+    });
+  }
+  clearTimeout(scrollingTimer);
+  scrollingTimer=setTimeout(function(){document.documentElement.classList.remove("is-scrolling")},140);
+}
+["grid","cats"].forEach(function(id){
+  var scroller=document.getElementById(id);
+  if(scroller)scroller.addEventListener("scroll",markPromptScrolling,{passive:true});
 });
-document.getElementById("imgViewer").addEventListener("click",function(){this.classList.remove("show");vi.removeAttribute("src")});
+window.addEventListener("pagehide",function(){clearTimeout(scrollingTimer);document.documentElement.classList.remove("is-scrolling")});
 fetch('/api/auth/me',{cache:'no-store',credentials:'same-origin'}).then(function(r){if(!r.ok){authFailed();return null}return r.json()}).then(function(u){var el=document.getElementById('promptAccountInfo');if(el&&u){if(window.GptShell)window.GptShell.setAccount(el,u,u.role);else{el.textContent=(u.role==='admin'?'\u7ba1\u7406\u5458 ':'\u7528\u6237 ')+u.username;el.title=el.textContent}}}).catch(function(){authFailed()});
 loadCategories();
 </script></body></html>

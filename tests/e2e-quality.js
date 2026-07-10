@@ -436,26 +436,181 @@ async function smokeMobileLayout(browser) {
   await context.close();
 }
 
-async function loginToken() {
-  const res = await fetch(absolutePath('/api/auth/login'), {
-    method: 'POST',
+async function authenticateContext(context) {
+  const res = await context.request.post(absolutePath('/api/auth/login'), {
+    data: { username: TEST_USER, password: TEST_PASS },
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ username: TEST_USER, password: TEST_PASS })
   });
   const data = await res.json().catch(() => ({}));
-  assert(res.ok && data.token, `api login should return token for browser-specific smoke; status=${res.status}`);
-  return data.token;
+  assert(res.ok(), `api login should establish an HttpOnly session cookie; status=${res.status()} error=${data.error || ''}`);
+}
+
+async function assertModalAccessibility(page, modalKey, expectedAutofocus) {
+  const selector = `[data-modal-key="${modalKey}"]`;
+  await page.waitForSelector(selector, { state: 'visible', timeout: TIMEOUT });
+  const audit = await page.evaluate(({ selector, modalKey }) => {
+    const dialog = document.querySelector(selector);
+    const labelledBy = dialog?.getAttribute('aria-labelledby') || '';
+    const labelledNode = labelledBy ? document.getElementById(labelledBy) : null;
+    return {
+      role: dialog?.getAttribute('role') || '',
+      ariaModal: dialog?.getAttribute('aria-modal') || '',
+      labelledBy,
+      labelText: labelledNode?.textContent?.trim() || dialog?.getAttribute('aria-label') || '',
+      activeModalKey: document.activeElement?.closest?.('[data-modal-key]')?.dataset?.modalKey || '',
+      workspaceInert: !!document.querySelector('#app > .workspace')?.inert,
+      lowerDialogs: Array.from(document.querySelectorAll('[data-modal-key][role="dialog"]'))
+        .filter((node) => node !== dialog)
+        .map((node) => ({ key: node.dataset.modalKey, inert: !!node.inert, ariaHidden: node.getAttribute('aria-hidden') })),
+    };
+  }, { selector, modalKey });
+  assert(audit.role === 'dialog' && audit.ariaModal === 'true', `${modalKey} should expose modal dialog semantics: ${JSON.stringify(audit)}`);
+  assert(!!audit.labelText, `${modalKey} should have an accessible title: ${JSON.stringify(audit)}`);
+  assert(audit.activeModalKey === modalKey, `${modalKey} should own initial focus: ${JSON.stringify(audit)}`);
+  assert(audit.workspaceInert, `${modalKey} should make the workbench background inert: ${JSON.stringify(audit)}`);
+  if (expectedAutofocus) {
+    assert(await page.locator(expectedAutofocus).evaluate((node) => document.activeElement === node), `${modalKey} should focus ${expectedAutofocus}`);
+  }
+
+  const focusables = page.locator(`${selector} button:not([disabled]), ${selector} [href], ${selector} input:not([disabled]), ${selector} select:not([disabled]), ${selector} textarea:not([disabled]), ${selector} [tabindex]:not([tabindex="-1"])`);
+  const count = await focusables.count();
+  assert(count >= 1, `${modalKey} should expose at least one focusable control`);
+  await focusables.nth(count - 1).focus();
+  await page.keyboard.press('Tab');
+  assert(await page.evaluate((selector) => document.querySelector(selector)?.contains(document.activeElement), selector), `${modalKey} Tab should remain in the top dialog`);
+  await page.evaluate(() => {
+    const outside = document.querySelector('#app > .workspace button, #app > .workspace input');
+    if (outside) outside.focus();
+    else {
+      document.body.tabIndex = -1;
+      document.body.focus();
+    }
+  });
+  assert(await page.evaluate((selector) => document.querySelector(selector)?.contains(document.activeElement), selector), `${modalKey} should pull escaped focus back into the top dialog`);
+  return audit;
+}
+
+async function smokeModalKeyboardMatrix(browserType, browserName) {
+  const browser = await browserType.launch({ headless: HEADLESS, slowMo: SLOW_MO });
+  try {
+    for (const width of [390, 768]) {
+      const context = await browser.newContext({
+        viewport: { width, height: 900 },
+        hasTouch: true,
+        ignoreHTTPSErrors: true,
+      });
+      await authenticateContext(context);
+      const page = await context.newPage();
+      const errors = attachPageDiagnostics(page);
+      await page.goto(absolutePath('/'), { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
+      await waitForSettled(page);
+      await assertNoRuntimeRecovery(page);
+
+      await clickMode(page, ['工作流', 'Workflow']);
+      await page.waitForSelector('.workflow-workspace', { timeout: TIMEOUT });
+      const editorOpener = page.locator('[data-action="new-workflow-draft"]').first();
+      await editorOpener.focus();
+      await page.keyboard.press('Enter');
+      await assertModalAccessibility(page, 'workflow-editor', '[data-modal-key="workflow-editor"] [data-action="workflow-name-input"]');
+      const editorStableAction = '[data-modal-key="workflow-editor"] [data-action="save-workflow-draft"]';
+      await page.locator(editorStableAction).focus();
+      await page.evaluate(() => window.__homepageV3TestHooks.render());
+      assert(await page.locator(editorStableAction).evaluate((node) => document.activeElement === node), `${browserName} ${width}: workflow editor focus should survive a full render`);
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('[data-modal-key="workflow-editor"]', { state: 'detached', timeout: TIMEOUT });
+      assert(await editorOpener.evaluate((node) => document.activeElement === node), `${browserName} ${width}: workflow editor Escape should restore opener`);
+
+      const invokeOpener = page.locator('[data-action="new-workflow-draft"]').first();
+      await invokeOpener.focus();
+      await page.evaluate(() => {
+        const workflow = {
+          id: 'a11y-workflow',
+          projectId: 'default',
+          name: '键盘调用验收',
+          variables: { columns: ['主题'], rows: [{ 主题: '海报' }] },
+          config: {},
+        };
+        window.__homepageV3TestHooks.setTestState({
+          agent: { workflows: [workflow] },
+          workflowInvoke: {
+            workflowId: workflow.id,
+            workflow,
+            rows: workflow.variables.rows,
+            columns: workflow.variables.columns,
+            countPerRow: 1,
+            concurrency: 2,
+            maxSteps: 5,
+            maxImages: 8,
+            continueOnStepError: true,
+            references: [],
+          },
+        });
+        window.__homepageV3TestHooks.render();
+      });
+      await assertModalAccessibility(page, 'workflow-invoke', '[data-modal-key="workflow-invoke"] [data-action="workflow-invoke-number"][data-field="countPerRow"]');
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('[data-modal-key="workflow-invoke"]', { state: 'detached', timeout: TIMEOUT });
+      assert(await invokeOpener.evaluate((node) => document.activeElement === node), `${browserName} ${width}: workflow invoke Escape should restore opener`);
+
+      await clickMode(page, ['画廊', 'Gallery']);
+      const promptOpener = page.locator('[data-action="open-prompt-repo"]:visible').first();
+      await promptOpener.focus();
+      await page.keyboard.press('Enter');
+      await assertModalAccessibility(page, 'prompt-repo', '#promptRepoSearch');
+      const imageCard = page.locator('[data-modal-key="prompt-repo"] .prompt-card:has(img)').first();
+      await imageCard.waitFor({ state: 'visible', timeout: TIMEOUT });
+      await imageCard.focus();
+      await page.keyboard.press('Enter');
+      const detailAudit = await assertModalAccessibility(page, 'prompt-detail', '[data-modal-key="prompt-detail"] [data-action="prompt-detail-close"]');
+      assert(detailAudit.lowerDialogs.some((item) => item.key === 'prompt-repo' && item.inert && item.ariaHidden === 'true'), `${browserName} ${width}: prompt repo should be inert under prompt detail: ${JSON.stringify(detailAudit)}`);
+      const detailStableAction = '[data-modal-key="prompt-detail"] [data-action="use-prompt"]';
+      await page.locator(detailStableAction).focus();
+      await page.evaluate(() => window.__homepageV3TestHooks.render());
+      const detailFocusAudit = await page.evaluate((selector) => {
+        const expected = document.querySelector(selector);
+        const active = document.activeElement;
+        return {
+          matched: active === expected,
+          expectedExists: !!expected,
+          activeTag: active?.tagName || '',
+          activeAction: active?.dataset?.action || '',
+          activeModalKey: active?.closest?.('[data-modal-key]')?.dataset?.modalKey || '',
+        };
+      }, detailStableAction);
+      assert(detailFocusAudit.matched, `${browserName} ${width}: nested detail focus should survive a full render: ${JSON.stringify(detailFocusAudit)}`);
+
+      const imageViewerOpener = page.locator('[data-modal-key="prompt-detail"] [data-action="prompt-image-view"]');
+      await page.locator('[data-modal-key="prompt-detail"] [data-action="prompt-detail-close"]').focus();
+      await page.keyboard.press('Tab');
+      assert(await imageViewerOpener.evaluate((node) => document.activeElement === node && node.tagName === 'BUTTON'), `${browserName} ${width}: prompt image should be the next keyboard-focusable control`);
+      await page.keyboard.press('Enter');
+      const viewerAudit = await assertModalAccessibility(page, 'prompt-viewer', '[data-modal-key="prompt-viewer"] [data-action="prompt-image-close"]');
+      assert(viewerAudit.lowerDialogs.some((item) => item.key === 'prompt-detail' && item.inert && item.ariaHidden === 'true'), `${browserName} ${width}: prompt detail should be inert under image viewer: ${JSON.stringify(viewerAudit)}`);
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('[data-modal-key="prompt-viewer"]', { state: 'detached', timeout: TIMEOUT });
+      assert(await imageViewerOpener.evaluate((node) => document.activeElement === node), `${browserName} ${width}: closing viewer should restore the image opener`);
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('[data-modal-key="prompt-detail"]', { state: 'detached', timeout: TIMEOUT });
+      assert(await imageCard.evaluate((node) => document.activeElement === node), `${browserName} ${width}: closing prompt detail should restore its card opener`);
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('[data-modal-key="prompt-repo"]', { state: 'detached', timeout: TIMEOUT });
+      assert(await promptOpener.evaluate((node) => document.activeElement === node), `${browserName} ${width}: closing prompt repo should restore opener`);
+
+      assert(errors.length === 0, `${browserName} ${width}: unexpected modal keyboard browser errors: ${errors.join(' | ')}`);
+      await context.close();
+    }
+  } finally {
+    await browser.close();
+  }
 }
 
 async function smokeFirefoxAgentLayout() {
-  const token = await loginToken();
   const browser = await firefox.launch({ headless: HEADLESS, slowMo: SLOW_MO });
   const context = await browser.newContext({
     viewport: { width: 1536, height: 820 },
     ignoreHTTPSErrors: true,
   });
-  const host = new URL(BASE_URL).hostname;
-  await context.addCookies([{ name: 'session', value: token, domain: host, path: '/', httpOnly: true, secure: BASE_URL.startsWith('https:'), sameSite: 'Lax' }]);
+  await authenticateContext(context);
   const page = await context.newPage();
   const errors = attachPageDiagnostics(page);
   try {
@@ -505,6 +660,117 @@ async function smokeFirefoxAgentLayout() {
   }
 }
 
+async function smokePromptVirtualization(browserType, browserName) {
+  const browser = await browserType.launch({ headless: HEADLESS, slowMo: SLOW_MO });
+  const context = await browser.newContext({
+    viewport: { width: 1440, height: 900 },
+    ignoreHTTPSErrors: true,
+  });
+  await authenticateContext(context);
+  const page = await context.newPage();
+  const errors = attachPageDiagnostics(page);
+  try {
+    await page.goto(absolutePath('/'), { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
+    await waitForSettled(page);
+    await page.evaluate(() => {
+      const items = Array.from({ length: 500 }, (_, index) => ({
+        id: `virtual-prompt-${index}`,
+        t: `虚拟提示词 ${index}`,
+        p: `用于虚拟滚动验收的完整提示词 ${index}`,
+        c: '验收分类',
+        i: ''
+      }));
+      window.__homepageV3TestHooks.setTestState({
+        mode: 'gallery',
+        promptRepo: {
+          open: true,
+          items,
+          categories: ['all', '验收分类'],
+          category: 'all',
+          total: items.length,
+          page: 14,
+          hasMore: false,
+          loading: false,
+          scrollTop: 0,
+          viewportHeight: 620,
+          virtualLayout: null
+        }
+      });
+      window.__homepageV3TestHooks.render();
+      window.__homepageV3TestHooks.render();
+    });
+    await page.waitForSelector('#promptList .prompt-card', { timeout: TIMEOUT });
+    for (const ratio of [0, 0.2, 0.45, 0.7, 0.92, 1]) {
+      const audit = await page.evaluate(async (nextRatio) => {
+        const list = document.querySelector('#promptList');
+        const target = Math.round((list.scrollHeight - list.clientHeight) * nextRatio);
+        list.scrollTop = target;
+        list.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const cards = [...list.querySelectorAll('.prompt-card:not(.prompt-skeleton)')];
+        const listRect = list.getBoundingClientRect();
+        const visible = cards.filter((card) => {
+          const rect = card.getBoundingClientRect();
+          return rect.bottom > listRect.top && rect.top < listRect.bottom;
+        }).length;
+        return {
+          target,
+          scrollTop: list.scrollTop,
+          cardCount: cards.length,
+          visible,
+          virtual: list.dataset.virtual
+        };
+      }, ratio);
+      assert(audit.virtual === '1', `${browserName}: prompt repository should remain virtualized: ${JSON.stringify(audit)}`);
+      assert(audit.visible > 0, `${browserName}: prompt repository viewport must never become an empty spacer: ${JSON.stringify(audit)}`);
+      assert(audit.cardCount <= 60, `${browserName}: prompt repository virtual DOM should stay bounded: ${JSON.stringify(audit)}`);
+      assert(Math.abs(audit.scrollTop - audit.target) <= 2, `${browserName}: prompt repository virtual rerender should preserve scroll position: ${JSON.stringify(audit)}`);
+    }
+    await page.evaluate(() => {
+      const list = document.querySelector('#promptList');
+      window.__promptResizeAudit = { maxCards: list.querySelectorAll('.prompt-card').length, longTasks: [] };
+      const mutationObserver = new MutationObserver(() => {
+        window.__promptResizeAudit.maxCards = Math.max(
+          window.__promptResizeAudit.maxCards,
+          list.querySelectorAll('.prompt-card').length
+        );
+      });
+      mutationObserver.observe(list, { childList: true, subtree: true });
+      window.__promptResizeAudit.disconnect = () => mutationObserver.disconnect();
+      if (typeof PerformanceObserver === 'function') {
+        try {
+          const longTaskObserver = new PerformanceObserver((entries) => {
+            window.__promptResizeAudit.longTasks.push(...entries.getEntries().map((entry) => entry.duration));
+          });
+          longTaskObserver.observe({ type: 'longtask' });
+          const oldDisconnect = window.__promptResizeAudit.disconnect;
+          window.__promptResizeAudit.disconnect = () => {
+            oldDisconnect();
+            longTaskObserver.disconnect();
+          };
+        } catch {}
+      }
+    });
+    for (const viewport of [{ width: 390, height: 844 }, { width: 768, height: 900 }, { width: 1440, height: 900 }]) {
+      await page.setViewportSize(viewport);
+      await page.waitForTimeout(120);
+    }
+    const resizeAudit = await page.evaluate(() => {
+      window.__promptResizeAudit.disconnect?.();
+      return {
+        maxCards: window.__promptResizeAudit.maxCards,
+        maxLongTask: Math.max(0, ...window.__promptResizeAudit.longTasks)
+      };
+    });
+    assert(resizeAudit.maxCards <= 60, `${browserName}: prompt resize must never fall back to full DOM: ${JSON.stringify(resizeAudit)}`);
+    assert(resizeAudit.maxLongTask < 100, `${browserName}: prompt resize should avoid severe main-thread stalls: ${JSON.stringify(resizeAudit)}`);
+    assert(errors.length === 0, `${browserName}: unexpected prompt virtualization browser errors: ${errors.join(' | ')}`);
+  } finally {
+    await context.close();
+    await browser.close();
+  }
+}
+
 (async () => {
   log(`BASE_URL=${BASE_URL}`);
   log(`TEST_USER=${TEST_USER}`);
@@ -520,6 +786,10 @@ async function smokeFirefoxAgentLayout() {
     await browser.close();
   }
   await step('Firefox Agent layout', () => smokeFirefoxAgentLayout());
+  await step('Chromium modal keyboard 390/768', () => smokeModalKeyboardMatrix(chromium, 'Chromium'));
+  await step('Firefox modal keyboard 390/768', () => smokeModalKeyboardMatrix(firefox, 'Firefox'));
+  await step('Chromium prompt virtualization 500 cards', () => smokePromptVirtualization(chromium, 'Chromium'));
+  await step('Firefox prompt virtualization 500 cards', () => smokePromptVirtualization(firefox, 'Firefox'));
 
   const failed = results.filter((r) => !r.ok);
   if (failed.length) {

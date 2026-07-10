@@ -1,37 +1,10 @@
-const JWT_FALLBACK = 'gpt-image2-jwt-secret-key-2026-secure';
-
-function secret(env) {
-  if (env && env.JWT_SECRET) return env.JWT_SECRET;
-  if (env && env.ALLOW_INSECURE_JWT_FALLBACK === 'true') return JWT_FALLBACK;
-  return null;
-}
-function isLocalJwtRequest(request) {
-  try {
-    const hostname = new URL(request && request.url || 'http://invalid').hostname;
-    return hostname === '127.0.0.1' || hostname === 'localhost';
-  } catch (e) {
-    return false;
-  }
-}
-function resolveSecret(env, request) {
-  const value = secret(env);
-  if (value) return value;
-  if (isLocalJwtRequest(request)) return JWT_FALLBACK;
-  throw new Error('JWT_SECRET is required');
-}
-function b64url(bytes) { return btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
-function b64urlDecode(str) { str = str.replace(/-/g, '+').replace(/_/g, '/'); while (str.length % 4) str += '='; return Uint8Array.from(atob(str), c => c.charCodeAt(0)); }
-function getCookie(header, name) { const m = (header || '').match(new RegExp('(?:^|;\\s*)' + name + '=([^;]*)')); return m ? decodeURIComponent(m[1]) : null; }
-async function importHmacKey(value, usages) { return crypto.subtle.importKey('raw', new TextEncoder().encode(value), { name: 'HMAC', hash: 'SHA-256' }, false, usages); }
-async function verifyToken(token, env, request) { const parts = String(token || '').split('.'); if (parts.length !== 3) throw new Error('invalid token'); const key = await importHmacKey(resolveSecret(env, request), ['verify']); const ok = await crypto.subtle.verify('HMAC', key, b64urlDecode(parts[2]), new TextEncoder().encode(parts[0] + '.' + parts[1])); if (!ok) throw new Error('bad signature'); const payload = JSON.parse(new TextDecoder().decode(b64urlDecode(parts[1]))); if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) throw new Error('expired'); return payload; }
-function getRequestToken(request) {
-  const cookieToken = getCookie(request.headers.get('Cookie') || '', 'session');
-  if (cookieToken) return cookieToken;
-  const headerToken = String(request.headers.get('X-GPT-Image-Session') || '').trim();
-  return headerToken || null;
-}
-async function currentUser(request, env) { const token = getRequestToken(request); if (!token) return null; try { const payload = await verifyToken(token, env, request); return await env.gpt_image2_db.prepare('SELECT id, username, role, last_login, last_ip, created_at FROM users WHERE id = ?').bind(payload.userId).first(); } catch (e) { return null; } }
-function json(data, status = 200, extraHeaders = {}) { return new Response(JSON.stringify(data, null, 2), { status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0', 'Pragma': 'no-cache', 'Expires': '0', ...extraHeaders } }); }
+import { currentUser, json } from '../../_lib/auth.js';
+import {
+  isSecretKey,
+  isSecretPlaceholder,
+  maskSecrets,
+  preserveSecretPlaceholders
+} from '../../_lib/settings-secrets.js';
 
 async function loadSettings(db, userId) {
   const result = await db.prepare('SELECT key, value, updated_at FROM user_settings WHERE user_id = ? ORDER BY key').bind(userId).all();
@@ -42,55 +15,6 @@ async function loadSettings(db, userId) {
     if (row.updated_at) updatedAt[row.key] = row.updated_at;
   });
   return { settings, updatedAt };
-}
-
-function isSecretField(name) {
-  return /^(apiKey|nativeApiKey|googleNativeApiKey|api_key|api-key|authorization|bearerToken|accessToken|refreshToken)$/i.test(String(name || ''));
-}
-
-function isUnsafeSecretPlaceholder(value) {
-  const s = String(value || '').trim();
-  return s === 'cloudflare-proxy' || s === 'placeholder' || /^\*+MASKED\*+$/i.test(s) || /^\*+REDACTED\*+$/i.test(s);
-}
-
-function maskSecrets(value, fieldName) {
-  if (isSecretField(fieldName) && value) return '***MASKED***';
-  if (Array.isArray(value)) return value.map(item => maskSecrets(item, ''));
-  if (value && typeof value === 'object') {
-    const out = {};
-    Object.keys(value).forEach(key => { out[key] = maskSecrets(value[key], key); });
-    return out;
-  }
-  return value;
-}
-
-function profileKey(profile) {
-  if (!profile || typeof profile !== 'object') return '';
-  return String(profile.id || profile.name || '').trim();
-}
-
-function preserveProfileSecrets(incomingProfiles, existingProfiles) {
-  if (!Array.isArray(incomingProfiles)) return incomingProfiles;
-  const oldMap = new Map();
-  (Array.isArray(existingProfiles) ? existingProfiles : []).forEach(profile => {
-    const key = profileKey(profile);
-    if (key) oldMap.set(key, profile);
-  });
-  return incomingProfiles.map(profile => {
-    if (!profile || typeof profile !== 'object' || Array.isArray(profile)) return profile;
-    const next = { ...profile };
-    if (isUnsafeSecretPlaceholder(next.apiKey)) {
-      const old = oldMap.get(profileKey(next));
-      if (old && old.apiKey && !isUnsafeSecretPlaceholder(old.apiKey)) next.apiKey = old.apiKey;
-      else delete next.apiKey;
-    }
-    if (isUnsafeSecretPlaceholder(next.nativeApiKey)) {
-      const old = oldMap.get(profileKey(next));
-      if (old && old.nativeApiKey && !isUnsafeSecretPlaceholder(old.nativeApiKey)) next.nativeApiKey = old.nativeApiKey;
-      else delete next.nativeApiKey;
-    }
-    return next;
-  });
 }
 
 function extractImportSettings(body) {
@@ -105,10 +29,11 @@ function normalizeImportItems(body, existingSettings) {
   if (!source || typeof source !== 'object' || Array.isArray(source)) return [];
   const items = [];
   Object.keys(source).forEach(key => {
-    let value = source[key];
-    if (isSecretField(key) && isUnsafeSecretPlaceholder(value)) return;
-    if (key === 'profiles') value = preserveProfileSecrets(value, existingSettings.profiles);
-    items.push({ key, value });
+    if (isSecretKey(key) && isSecretPlaceholder(source[key])) return;
+    items.push({
+      key,
+      value: preserveSecretPlaceholders(source[key], existingSettings[key], key)
+    });
   });
   return items;
 }

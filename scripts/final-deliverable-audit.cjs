@@ -110,8 +110,8 @@ for (const name of allowedAssets) {
 }
 
 const index = read('index.html');
-assertContains(index, '/assets/homepage-v3.css?v=home-v3-20260709-standalone-prompts-r83', 'Index must load cache-busted homepage v3 CSS r83.');
-assertContains(index, '/assets/homepage-v3.js?v=home-v3-20260709-standalone-prompts-r83', 'Index must load cache-busted homepage v3 JS r83.');
+assertContains(index, '/assets/homepage-v3.css?v=home-v3-20260710-full-audit-r84', 'Index must load cache-busted homepage v3 CSS r84.');
+assertContains(index, '/assets/homepage-v3.js?v=home-v3-20260710-full-audit-r84', 'Index must load cache-busted homepage v3 JS r84.');
 for (const old of ['homepage-v2', 'index-CZHhOunP', 'index-BR6pbS6i', 'fast-workbench-skeleton', 'home-v3-20260703', 'home-v3-20260704-cache-recovery-agent-viewer-r8', 'home-v3-20260704-cache-recovery-agent-viewer-r9', 'home-v3-20260704-cache-recovery-agent-viewer-r10', 'home-v3-20260704-cache-recovery-agent-viewer-r11', 'home-v3-20260704-cache-recovery-agent-viewer-r12', 'home-v3-20260704-cache-recovery-agent-viewer-r13', 'home-v3-20260704-cache-recovery-agent-viewer-r14', 'home-v3-20260704-cache-recovery-agent-viewer-r15', 'home-v3-20260704-cache-recovery-agent-viewer-r16', 'home-v3-20260704-cache-recovery-agent-viewer-r17', 'home-v3-20260704-cache-recovery-agent-viewer-r18', 'home-v3-20260704-cache-recovery-agent-viewer-r19', 'home-v3-20260704-cache-recovery-agent-viewer-r20', 'home-v3-20260704-cache-recovery-agent-viewer-r21', 'home-v3-20260704-cache-recovery-agent-viewer-r22', 'home-v3-20260704-cache-recovery-agent-viewer-r23', 'home-v3-20260704-cache-recovery-agent-viewer-r24']) {
   assertNotContains(index, old, `Index still references obsolete shell marker: ${old}`);
 }
@@ -120,9 +120,10 @@ const headers = read('_headers');
 assertMatch(headers, /\/\s+Cache-Control:\s*no-store/i, 'Root HTML route must be no-store.');
 assertMatch(headers, /\/api\/\*\s+Cache-Control:\s*no-store/i, 'API routes must be no-store.');
 assertMatch(headers, /\/assets\/\*\s+Cache-Control:\s*public,\s*max-age=604800,\s*immutable/i, 'Versioned assets should keep immutable cache policy.');
+assertContains(headers, 'Content-Security-Policy-Report-Only:', 'Security headers should include a CSP report-only baseline.');
 
 const assetsIgnore = read('.assetsignore');
-for (const marker of ['.codegraph/', '.agents/', '.codex/', '.git/', '.git', '.wrangler/', 'node_modules/', 'tests/node_modules/', '.deploy2/', '.deploy_stage/', '.deploy_quality_stage/', '*.log']) {
+for (const marker of ['.codegraph/', '.agents/', '.codex/', '.git/', '.git', '.wrangler/', 'node_modules/', 'tests/node_modules/', 'migrations/', '*.sql', 'wrangler.jsonc', '.deploy2/', '.deploy_stage/', '.deploy_quality_stage/', '*.log']) {
   assertContains(assetsIgnore, marker, `.assetsignore must exclude ${marker}`);
 }
 

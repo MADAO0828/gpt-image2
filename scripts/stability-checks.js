@@ -6,6 +6,7 @@ const indexHtml = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 const indexShellHtml = indexHtml.replace(/<script id="promptFastBootstrap" type="application\/json">[\s\S]*?<\/script>/, '');
 const homeJs = fs.readFileSync(path.join(root, 'assets', 'homepage-v3.js'), 'utf8');
 const homeCss = fs.readFileSync(path.join(root, 'assets', 'homepage-v3.css'), 'utf8');
+const promptsHtml = fs.readFileSync(path.join(root, 'prompts.html'), 'utf8');
 const promptsData = JSON.parse(fs.readFileSync(path.join(root, 'prompts_data.json'), 'utf8'));
 const promptSearchIndex = JSON.parse(fs.readFileSync(path.join(root, 'prompts_fast', 'search_index.json'), 'utf8'));
 const failures = [];
@@ -22,6 +23,11 @@ ok(!indexShellHtml.includes('GPT Image2') && !indexShellHtml.includes('Mac Studi
 ok(!indexShellHtml.includes('id="root"'), 'legacy React #root must not be present on /');
 ok(!/assets\/index-[^"']+\.js/.test(indexShellHtml), 'legacy React homepage bundle must not be loaded on /');
 ok(!/modulepreload[^>]+assets\/index-/.test(indexShellHtml), 'legacy modulepreload entries must not remain on /');
+ok(homeJs.includes('crossedMobileBreakpoint') && homeJs.includes('(viewportWidth <= 760) !== (measuredViewportWidth <= 760)'), 'prompt virtualization must invalidate layout when crossing the 760px column breakpoint');
+ok(homeJs.includes('focusedCardId') && homeJs.includes('restoredCard.focus({ preventScroll: true })'), 'prompt virtualization must restore focus when the focused card remains visible');
+ok(homeJs.includes('data-modal-key="gallery-viewer"') && homeJs.includes('aria-label="关闭大图"'), 'gallery viewer must participate in modal focus management');
+ok(homeJs.includes('data-modal-key="task-detail"') && homeJs.includes('data-modal-key="confirm-dialog"') && homeJs.includes('data-modal-key="entry-advanced"'), 'homepage dialogs must expose stable modal keys');
+ok(promptsHtml.includes('id="imgViewer" role="dialog" aria-modal="true"') && promptsHtml.includes('id="ivclose"') && promptsHtml.includes('function closeImageViewer'), 'standalone prompt image viewer must expose dialog semantics and keyboard-close behavior');
 
 for (const marker of [
   'class="workspace',
@@ -144,7 +150,6 @@ ok(adminHtml.includes('id="peTimeout"') && adminHtml.includes('id="peResponseB64
 ok(adminHtml.includes("timeout:parseInt(val('peTimeout'))") && adminHtml.includes("streamPartialImages:parseInt(val('peStreamPartial'))") && adminHtml.includes("responseFormatB64Json:bool('peResponseB64')"), 'admin multi-profile save must persist per-profile advanced fields instead of global controls');
 ok(!/\b(alert|confirm|prompt)\s*\(/.test(homeJs), 'homepage must not use browser-native alert/confirm/prompt dialogs');
 ok(!/\b(alert|confirm|prompt)\s*\(/.test(adminHtml), 'admin must not use browser-native alert/confirm/prompt dialogs');
-const promptsHtml = fs.readFileSync(path.join(root, 'prompts.html'), 'utf8');
 ok(!/\b(alert|confirm|prompt)\s*\(/.test(promptsHtml), 'prompts page must not use browser-native alert/confirm/prompt dialogs');
 
 const proxyJs = fs.readFileSync(path.join(root, 'functions', 'api-proxy', '[[path]].js'), 'utf8');
@@ -161,7 +166,8 @@ const proRender = fs.readFileSync(path.join(root, 'functions', 'api', 'pro-workb
 ok(proAnalyze.includes('multipart/form-data') && proAnalyze.includes('formData()') && proAnalyze.includes('input_image') && proAnalyze.includes('base[]') && proAnalyze.includes('ref[]'), 'professional analyze API must accept multipart images and forward them as visual input');
 ok(proAnalyze.includes('未完成视觉读图') && proAnalyze.includes('fallbackAnalysis'), 'professional analyze fallback must not pretend it read images');
 ok(proRender.includes("form.get('profileId')") && proRender.includes('selectedProfile(settings, String(form.get'), 'professional render must honor the selected Composer image profile');
-ok(proRender.includes("fetch(`${baseUrl}/${upstreamPath}`") && proRender.includes("upstreamPath = files.length ? 'images/edits' : 'images/generations'"), 'professional render must pass Google reference image tasks through the configured compatible gateway');
+ok(proRender.includes("fetch(safeUpstreamEndpoint(baseUrl, upstreamPath)") && proRender.includes("upstreamPath = files.length ? 'images/edits' : 'images/generations'"), 'professional render must pass Google reference image tasks through the configured compatible gateway');
+ok(proRender.includes("redirect: 'manual'") && proAnalyze.includes("safeUpstreamEndpoint(baseUrl, 'responses')"), 'professional workbench upstream requests must use safe endpoints and block automatic redirects');
 ok(!/renderGoogleWithReferences|:generateContent|inlineData|generativelanguage\.googleapis\.com/.test(proRender), 'professional render must not route Google reference image tasks through native Gemini generateContent');
 
 if (failures.length) {

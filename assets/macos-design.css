@@ -1463,3 +1463,82 @@ html:not(.gpt-agent-mode) #root > div.fixed.sm\:bottom-6 .mt-3 > div:last-child 
     border-radius: 13px !important;
   }
 }
+
+/* R84 UI Fixer: prompt repository accessibility and mobile performance guard. */
+.c .grid .card {
+  width: 100%;
+  appearance: none;
+  -webkit-appearance: none;
+  color: var(--mac-text);
+  font: inherit;
+  text-align: left;
+}
+
+.c .grid .card:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--mac-blue) 38%, transparent) !important;
+  outline-offset: 3px !important;
+  border-color: color-mix(in srgb, var(--mac-blue) 48%, var(--mac-border)) !important;
+}
+
+html.is-scrolling .c .grid .card,
+html.is-scrolling .c .grid .card *,
+html.is-scrolling .c .grid .card-img img {
+  animation-play-state: paused !important;
+  transition: none !important;
+}
+
+@media (max-width: 430px) {
+  .prompts-unified.h {
+    grid-template-columns: minmax(0, 1fr) auto !important;
+    grid-template-areas: "title nav" "search search" !important;
+    align-items: center !important;
+    gap: 8px !important;
+    overflow: visible !important;
+  }
+
+  .prompts-unified .hl {
+    grid-area: title !important;
+    min-width: 0 !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+  }
+
+  .prompts-unified .nav-actions {
+    grid-area: nav !important;
+    max-width: min(46vw, 160px) !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    flex-wrap: nowrap !important;
+    scrollbar-width: none !important;
+    -webkit-overflow-scrolling: touch !important;
+  }
+
+  .prompts-unified .nav-actions::-webkit-scrollbar {
+    display: none !important;
+  }
+
+  .prompts-unified .top-srch {
+    grid-area: search !important;
+    min-width: 0 !important;
+  }
+}
+
+@media (hover: none), (pointer: coarse) {
+  .c .grid .card,
+  .c .empty-state,
+  .c .skeleton-card {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+
+  .c .grid .card {
+    animation: none !important;
+    transition-property: border-color, background-color !important;
+  }
+
+  .c .grid .card:hover,
+  .c .grid .card:hover .card-img img {
+    transform: none !important;
+  }
+}

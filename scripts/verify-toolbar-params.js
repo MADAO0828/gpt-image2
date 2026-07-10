@@ -32,16 +32,18 @@ function assertProxyContains(name, needle) {
 }
 
 // JSON and multipart image requests must share the same visible composer params.
-assertContains('JSON sends image output params', 'appendImageOutputParams(body, requestParams)');
-assertContains('multipart sends image output params', 'appendImageOutputParams(fd, requestParams)');
+assertContains('JSON sends image output params', 'appendImageOutputParams(body, requestParams, profile)');
+assertContains('multipart sends image output params', 'appendImageOutputParams(fd, requestParams, profile)');
 assertContains('OpenAI edits use image field', "const imageFieldName = provider === 'google' ? 'image[]' : 'image'");
 assertContains('JSON sends provider payload', 'Object.assign(body, providerPayload(provider, requestParams))');
 assertContains('multipart sends provider payload', 'appendProviderParams(fd, provider, requestParams)');
 assertPattern('output params include quality', /quality:\s*firstDefined\(/);
 assertContains('output params include format', 'output_format: format');
 assertContains('non-png sends compression', "out.output_compression = Number(firstDefined");
-assertContains('png sends transparent background', 'out.transparent_background = transparent');
-assertContains('png sends official background field', "out.background = transparent ? 'transparent' : 'auto'");
+assertContains('native transparency requires explicit capability', "profile?.supportsNativeTransparency === true");
+assertContains('non-OpenAI branches preserve transparent background', "providerKey(profile) !== 'openai' || openAiTransparentBackgroundSupported(profile)");
+assertContains('capable profiles send transparent background', 'out.transparent_background = transparent');
+assertContains('capable profiles send official background field', "out.background = transparent ? 'transparent' : 'auto'");
 assertContains('generation n respects Google split', "n: provider === 'google' ? 1");
 assertContains('edit n respects Google split', "fd.append('n', String(provider === 'google' ? 1");
 
