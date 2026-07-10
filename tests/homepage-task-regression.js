@@ -548,6 +548,11 @@ if (typeof hooks.renderDetailModal === 'function') {
   const viewerHtml = typeof hooks.renderViewer === 'function' ? hooks.renderViewer({ taskId: 'detail-diff-task', index: 0 }) : '';
   ok(viewerHtml.includes('viewer-nav') && viewerHtml.includes('data-action="viewer-next"'), 'multi-image viewer should render next navigation');
   ok(viewerHtml.includes('1 / 2'), 'multi-image viewer should show the current image index');
+  ok(viewerHtml.includes('viewer-actions')
+    && viewerHtml.includes('data-action="viewer-copy-image"')
+    && viewerHtml.includes('data-action="download-image"')
+    && viewerHtml.includes('data-action="viewer-edit-image"'),
+  'image viewer should expose visible copy/download/edit actions without requiring a context menu');
 
   hooks.setTestTasks([{
     id: 'detail-google-4k-match',
@@ -585,7 +590,9 @@ ok(referenceBadgeHtml.includes('open-task-reference-viewer'), 'task reference ba
 ok(!referenceBadgeHtml.includes('add-task-reference-to-composer'), 'task reference badge should no longer add references to the composer');
 ok(hooks.taskReferenceDisplayBlobId({ blobId: 'masked-ref', originalBlobId: 'original-ref', compositedBlobId: 'composited-ref' }) === 'composited-ref', 'task reference thumbnail should display the composited/masked blob');
 ok(hooks.taskReferenceOriginalBlobId({ blobId: 'masked-ref', originalBlobId: 'original-ref', compositedBlobId: 'composited-ref' }) === 'original-ref', 'task reference viewer should prefer the original blob');
-ok(hooks.renderImageContextMenu({ x: 24, y: 32 }).includes('复制') && hooks.renderImageContextMenu({ x: 24, y: 32 }).includes('下载') && hooks.renderImageContextMenu({ x: 24, y: 32 }).includes('编辑'), 'custom image context menu should contain only copy/download/edit actions');
+const imageContextMenuHtml = hooks.renderImageContextMenu({ x: 24, y: 32 });
+ok(imageContextMenuHtml.includes('复制') && imageContextMenuHtml.includes('下载') && imageContextMenuHtml.includes('编辑'), 'custom image context menu should contain only copy/download/edit actions');
+ok(imageContextMenuHtml.includes('role="dialog"') && imageContextMenuHtml.includes('data-modal-key="image-context-menu"') && imageContextMenuHtml.includes('data-modal-autofocus'), 'custom image context menu must join the modal focus stack instead of becoming inert');
 
 if (typeof hooks.shouldCloseModalFromClick === 'function') {
   const innerNode = { closest: (selector) => selector === '[data-stop]' ? {} : null };

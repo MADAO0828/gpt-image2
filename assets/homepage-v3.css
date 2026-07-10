@@ -3350,6 +3350,37 @@ button { cursor: pointer; }
   font-size: 12px;
   font-weight: 700;
 }
+.viewer-actions {
+  position: fixed;
+  right: 24px;
+  bottom: 20px;
+  z-index: 3;
+  display: flex;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid rgba(255, 255, 255, .2);
+  border-radius: 15px;
+  background: rgba(8, 14, 24, .72);
+  box-shadow: 0 16px 42px rgba(0, 0, 0, .32);
+  backdrop-filter: blur(18px);
+}
+.viewer-actions button {
+  min-width: 62px;
+  min-height: 36px;
+  border: 0;
+  border-radius: 10px;
+  padding: 0 13px;
+  color: #f4f8ff;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 680;
+}
+.viewer-actions button:hover,
+.viewer-actions button:focus-visible {
+  color: #fff;
+  background: rgba(90, 155, 255, .24);
+  outline: none;
+}
 
 .prompt-modal {
   width: min(1060px, 94vw);
@@ -4440,12 +4471,15 @@ button { cursor: pointer; }
 }
 .image-menu-layer {
   position: fixed;
-  z-index: 140;
+  z-index: 260;
   inset: 0;
   background: transparent;
+  pointer-events: auto;
+  isolation: isolate;
 }
 .image-context-menu {
   position: fixed;
+  z-index: 1;
   width: 168px;
   padding: 8px;
   border: 1px solid rgba(255,255,255,.72);
@@ -4468,6 +4502,12 @@ button { cursor: pointer; }
 .image-context-menu button:hover {
   background: rgba(45,127,249,.10);
   color: #185dcc;
+}
+.image-context-menu button:focus-visible {
+  color: #0d55c5;
+  background: rgba(45,127,249,.14);
+  outline: 2px solid rgba(45,127,249,.5);
+  outline-offset: -2px;
 }
 @media (max-width: 900px) {
   .detail-modal {
@@ -4819,6 +4859,25 @@ button { cursor: pointer; }
   border-color: rgba(197, 216, 247, .24);
   background:
     linear-gradient(145deg, rgba(28, 40, 60, .98), rgba(12, 20, 34, .98));
+}
+
+:root[data-theme="dark"] .image-context-menu button {
+  color: #edf5ff;
+  font-weight: 680;
+}
+
+:root[data-theme="dark"] .image-context-menu button:hover,
+:root[data-theme="dark"] .image-context-menu button:focus-visible {
+  color: #fff;
+  background: rgba(91, 157, 255, .24);
+}
+
+@media (max-width: 560px) {
+  .viewer-actions {
+    right: 50%;
+    bottom: 16px;
+    transform: translateX(50%);
+  }
 }
 
 :root[data-theme="dark"] .detail-media {

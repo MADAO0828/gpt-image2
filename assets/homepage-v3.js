@@ -13,7 +13,7 @@ const PROMPT_PAGE_SIZE = 36;
 const PROMPT_VIRTUAL_THRESHOLD = 108;
 const PROMPT_VIRTUAL_BUFFER_ROWS = 3;
 const PROMPT_REPO_CACHE_LIMIT = 24;
-const PROMPT_FAST_VERSION = 'home-v3-20260710-full-audit-r84';
+const PROMPT_FAST_VERSION = 'home-v3-20260710-image-actions-r85';
 const PROMPT_FAST_BOOTSTRAP_URL = `/prompts_fast/bootstrap.json?v=${PROMPT_FAST_VERSION}`;
 const PROMPT_FAST_PREVIEWS_URL = `/prompts_fast/category_previews.json?v=${PROMPT_FAST_VERSION}`;
 const PROMPT_FAST_SEARCH_URL = `/prompts_fast/search_index.json?v=${PROMPT_FAST_VERSION}`;
@@ -2475,6 +2475,7 @@ function stateModalKeys() {
   const keys = [];
   if (state.modal) keys.push('task-detail');
   if (state.viewer) keys.push('gallery-viewer');
+  if (state.imageContextMenu) keys.push('image-context-menu');
   if (state.promptRepo?.open) keys.push('prompt-repo');
   if (state.promptRepo?.detail) keys.push('prompt-detail');
   if (state.promptRepo?.imageViewer) keys.push('prompt-viewer');
@@ -4439,6 +4440,11 @@ function renderViewer(viewer) {
       <button class="viewer-close" aria-label="关闭大图" data-modal-autofocus data-action="close-viewer">×</button>
       ${images.length > 1 ? `<button class="viewer-nav prev" data-action="viewer-prev" aria-label="上一张">‹</button><button class="viewer-nav next" data-action="viewer-next" aria-label="下一张">›</button><div class="viewer-index">${esc(safeIndex + 1)} / ${esc(images.length)}</div>` : ''}
       <img class="viewer-image" data-action="viewer-image" data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="${esc(safeIndex)}" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(image.url || image.remoteUrl || '')}" alt="生成图片 ${esc(safeIndex + 1)}">
+      <div class="viewer-actions" data-stop>
+        <button data-action="viewer-copy-image" data-task-id="${esc(task.id)}" data-index="${esc(safeIndex)}">复制</button>
+        <button data-action="download-image" data-task-id="${esc(task.id)}" data-index="${esc(safeIndex)}">下载</button>
+        <button data-action="viewer-edit-image" data-id="${esc(task.id)}">编辑</button>
+      </div>
     </div>
   `;
 }
@@ -4466,8 +4472,8 @@ function renderImageContextMenu(menu) {
   const y = Math.max(12, Math.min(Number(menu.y) || 12, (window.innerHeight || 720) - 154));
   return `
     <div class="image-menu-layer" data-action="close-image-menu">
-      <div class="image-context-menu" style="left:${esc(x)}px;top:${esc(y)}px" data-stop>
-        <button data-action="copy-image">复制</button>
+      <div class="image-context-menu" role="dialog" aria-modal="true" aria-label="图片操作" tabindex="-1" data-modal-key="image-context-menu" style="left:${esc(x)}px;top:${esc(y)}px" data-stop>
+        <button data-modal-autofocus data-action="copy-image">复制</button>
         <button data-action="download-image">下载</button>
         <button data-action="edit-image-source">编辑</button>
       </div>
@@ -4512,6 +4518,18 @@ function currentImageMenuSource() {
     image
   };
 }
+function taskImageSourceFromTarget(target, wantsOriginal = false) {
+  const task = state.tasks.find((item) => item.id === target?.dataset?.taskId);
+  const index = Number(target?.dataset?.index) || 0;
+  const image = task?.images?.[index] || {};
+  return {
+    blobId: wantsOriginal ? (image.originalBlobId || image.blobId) : image.blobId,
+    remoteUrl: image.url || image.remoteUrl,
+    name: `${task?.id || 'image'}-${index + 1}${wantsOriginal ? '-orig' : ''}.png`,
+    task,
+    image
+  };
+}
 async function blobFromImageSource(source) {
   if (source.blobId) {
     const blob = await getBlob(source.blobId).catch(() => null);
@@ -4523,8 +4541,8 @@ async function blobFromImageSource(source) {
   }
   return null;
 }
-async function copyImageFromMenu() {
-  const source = currentImageMenuSource();
+async function copyImageFromMenu(target = null) {
+  const source = target?.dataset?.taskId ? taskImageSourceFromTarget(target) : currentImageMenuSource();
   const blob = await blobFromImageSource(source);
   if (!blob) return toast('当前图片无法复制');
   try {
@@ -4541,15 +4559,8 @@ async function copyImageFromMenu() {
 async function downloadImageFromMenuOrTarget(target = null) {
   let source;
   if (target?.dataset?.taskId) {
-    const task = state.tasks.find((item) => item.id === target.dataset.taskId);
-    const index = Number(target.dataset.index) || 0;
-    const image = task?.images?.[index] || {};
     const wantsOriginal = target.dataset.original === 'true';
-    source = {
-      blobId: wantsOriginal ? (image.originalBlobId || image.blobId) : image.blobId,
-      remoteUrl: image.url || image.remoteUrl,
-      name: `${task?.id || 'image'}-${index + 1}${wantsOriginal ? '-orig' : ''}.png`
-    };
+    source = taskImageSourceFromTarget(target, wantsOriginal);
   } else {
     source = currentImageMenuSource();
   }
@@ -5564,6 +5575,13 @@ document.addEventListener('click', async (event) => {
   if (action === 'copy-image') { await copyImageFromMenu(); state.imageContextMenu = null; render(); return; }
   if (action === 'download-image') { await downloadImageFromMenuOrTarget(target); state.imageContextMenu = null; render(); return; }
   if (action === 'edit-image-source') { await editImageFromMenu(); return; }
+  if (action === 'viewer-copy-image') { await copyImageFromMenu(target); return; }
+  if (action === 'viewer-edit-image') {
+    state.viewer = null;
+    render();
+    await editOutput(target.dataset.id);
+    return;
+  }
   if (action === 'set-mode') { state.mode = target.dataset.mode; if (state.mode === 'workflow') state.agent.view = 'workflows'; persistRender(); return; }
   if (action === 'agent-view') { state.agent.view = target.dataset.view || 'chat'; persistRender(); return; }
   if (action === 'toggle-project-prompt') { state.agent.promptOpen = !state.agent.promptOpen; persistRender(); return; }

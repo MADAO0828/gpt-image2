@@ -228,8 +228,8 @@ function Test-PreviewSupportsAuth([string]$Url) {
 function Invoke-StaticDeployChecks([string]$Url, [string]$Label) {
   Write-Step "Run static deploy checks against $Label"
   $root = Invoke-WebRequest -UseBasicParsing -Uri ($Url.TrimEnd('/') + '/') -TimeoutSec 45
-  if (-not ($root.Content -match 'home-v3-20260710-full-audit-r84')) {
-    throw "$Label HTML does not contain expected asset version home-v3-20260710-full-audit-r84."
+  if (-not ($root.Content -match 'home-v3-20260710-image-actions-r85')) {
+    throw "$Label HTML does not contain expected asset version home-v3-20260710-image-actions-r85."
   }
   $js = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($Url.TrimEnd('/') + '/assets/homepage-v3.js') -TimeoutSec 45
   $css = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($Url.TrimEnd('/') + '/assets/homepage-v3.css') -TimeoutSec 45

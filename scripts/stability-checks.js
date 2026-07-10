@@ -26,6 +26,7 @@ ok(!/modulepreload[^>]+assets\/index-/.test(indexShellHtml), 'legacy moduleprelo
 ok(homeJs.includes('crossedMobileBreakpoint') && homeJs.includes('(viewportWidth <= 760) !== (measuredViewportWidth <= 760)'), 'prompt virtualization must invalidate layout when crossing the 760px column breakpoint');
 ok(homeJs.includes('focusedCardId') && homeJs.includes('restoredCard.focus({ preventScroll: true })'), 'prompt virtualization must restore focus when the focused card remains visible');
 ok(homeJs.includes('data-modal-key="gallery-viewer"') && homeJs.includes('aria-label="关闭大图"'), 'gallery viewer must participate in modal focus management');
+ok(homeJs.includes('data-modal-key="image-context-menu"') && homeJs.includes('data-action="viewer-copy-image"'), 'image context menu and viewer actions must remain in the interactive modal stack');
 ok(homeJs.includes('data-modal-key="task-detail"') && homeJs.includes('data-modal-key="confirm-dialog"') && homeJs.includes('data-modal-key="entry-advanced"'), 'homepage dialogs must expose stable modal keys');
 ok(promptsHtml.includes('id="imgViewer" role="dialog" aria-modal="true"') && promptsHtml.includes('id="ivclose"') && promptsHtml.includes('function closeImageViewer'), 'standalone prompt image viewer must expose dialog semantics and keyboard-close behavior');
 
@@ -59,6 +60,8 @@ for (const selector of [
   '.sidebar',
   '.gallery-grid',
   '.detail-modal',
+  '.viewer-actions',
+  '.image-context-menu',
   '.mask-layer',
   '.composer',
   '.workflow-workspace',
