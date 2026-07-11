@@ -35,6 +35,7 @@ ok(homeJs.includes('data-modal-key="gallery-viewer"') && homeJs.includes('aria-l
 ok(homeJs.includes('data-modal-key="image-context-menu"') && homeJs.includes('class="viewer-stage"') && !homeJs.includes('data-action="viewer-copy-image"'), 'image viewer must use image-bound navigation and context-menu-only actions');
 ok(homeJs.includes("if (action === 'close-viewer') { state.viewer = null; state.imageContextMenu = null;"), 'closing the gallery viewer must also clear any open image context menu');
 ok(homeCss.includes('.image-menu-layer') && homeCss.includes('pointer-events: none;') && homeCss.includes('.image-context-menu') && homeCss.includes('pointer-events: auto;'), 'image context menu overlay must not block viewer close and backdrop actions');
+ok(homeJs.includes("new ClipboardItem({ 'image/png': pngPromise })") && homeJs.includes('clipboardPngBlob(blob)'), 'image copy must preserve user activation with a promised PNG clipboard payload');
 ok(homeJs.includes('data-modal-key="task-detail"') && homeJs.includes('data-modal-key="confirm-dialog"') && homeJs.includes('data-modal-key="entry-advanced"'), 'homepage dialogs must expose stable modal keys');
 ok(promptsHtml.includes('id="imgViewer" role="dialog" aria-modal="true"') && promptsHtml.includes('id="ivclose"') && promptsHtml.includes('function closeImageViewer'), 'standalone prompt image viewer must expose dialog semantics and keyboard-close behavior');
 

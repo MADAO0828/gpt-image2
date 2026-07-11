@@ -593,6 +593,9 @@ if (typeof hooks.renderDetailModal === 'function') {
     'image viewer should anchor navigation to the rendered image and leave actions to the context menu');
   ok(detailHtml.includes('detail-media-stage') && detailHtml.includes('detail-thumbs'),
     'multi-image detail modal should reserve a separate thumbnail rail below the image stage');
+  ok(source.includes("new ClipboardItem({ 'image/png': pngPromise })")
+    && source.includes('const pngPromise = blobFromImageSource(source).then'),
+  'context-menu copy should call the clipboard immediately with an asynchronous PNG payload');
 
   hooks.setTestTasks([{
     id: 'detail-google-4k-match',

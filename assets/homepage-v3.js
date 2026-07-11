@@ -4634,19 +4634,46 @@ async function blobFromImageSource(source) {
   }
   return null;
 }
+async function clipboardPngBlob(blob) {
+  if (!(blob instanceof Blob)) throw new Error('没有可复制的图片数据');
+  if (String(blob.type || '').toLowerCase() === 'image/png') return blob;
+  let image = null;
+  let bitmap = null;
+  try {
+    if (typeof createImageBitmap === 'function') bitmap = await createImageBitmap(blob);
+    else image = await blobToImageElement(blob);
+    const width = Number(bitmap?.width || image?.naturalWidth || image?.width || 0);
+    const height = Number(bitmap?.height || image?.naturalHeight || image?.height || 0);
+    if (!width || !height) throw new Error('无法读取待复制图片尺寸');
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('浏览器无法创建图片复制画布');
+    context.drawImage(bitmap || image, 0, 0, width, height);
+    return await new Promise((resolve, reject) => {
+      canvas.toBlob((png) => png ? resolve(png) : reject(new Error('图片转换为 PNG 失败')), 'image/png');
+    });
+  } finally {
+    bitmap?.close?.();
+  }
+}
 async function copyImageFromMenu(target = null) {
   const source = target?.dataset?.taskId ? taskImageSourceFromTarget(target) : currentImageMenuSource();
-  const blob = await blobFromImageSource(source);
-  if (!blob) return toast('当前图片无法复制');
+  if (!navigator.clipboard?.write || !window.ClipboardItem) {
+    openCopyLinkDialog({ title: '复制图片', message: '当前浏览器不支持直接复制图片，请手动复制链接。', value: state.imageUrls.get(source.blobId) || source.remoteUrl || '' });
+    return;
+  }
   try {
-    if (navigator.clipboard?.write && window.ClipboardItem) {
-      await navigator.clipboard.write([new ClipboardItem({ [blob.type || 'image/png']: blob })]);
-      toast('图片已复制');
-    } else {
-      openCopyLinkDialog({ title: '复制图片', message: '当前浏览器不支持直接复制图片，请手动复制链接。', value: state.imageUrls.get(source.blobId) || source.remoteUrl || '' });
-    }
-  } catch {
-    toast('复制失败，请下载后使用');
+    const pngPromise = blobFromImageSource(source).then((blob) => {
+      if (!blob) throw new Error('当前图片无法读取');
+      return clipboardPngBlob(blob);
+    });
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngPromise })]);
+    toast('图片已复制');
+  } catch (error) {
+    console.warn('[home-v3] image clipboard write failed', error);
+    toast(`复制失败：${error?.message || '浏览器拒绝写入剪贴板'}`);
   }
 }
 async function downloadImageFromMenuOrTarget(target = null) {
@@ -7794,6 +7821,7 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     taskReferenceSnapshots,
     renderReferenceBadge,
     renderTaskReferenceStrip,
+    clipboardPngBlob,
     editOutput,
     captureAgentScrollAnchor,
     restoreAgentScrollAnchor,
