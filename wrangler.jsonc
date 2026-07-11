@@ -3,6 +3,9 @@
   "compatibility_date": "2026-06-10",
   "compatibility_flags": ["nodejs_compat_v2"],
   "pages_build_output_dir": ".",
+  "vars": {
+    "ALLOW_PUBLIC_REGISTRATION": "true"
+  },
   "d1_databases": [
     {
       "binding": "gpt_image2_db",
