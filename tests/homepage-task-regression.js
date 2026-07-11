@@ -596,13 +596,25 @@ if (typeof hooks.renderDetailModal === 'function') {
   ok(source.includes("new ClipboardItem({ 'image/png': pngPromise })")
     && source.includes('const pngPromise = blobFromImageSource(source).then'),
   'context-menu copy should call the clipboard immediately with an asynchronous PNG payload');
+  ok(source.includes('async function detectImageBlobType(blob)')
+    && source.includes("return 'image/jpeg';")
+    && source.includes('const detectedType = await detectImageBlobType(blob);'),
+  'context-menu copy should detect mislabeled JPEG/WebP blobs before converting them to PNG');
+  ok(source.includes('async function prepareImageContextMenuCopy(menu)')
+    && source.includes("new ClipboardItem({ 'image/png': preparedBlob })")
+    && source.includes("copyState: 'loading'"),
+  'context-menu copy should prebuild a concrete PNG Blob for Firefox before the copy click');
   ok(source.includes('class="image-context-menu" role="menu"')
     && !source.includes('data-modal-key="image-context-menu"'),
   'image context menu should not make the underlying viewer inert');
   ok(source.includes('id="imageMenuMount"')
-    && source.includes('state.imageContextMenu = menu;\n  syncImageContextMenu();')
+    && source.includes("state.imageContextMenu = { ...menu, copyRequestId: uid('copy'), copyState: 'loading' };")
+    && source.includes('syncImageContextMenu();\n  prepareImageContextMenuCopy(state.imageContextMenu);')
     && !source.includes('state.imageContextMenu = menu;\n  render();'),
   'opening the image context menu should not re-render the page behind it');
+  ok(source.includes('id="imageMenuMount" data-modal-inert-exempt')
+    && source.includes("if (child.matches?.('[data-modal-inert-exempt]')) return;"),
+  'image context menu mount should remain interactive while a detail or viewer modal is active');
 
   hooks.setTestTasks([{
     id: 'detail-google-4k-match',

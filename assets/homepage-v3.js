@@ -2428,7 +2428,7 @@ function render() {
     <div class="toast-stack" id="toastStack"></div>
     ${state.modal ? renderDetailModal(state.modal) : ''}
     ${state.viewer ? renderViewer(state.viewer) : ''}
-    <div id="imageMenuMount"></div>
+    <div id="imageMenuMount" data-modal-inert-exempt></div>
     ${state.promptRepo.open ? `<div id="promptRepoMount">${renderPromptRepo()}</div>` : ''}
     ${state.popover ? renderPopover(state.popover) : ''}
     ${state.workflowDraft ? renderWorkflowEditorModal(state.workflowDraft) : ''}
@@ -2589,6 +2589,7 @@ function syncModalAccessibility() {
   const app = $('#app');
   if (app) {
     [...app.children].forEach((child) => {
+      if (child.matches?.('[data-modal-inert-exempt]')) return;
       if (child !== topDialog && !child.contains(topDialog)) setManagedInert(child);
     });
   }
@@ -4566,7 +4567,7 @@ function renderImageContextMenu(menu) {
   return `
     <div class="image-menu-layer" data-action="close-image-menu">
       <div class="image-context-menu" role="menu" aria-label="图片操作" tabindex="-1" style="left:${esc(x)}px;top:${esc(y)}px" data-stop>
-        <button data-modal-autofocus data-action="copy-image">复制</button>
+        <button data-modal-autofocus data-action="copy-image" ${menu.copyState === 'loading' ? 'disabled' : ''}>${menu.copyState === 'loading' ? '准备复制...' : '复制'}</button>
         <button data-action="download-image">下载</button>
         <button data-action="edit-image-source">编辑</button>
       </div>
@@ -4596,8 +4597,7 @@ function imageContextFromElement(img, event) {
     y: event.clientY
   };
 }
-function currentImageMenuSource() {
-  const menu = state.imageContextMenu;
+function currentImageMenuSource(menu = state.imageContextMenu) {
   if (!menu) return {};
   if (menu.kind === 'task-reference' || menu.kind === 'task-reference-original') {
     const task = state.tasks.find((item) => item.id === menu.taskId);
@@ -4644,14 +4644,35 @@ async function blobFromImageSource(source) {
   }
   return null;
 }
+async function detectImageBlobType(blob) {
+  if (!(blob instanceof Blob) || !blob.size) return '';
+  const bytes = new Uint8Array(await blob.slice(0, 16).arrayBuffer());
+  if (bytes.length >= 8
+    && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
+    && bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a) return 'image/png';
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
+  if (bytes.length >= 12
+    && String.fromCharCode(...bytes.slice(0, 4)) === 'RIFF'
+    && String.fromCharCode(...bytes.slice(8, 12)) === 'WEBP') return 'image/webp';
+  if (bytes.length >= 6 && ['GIF87a', 'GIF89a'].includes(String.fromCharCode(...bytes.slice(0, 6)))) return 'image/gif';
+  return String(blob.type || '').toLowerCase();
+}
 async function clipboardPngBlob(blob) {
   if (!(blob instanceof Blob)) throw new Error('没有可复制的图片数据');
-  if (String(blob.type || '').toLowerCase() === 'image/png') return blob;
+  const detectedType = await detectImageBlobType(blob);
+  if (detectedType === 'image/png') {
+    return String(blob.type || '').toLowerCase() === 'image/png'
+      ? blob
+      : blob.slice(0, blob.size, 'image/png');
+  }
+  const decodeBlob = detectedType && detectedType !== String(blob.type || '').toLowerCase()
+    ? blob.slice(0, blob.size, detectedType)
+    : blob;
   let image = null;
   let bitmap = null;
   try {
-    if (typeof createImageBitmap === 'function') bitmap = await createImageBitmap(blob);
-    else image = await blobToImageElement(blob);
+    if (typeof createImageBitmap === 'function') bitmap = await createImageBitmap(decodeBlob);
+    else image = await blobToImageElement(decodeBlob);
     const width = Number(bitmap?.width || image?.naturalWidth || image?.width || 0);
     const height = Number(bitmap?.height || image?.naturalHeight || image?.height || 0);
     if (!width || !height) throw new Error('无法读取待复制图片尺寸');
@@ -4668,6 +4689,24 @@ async function clipboardPngBlob(blob) {
     bitmap?.close?.();
   }
 }
+async function prepareImageContextMenuCopy(menu) {
+  if (!menu?.copyRequestId) return;
+  try {
+    const source = currentImageMenuSource(menu);
+    const blob = await blobFromImageSource(source);
+    if (!blob) throw new Error('当前图片无法读取');
+    const pngBlob = await clipboardPngBlob(blob);
+    if (state.imageContextMenu?.copyRequestId !== menu.copyRequestId) return;
+    state.imageContextMenu.copyBlob = pngBlob;
+    state.imageContextMenu.copyState = 'ready';
+    syncImageContextMenu();
+  } catch (error) {
+    if (state.imageContextMenu?.copyRequestId !== menu.copyRequestId) return;
+    state.imageContextMenu.copyState = 'error';
+    state.imageContextMenu.copyError = error?.message || '图片准备失败';
+    syncImageContextMenu();
+  }
+}
 async function copyImageFromMenu(target = null) {
   const source = target?.dataset?.taskId ? taskImageSourceFromTarget(target) : currentImageMenuSource();
   if (!navigator.clipboard?.write || !window.ClipboardItem) {
@@ -4675,11 +4714,19 @@ async function copyImageFromMenu(target = null) {
     return;
   }
   try {
-    const pngPromise = blobFromImageSource(source).then((blob) => {
-      if (!blob) throw new Error('当前图片无法读取');
-      return clipboardPngBlob(blob);
-    });
-    await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngPromise })]);
+    const preparedBlob = !target && state.imageContextMenu?.copyBlob;
+    if (!preparedBlob && !target && state.imageContextMenu?.copyState === 'error') {
+      throw new Error(state.imageContextMenu.copyError || '图片准备失败');
+    }
+    if (preparedBlob) {
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': preparedBlob })]);
+    } else {
+      const pngPromise = blobFromImageSource(source).then((blob) => {
+        if (!blob) throw new Error('当前图片无法读取');
+        return clipboardPngBlob(blob);
+      });
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngPromise })]);
+    }
     toast('图片已复制');
   } catch (error) {
     console.warn('[home-v3] image clipboard write failed', error);
@@ -5685,8 +5732,9 @@ document.addEventListener('contextmenu', (event) => {
   const menu = imageContextFromElement(img, event);
   if (!menu) return;
   event.preventDefault();
-  state.imageContextMenu = menu;
+  state.imageContextMenu = { ...menu, copyRequestId: uid('copy'), copyState: 'loading' };
   syncImageContextMenu();
+  prepareImageContextMenuCopy(state.imageContextMenu);
 });
 if (typeof window !== 'undefined' && window.addEventListener) {
   window.addEventListener('scroll', () => {
