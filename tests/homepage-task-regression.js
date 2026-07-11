@@ -589,11 +589,10 @@ if (typeof hooks.renderDetailModal === 'function') {
   const viewerHtml = typeof hooks.renderViewer === 'function' ? hooks.renderViewer({ taskId: 'detail-diff-task', index: 0 }) : '';
   ok(viewerHtml.includes('viewer-nav') && viewerHtml.includes('data-action="viewer-next"'), 'multi-image viewer should render next navigation');
   ok(viewerHtml.includes('1 / 2'), 'multi-image viewer should show the current image index');
-  ok(viewerHtml.includes('viewer-actions')
-    && viewerHtml.includes('data-action="viewer-copy-image"')
-    && viewerHtml.includes('data-action="download-image"')
-    && viewerHtml.includes('data-action="viewer-edit-image"'),
-  'image viewer should expose visible copy/download/edit actions without requiring a context menu');
+  ok(viewerHtml.includes('viewer-stage') && !viewerHtml.includes('viewer-actions'),
+    'image viewer should anchor navigation to the rendered image and leave actions to the context menu');
+  ok(detailHtml.includes('detail-media-stage') && detailHtml.includes('detail-thumbs'),
+    'multi-image detail modal should reserve a separate thumbnail rail below the image stage');
 
   hooks.setTestTasks([{
     id: 'detail-google-4k-match',

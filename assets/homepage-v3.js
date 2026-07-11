@@ -4453,25 +4453,27 @@ function renderDetailModal(taskId) {
   return `
     <div class="modal-layer" data-action="close-modal-bg">
       <div class="detail-modal" role="dialog" aria-modal="true" aria-label="生图任务详情" tabindex="-1" data-modal-key="task-detail" data-stop>
-        <div class="detail-media">
-          <div class="detail-media-badges">
-            <span>${esc(imageRatioLabel || requested.aspectRatio || 'auto')}</span>
-            <span>${esc(imageSizeLabel || requested.resolution || 'auto')}</span>
+        <div class="detail-media ${mediaCount > 1 ? 'has-thumbs' : ''}">
+          <div class="detail-media-stage">
+            <div class="detail-media-badges">
+              <span>${esc(imageRatioLabel || requested.aspectRatio || 'auto')}</span>
+              <span>${esc(imageSizeLabel || requested.resolution || 'auto')}</span>
+            </div>
+            ${image ? `<img data-action="open-viewer" role="button" tabindex="0" aria-label="查看生成图片大图" data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="${esc(imageIndex)}" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(image.url || image.remoteUrl || '')}" alt="">` : streamPreviewHtml || '<div class="asset-placeholder"><div class="progress-ring"></div></div>'}
+            ${streamPreview ? '<span class="stream-preview-badge detail">流式预览</span>' : ''}
+            ${streamPreview?.blobId ? `<button class="detail-download preview" data-action="download-stream-preview" data-task-id="${esc(task.id)}" data-index="${esc(imageIndex)}">下载预览</button>` : ''}
+            ${isTransparentPng && image ? `<button class="detail-download original" data-action="download-image" data-task-id="${esc(task.id)}" data-index="${esc(imageIndex)}">下载原图</button><button class="detail-download orig" data-action="download-image" data-task-id="${esc(task.id)}" data-index="${esc(imageIndex)}" data-original="true">ORIG</button>` : ''}
+            ${renderReferenceBadge(task, 'detail')}
+            ${mediaCount > 1 ? `
+              <button class="detail-image-nav prev" data-action="detail-image-prev" data-id="${esc(task.id)}" aria-label="上一张">‹</button>
+              <button class="detail-image-nav next" data-action="detail-image-next" data-id="${esc(task.id)}" aria-label="下一张">›</button>
+              <div class="detail-image-count">${esc(imageIndex + 1)} / ${esc(mediaCount)}</div>
+            ` : ''}
           </div>
-          ${image ? `<img data-action="open-viewer" role="button" tabindex="0" aria-label="查看生成图片大图" data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="${esc(imageIndex)}" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(image.url || image.remoteUrl || '')}" alt="">` : streamPreviewHtml || '<div class="asset-placeholder"><div class="progress-ring"></div></div>'}
-          ${streamPreview ? '<span class="stream-preview-badge detail">流式预览</span>' : ''}
-          ${streamPreview?.blobId ? `<button class="detail-download preview" data-action="download-stream-preview" data-task-id="${esc(task.id)}" data-index="${esc(imageIndex)}">下载预览</button>` : ''}
-          ${isTransparentPng && image ? `<button class="detail-download original" data-action="download-image" data-task-id="${esc(task.id)}" data-index="${esc(imageIndex)}">下载原图</button><button class="detail-download orig" data-action="download-image" data-task-id="${esc(task.id)}" data-index="${esc(imageIndex)}" data-original="true">ORIG</button>` : ''}
-          ${renderReferenceBadge(task, 'detail')}
-          ${mediaCount > 1 ? `
-            <button class="detail-image-nav prev" data-action="detail-image-prev" data-id="${esc(task.id)}" aria-label="上一张">‹</button>
-            <button class="detail-image-nav next" data-action="detail-image-next" data-id="${esc(task.id)}" aria-label="下一张">›</button>
-            <div class="detail-image-count">${esc(imageIndex + 1)} / ${esc(mediaCount)}</div>
-            <div class="detail-thumbs">${Array.from({ length: mediaCount }, (_, idx) => {
-              const img = images[idx];
-              return `<button class="${idx === imageIndex ? 'active' : ''}" data-action="detail-image-select" data-id="${esc(task.id)}" data-index="${esc(idx)}">${img ? `<img data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="${esc(idx)}" data-blob-id="${esc(img.blobId || '')}" data-remote-url="${esc(img.url || img.remoteUrl || '')}" alt="">` : renderTaskStreamPreviewImage(task, idx)}</button>`;
-            }).join('')}</div>
-          ` : ''}
+          ${mediaCount > 1 ? `<div class="detail-thumbs">${Array.from({ length: mediaCount }, (_, idx) => {
+            const img = images[idx];
+            return `<button class="${idx === imageIndex ? 'active' : ''}" data-action="detail-image-select" data-id="${esc(task.id)}" data-index="${esc(idx)}">${img ? `<img data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="${esc(idx)}" data-blob-id="${esc(img.blobId || '')}" data-remote-url="${esc(img.url || img.remoteUrl || '')}" alt="">` : renderTaskStreamPreviewImage(task, idx)}</button>`;
+          }).join('')}</div>` : ''}
         </div>
         <div class="detail-info">
           <button class="modal-close" aria-label="关闭" data-action="close-modal">×</button>
@@ -4515,7 +4517,9 @@ function renderViewer(viewer) {
       <div class="viewer-layer" role="dialog" aria-modal="true" aria-label="参考图原图" tabindex="-1" data-modal-key="gallery-viewer" data-action="close-viewer">
         <button class="viewer-close" aria-label="关闭大图" data-modal-autofocus data-action="close-viewer">×</button>
         <div class="viewer-index">${esc(viewer.name || '参考图原图')}</div>
-        <img class="viewer-image" data-action="viewer-image" data-image-kind="task-reference-original" data-blob-id="${esc(viewer.blobId || '')}" alt="${esc(viewer.name || '参考图原图')}">
+        <div class="viewer-stage" data-action="viewer-stage">
+          <img class="viewer-image" data-action="viewer-image" data-image-kind="task-reference-original" data-blob-id="${esc(viewer.blobId || '')}" alt="${esc(viewer.name || '参考图原图')}">
+        </div>
       </div>
     `;
   }
@@ -4529,12 +4533,10 @@ function renderViewer(viewer) {
   return `
     <div class="viewer-layer" role="dialog" aria-modal="true" aria-label="生成图片大图" tabindex="-1" data-modal-key="gallery-viewer" data-action="close-viewer">
       <button class="viewer-close" aria-label="关闭大图" data-modal-autofocus data-action="close-viewer">×</button>
-      ${images.length > 1 ? `<button class="viewer-nav prev" data-action="viewer-prev" aria-label="上一张">‹</button><button class="viewer-nav next" data-action="viewer-next" aria-label="下一张">›</button><div class="viewer-index">${esc(safeIndex + 1)} / ${esc(images.length)}</div>` : ''}
-      <img class="viewer-image" data-action="viewer-image" data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="${esc(safeIndex)}" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(image.url || image.remoteUrl || '')}" alt="生成图片 ${esc(safeIndex + 1)}">
-      <div class="viewer-actions" data-stop>
-        <button data-action="viewer-copy-image" data-task-id="${esc(task.id)}" data-index="${esc(safeIndex)}">复制</button>
-        <button data-action="download-image" data-task-id="${esc(task.id)}" data-index="${esc(safeIndex)}">下载</button>
-        <button data-action="viewer-edit-image" data-id="${esc(task.id)}">编辑</button>
+      <div class="viewer-stage" data-action="viewer-stage">
+        ${images.length > 1 ? `<button class="viewer-nav prev" data-action="viewer-prev" aria-label="上一张">‹</button><button class="viewer-nav next" data-action="viewer-next" aria-label="下一张">›</button>` : ''}
+        <img class="viewer-image" data-action="viewer-image" data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="${esc(safeIndex)}" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(image.url || image.remoteUrl || '')}" alt="生成图片 ${esc(safeIndex + 1)}">
+        ${images.length > 1 ? `<div class="viewer-index">${esc(safeIndex + 1)} / ${esc(images.length)}</div>` : ''}
       </div>
     </div>
   `;
@@ -5687,13 +5689,6 @@ document.addEventListener('click', async (event) => {
   if (action === 'copy-image') { await copyImageFromMenu(); state.imageContextMenu = null; render(); return; }
   if (action === 'download-image') { await downloadImageFromMenuOrTarget(target); state.imageContextMenu = null; render(); return; }
   if (action === 'edit-image-source') { await editImageFromMenu(); return; }
-  if (action === 'viewer-copy-image') { await copyImageFromMenu(target); return; }
-  if (action === 'viewer-edit-image') {
-    state.viewer = null;
-    render();
-    await editOutput(target.dataset.id);
-    return;
-  }
   if (action === 'set-mode') { state.mode = target.dataset.mode; if (state.mode === 'workflow') state.agent.view = 'workflows'; persistRender(); return; }
   if (action === 'agent-view') { state.agent.view = target.dataset.view || 'chat'; persistRender(); return; }
   if (action === 'toggle-project-prompt') { state.agent.promptOpen = !state.agent.promptOpen; persistRender(); return; }
@@ -5906,9 +5901,9 @@ document.addEventListener('click', async (event) => {
   if (action === 'detail-image-prev' || action === 'detail-image-next' || action === 'detail-image-select') { setDetailImage(target.dataset.id, action === 'detail-image-select' ? Number(target.dataset.index) : action === 'detail-image-next' ? 1 : -1, action !== 'detail-image-select'); return; }
   if (action === 'open-task-reference-viewer') { event.preventDefault(); event.stopPropagation(); openTaskReferenceViewer(target.dataset.taskId, Number(target.dataset.refIndex) || 0); return; }
   if (action === 'open-viewer') { state.viewer = { taskId: target.dataset.taskId, index: Number(target.dataset.index) || 0 }; render(); return; }
-  if (action === 'viewer-image') { return; }
+  if (action === 'viewer-image' || action === 'viewer-stage') { return; }
   if (action === 'viewer-prev' || action === 'viewer-next') { setViewerImage(action === 'viewer-next' ? 1 : -1); return; }
-  if (action === 'close-viewer') { state.viewer = null; render(); return; }
+  if (action === 'close-viewer') { state.viewer = null; state.imageContextMenu = null; render(); return; }
   if (action === 'reuse-task') { reuseTask(target.dataset.id); return; }
   if (action === 'retry-task') { await retryTask(target.dataset.id); return; }
   if (action === 'top-up-task') { await topUpTask(target.dataset.id); return; }
@@ -6119,9 +6114,9 @@ document.addEventListener('keydown', (event) => {
   }
   if (event.key === 'Escape') {
     event.preventDefault();
+    if (state.viewer) { state.viewer = null; state.imageContextMenu = null; render(); return; }
     if (state.imageContextMenu) { state.imageContextMenu = null; render(); return; }
     if (state.popover) { state.popover = null; render(); return; }
-    if (state.viewer) { state.viewer = null; render(); return; }
     if (state.promptRepo.imageViewer) { closePromptRepoImageViewerOverlay(); return; }
     if (state.promptRepo.detail) { closePromptRepoDetailOverlay(); return; }
     if (state.modal) { state.modal = null; render(); return; }
