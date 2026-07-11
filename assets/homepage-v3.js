@@ -2428,7 +2428,7 @@ function render() {
     <div class="toast-stack" id="toastStack"></div>
     ${state.modal ? renderDetailModal(state.modal) : ''}
     ${state.viewer ? renderViewer(state.viewer) : ''}
-    ${state.imageContextMenu ? renderImageContextMenu(state.imageContextMenu) : ''}
+    <div id="imageMenuMount"></div>
     ${state.promptRepo.open ? `<div id="promptRepoMount">${renderPromptRepo()}</div>` : ''}
     ${state.popover ? renderPopover(state.popover) : ''}
     ${state.workflowDraft ? renderWorkflowEditorModal(state.workflowDraft) : ''}
@@ -2441,6 +2441,7 @@ function render() {
     <input id="workflowRefInput" class="hidden" type="file" accept="image/*" multiple>
     <input id="agentAttachmentInput" class="hidden" type="file" accept="image/*,.txt,.md,.json,.csv,.tsv,.html,.css,.js,.mjs,.cjs,.xml,.yaml,.yml" multiple>
   `;
+  syncImageContextMenu();
   hydrateImages();
   bindTransientEvents();
   syncModalAccessibility();
@@ -2532,7 +2533,6 @@ function stateModalKeys() {
   const keys = [];
   if (state.modal) keys.push('task-detail');
   if (state.viewer) keys.push('gallery-viewer');
-  if (state.imageContextMenu) keys.push('image-context-menu');
   if (state.promptRepo?.open) keys.push('prompt-repo');
   if (state.promptRepo?.detail) keys.push('prompt-detail');
   if (state.promptRepo?.imageViewer) keys.push('prompt-viewer');
@@ -4565,13 +4565,23 @@ function renderImageContextMenu(menu) {
   const y = Math.max(12, Math.min(Number(menu.y) || 12, (window.innerHeight || 720) - 154));
   return `
     <div class="image-menu-layer" data-action="close-image-menu">
-      <div class="image-context-menu" role="dialog" aria-modal="true" aria-label="图片操作" tabindex="-1" data-modal-key="image-context-menu" style="left:${esc(x)}px;top:${esc(y)}px" data-stop>
+      <div class="image-context-menu" role="menu" aria-label="图片操作" tabindex="-1" style="left:${esc(x)}px;top:${esc(y)}px" data-stop>
         <button data-modal-autofocus data-action="copy-image">复制</button>
         <button data-action="download-image">下载</button>
         <button data-action="edit-image-source">编辑</button>
       </div>
     </div>
   `;
+}
+function syncImageContextMenu() {
+  const mount = $('#imageMenuMount');
+  if (!mount) return;
+  mount.innerHTML = state.imageContextMenu ? renderImageContextMenu(state.imageContextMenu) : '';
+}
+function closeImageContextMenu() {
+  if (!state.imageContextMenu && !$('.image-menu-layer')) return;
+  state.imageContextMenu = null;
+  syncImageContextMenu();
 }
 function imageContextFromElement(img, event) {
   const kind = img.dataset.imageKind || (img.dataset.taskRefTaskId ? 'task-reference' : img.dataset.taskId ? 'task-image' : '');
@@ -4701,7 +4711,7 @@ async function downloadStreamPreview(taskId, outputIndex = 0) {
 async function editImageFromMenu() {
   const source = currentImageMenuSource();
   if (source.task?.id && state.imageContextMenu?.kind === 'task-image') {
-    state.imageContextMenu = null;
+    closeImageContextMenu();
     await editOutput(source.task.id);
     return;
   }
@@ -4711,7 +4721,7 @@ async function editImageFromMenu() {
     const blobId = await putBlob(blob);
     const ref = { id: uid('ref'), blobId, originalBlobId: blobId, name: source.name, type: blob.type || 'image/png' };
     state.references = [ref, ...state.references].slice(0, referenceLimit());
-    state.imageContextMenu = null;
+    closeImageContextMenu();
     writeStore();
     await openMaskEditor(ref.id);
     return;
@@ -5555,8 +5565,7 @@ function bindTransientEvents() {
     };
     galleryScroll.addEventListener('scroll', () => {
       if (state.imageContextMenu) {
-        state.imageContextMenu = null;
-        $('.image-menu-layer')?.remove();
+        closeImageContextMenu();
       }
       state.galleryVirtual = { ...(state.galleryVirtual || {}), scrollTop: galleryScroll.scrollTop || 0, viewportHeight: galleryScroll.clientHeight || 720 };
       if (galleryScroll.dataset.virtual === '1') scheduleGalleryVirtualRender();
@@ -5677,26 +5686,24 @@ document.addEventListener('contextmenu', (event) => {
   if (!menu) return;
   event.preventDefault();
   state.imageContextMenu = menu;
-  render();
+  syncImageContextMenu();
 });
 if (typeof window !== 'undefined' && window.addEventListener) {
   window.addEventListener('scroll', () => {
     if (!state.imageContextMenu) return;
-    state.imageContextMenu = null;
-    render();
+    closeImageContextMenu();
   }, { passive: true });
   window.addEventListener('resize', () => {
     if (!state.imageContextMenu) return;
-    state.imageContextMenu = null;
-    render();
+    closeImageContextMenu();
   }, { passive: true });
 }
 
 document.addEventListener('click', async (event) => {
   const target = event.target.closest('[data-action]');
   if (!target) {
+    if (state.imageContextMenu && !event.target.closest('.image-context-menu')) closeImageContextMenu();
     if (state.popover && !event.target.closest('.popover')) { state.popover = null; render(); }
-    if (state.imageContextMenu && !event.target.closest('.image-context-menu')) { state.imageContextMenu = null; render(); }
     if (state.accountMenuOpen) { state.accountMenuOpen = false; render(); }
     return;
   }
@@ -5710,11 +5717,11 @@ document.addEventListener('click', async (event) => {
   if (target.dataset.action === 'close-entry-advanced' && target.classList?.contains('modal-layer') && event.target.closest?.('[data-stop]')) return;
   const action = target.dataset.action;
   if (state.imageContextMenu && !['copy-image', 'download-image', 'edit-image-source', 'close-image-menu'].includes(action)) {
-    state.imageContextMenu = null;
+    closeImageContextMenu();
   }
-  if (action === 'close-image-menu') { state.imageContextMenu = null; render(); return; }
-  if (action === 'copy-image') { await copyImageFromMenu(); state.imageContextMenu = null; render(); return; }
-  if (action === 'download-image') { await downloadImageFromMenuOrTarget(target); state.imageContextMenu = null; render(); return; }
+  if (action === 'close-image-menu') { closeImageContextMenu(); return; }
+  if (action === 'copy-image') { await copyImageFromMenu(); closeImageContextMenu(); return; }
+  if (action === 'download-image') { await downloadImageFromMenuOrTarget(target); closeImageContextMenu(); return; }
   if (action === 'edit-image-source') { await editImageFromMenu(); return; }
   if (action === 'set-mode') { state.mode = target.dataset.mode; if (state.mode === 'workflow') state.agent.view = 'workflows'; persistRender(); return; }
   if (action === 'agent-view') { state.agent.view = target.dataset.view || 'chat'; persistRender(); return; }
@@ -6123,17 +6130,18 @@ document.addEventListener('input', (event) => {
   }
 });
 document.addEventListener('focusin', (event) => {
+  if (event.target.closest?.('.image-context-menu')) return;
   const topDialog = topVisibleModal();
   if (!topDialog || topDialog.contains(event.target)) return;
   focusTopModal(topDialog);
 });
 document.addEventListener('keydown', (event) => {
-  const topDialog = topVisibleModal();
-  if (event.key === 'Tab' && topDialog) {
-    const focusable = modalFocusableNodes(topDialog);
-    const first = focusable[0] || topDialog;
-    const last = focusable[focusable.length - 1] || topDialog;
-    const activeInside = topDialog.contains(document.activeElement);
+  const keyboardScope = state.imageContextMenu ? $('.image-context-menu') : topVisibleModal();
+  if (event.key === 'Tab' && keyboardScope) {
+    const focusable = modalFocusableNodes(keyboardScope);
+    const first = focusable[0] || keyboardScope;
+    const last = focusable[focusable.length - 1] || keyboardScope;
+    const activeInside = keyboardScope.contains(document.activeElement);
     if (!activeInside || (event.shiftKey && document.activeElement === first) || (!event.shiftKey && document.activeElement === last)) {
       event.preventDefault();
       (event.shiftKey ? last : first).focus();
@@ -6142,7 +6150,7 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') {
     event.preventDefault();
     if (state.viewer) { state.viewer = null; state.imageContextMenu = null; render(); return; }
-    if (state.imageContextMenu) { state.imageContextMenu = null; render(); return; }
+    if (state.imageContextMenu) { closeImageContextMenu(); return; }
     if (state.popover) { state.popover = null; render(); return; }
     if (state.promptRepo.imageViewer) { closePromptRepoImageViewerOverlay(); return; }
     if (state.promptRepo.detail) { closePromptRepoDetailOverlay(); return; }

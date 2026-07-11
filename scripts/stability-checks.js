@@ -32,10 +32,13 @@ ok(!/modulepreload[^>]+assets\/index-/.test(indexShellHtml), 'legacy moduleprelo
 ok(homeJs.includes('crossedMobileBreakpoint') && homeJs.includes('(viewportWidth <= 760) !== (measuredViewportWidth <= 760)'), 'prompt virtualization must invalidate layout when crossing the 760px column breakpoint');
 ok(homeJs.includes('focusedCardId') && homeJs.includes('restoredCard.focus({ preventScroll: true })'), 'prompt virtualization must restore focus when the focused card remains visible');
 ok(homeJs.includes('data-modal-key="gallery-viewer"') && homeJs.includes('aria-label="关闭大图"'), 'gallery viewer must participate in modal focus management');
-ok(homeJs.includes('data-modal-key="image-context-menu"') && homeJs.includes('class="viewer-stage"') && !homeJs.includes('data-action="viewer-copy-image"'), 'image viewer must use image-bound navigation and context-menu-only actions');
+ok(homeJs.includes('class="image-context-menu" role="menu"') && !homeJs.includes('data-modal-key="image-context-menu"') && homeJs.includes('class="viewer-stage"'), 'image context menu must not enter the modal inert stack');
 ok(homeJs.includes("if (action === 'close-viewer') { state.viewer = null; state.imageContextMenu = null;"), 'closing the gallery viewer must also clear any open image context menu');
 ok(homeCss.includes('.image-menu-layer') && homeCss.includes('pointer-events: none;') && homeCss.includes('.image-context-menu') && homeCss.includes('pointer-events: auto;'), 'image context menu overlay must not block viewer close and backdrop actions');
 ok(homeJs.includes("new ClipboardItem({ 'image/png': pngPromise })") && homeJs.includes('clipboardPngBlob(blob)'), 'image copy must preserve user activation with a promised PNG clipboard payload');
+ok(homeJs.includes("if (event.target.closest?.('.image-context-menu')) return;") && homeJs.includes("state.imageContextMenu ? $('.image-context-menu') : topVisibleModal()"), 'image context menu must have an independent keyboard focus scope without locking the viewer');
+ok(homeJs.includes('id="imageMenuMount"') && homeJs.includes('function syncImageContextMenu()') && homeJs.includes('state.imageContextMenu = menu;\n  syncImageContextMenu();'), 'opening the image context menu must update only its dedicated mount');
+ok(!homeJs.includes('state.imageContextMenu = menu;\n  render();'), 'opening the image context menu must not re-render the gallery or viewer');
 ok(homeJs.includes('data-modal-key="task-detail"') && homeJs.includes('data-modal-key="confirm-dialog"') && homeJs.includes('data-modal-key="entry-advanced"'), 'homepage dialogs must expose stable modal keys');
 ok(promptsHtml.includes('id="imgViewer" role="dialog" aria-modal="true"') && promptsHtml.includes('id="ivclose"') && promptsHtml.includes('function closeImageViewer'), 'standalone prompt image viewer must expose dialog semantics and keyboard-close behavior');
 

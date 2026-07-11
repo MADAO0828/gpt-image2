@@ -596,6 +596,13 @@ if (typeof hooks.renderDetailModal === 'function') {
   ok(source.includes("new ClipboardItem({ 'image/png': pngPromise })")
     && source.includes('const pngPromise = blobFromImageSource(source).then'),
   'context-menu copy should call the clipboard immediately with an asynchronous PNG payload');
+  ok(source.includes('class="image-context-menu" role="menu"')
+    && !source.includes('data-modal-key="image-context-menu"'),
+  'image context menu should not make the underlying viewer inert');
+  ok(source.includes('id="imageMenuMount"')
+    && source.includes('state.imageContextMenu = menu;\n  syncImageContextMenu();')
+    && !source.includes('state.imageContextMenu = menu;\n  render();'),
+  'opening the image context menu should not re-render the page behind it');
 
   hooks.setTestTasks([{
     id: 'detail-google-4k-match',
@@ -635,7 +642,7 @@ ok(hooks.taskReferenceDisplayBlobId({ blobId: 'masked-ref', originalBlobId: 'ori
 ok(hooks.taskReferenceOriginalBlobId({ blobId: 'masked-ref', originalBlobId: 'original-ref', compositedBlobId: 'composited-ref' }) === 'original-ref', 'task reference viewer should prefer the original blob');
 const imageContextMenuHtml = hooks.renderImageContextMenu({ x: 24, y: 32 });
 ok(imageContextMenuHtml.includes('复制') && imageContextMenuHtml.includes('下载') && imageContextMenuHtml.includes('编辑'), 'custom image context menu should contain only copy/download/edit actions');
-ok(imageContextMenuHtml.includes('role="dialog"') && imageContextMenuHtml.includes('data-modal-key="image-context-menu"') && imageContextMenuHtml.includes('data-modal-autofocus'), 'custom image context menu must join the modal focus stack instead of becoming inert');
+ok(imageContextMenuHtml.includes('role="menu"') && !imageContextMenuHtml.includes('aria-modal="true"') && imageContextMenuHtml.includes('data-modal-autofocus'), 'custom image context menu must remain keyboard accessible without locking the viewer in the modal stack');
 
 if (typeof hooks.shouldCloseModalFromClick === 'function') {
   const innerNode = { closest: (selector) => selector === '[data-stop]' ? {} : null };
