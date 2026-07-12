@@ -201,6 +201,8 @@ ok(typeof hooks.taskReferenceOriginalBlobId === 'function', 'taskReferenceOrigin
 ok(typeof hooks.cardParamSummary === 'function', 'cardParamSummary hook missing');
 ok(typeof hooks.renderImageContextMenu === 'function', 'renderImageContextMenu hook missing');
 ok(typeof hooks.galleryVirtualWindow === 'function', 'galleryVirtualWindow hook missing');
+ok(typeof hooks.measureGalleryMetrics === 'function', 'measureGalleryMetrics hook missing');
+ok(typeof hooks.estimateGalleryCardHeight === 'function', 'estimateGalleryCardHeight hook missing');
 ok(typeof hooks.galleryVirtualRangeChanged === 'function', 'galleryVirtualRangeChanged hook missing');
 ok(typeof hooks.promptRepoVirtualWindow === 'function', 'promptRepoVirtualWindow hook missing');
 ok(typeof hooks.render === 'function', 'render hook missing');
@@ -872,6 +874,19 @@ if (typeof hooks.openAiSizePayload === 'function') {
   const virtualWindow = hooks.galleryVirtualWindow(300);
   ok(virtualWindow.shouldVirtualize === true, 'large gallery should use virtualized rendering');
   ok(virtualWindow.endIndex - virtualWindow.startIndex < 90, 'virtual gallery should render only a bounded window of cards');
+  const wideGalleryMetrics = hooks.measureGalleryMetrics({ clientWidth: 1740 });
+  ok(wideGalleryMetrics.columns === 3, 'wide gallery should keep three columns');
+  ok(wideGalleryMetrics.cardHeight > 306, 'wide virtual gallery cards should grow beyond the legacy 306px height');
+  ok(
+    wideGalleryMetrics.cardHeight === hooks.estimateGalleryCardHeight(1740, 3, 8),
+    'measured gallery metrics should use the shared card-height estimator'
+  );
+  hooks.setTestState({ galleryVirtual: { viewportWidth: 1740, scrollTop: 0, viewportHeight: 700 } });
+  const measuredVirtualWindow = hooks.galleryVirtualWindow(300);
+  ok(
+    measuredVirtualWindow.cardHeight === wideGalleryMetrics.cardHeight,
+    'virtual gallery spacers should use the measured card height'
+  );
   const originalViewportWidth = sandbox.window.innerWidth;
   sandbox.window.innerWidth = 1150;
   ok(hooks.galleryVirtualWindow(300).columns === 2, 'gallery virtualization must match the CSS two-column breakpoint through 1180px');

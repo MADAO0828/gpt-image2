@@ -176,10 +176,13 @@ const AGENT_RENDER_MESSAGE_LIMIT = 80;
 const AGENT_THREAD_MESSAGE_LIMIT = 240;
 const AGENT_THREAD_STORAGE_CHAR_LIMIT = 512 * 1024;
 const AGENT_TOTAL_STORAGE_CHAR_LIMIT = 1536 * 1024;
+const GALLERY_CARD_BODY_HEIGHT = 156;
+const GALLERY_CARD_HEIGHT_SAFETY = 8;
 let storeWriteTimer = 0;
 let agentHistoryWriteTimer = 0;
 let agentHistoryPersistChain = Promise.resolve();
 let promptRepoResizeObserver = null;
+let galleryResizeObserver = null;
 
 function makeAgentThread(projectId, overrides = {}) {
   const createdAt = overrides.createdAt || Date.now();
@@ -1091,7 +1094,7 @@ function defaultStore() {
     version: 3,
     mode: 'gallery',
     tasks: [],
-    galleryVirtual: { scrollTop: 0, viewportHeight: 720 },
+    galleryVirtual: { scrollTop: 0, viewportHeight: 720, viewportWidth: 0, cardHeight: 0, columns: 0 },
     favorites: {},
     selectedTaskIds: [],
     references: [],
@@ -2890,11 +2893,67 @@ function taskActionIcon(name, active = false) {
   if (name === 'delete') return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8h8m-7 3v6m3-6v6m3-6v6M6.5 8l.7 11.2A2 2 0 0 0 9.2 21h5.6a2 2 0 0 0 2-1.8L17.5 8M10 5h4l.8 2H19M5 7h14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   return '';
 }
+function galleryColumnMetrics(width) {
+  if (width <= 760) return { columns: 1, gap: 10 };
+  if (width <= 1180) return { columns: 2, gap: 8 };
+  return { columns: 3, gap: 8 };
+}
+function estimateGalleryCardHeight(viewportWidth, columns, gap) {
+  const width = Math.max(320, Number(viewportWidth) || 1280);
+  const columnCount = Math.max(1, Number(columns) || 1);
+  const columnGap = Math.max(0, Number(gap) || 0);
+  const contentWidth = Math.max(280, width - 16);
+  const cardWidth = Math.max(180, (contentWidth - columnGap * (columnCount - 1)) / columnCount);
+  const mediaHeight = cardWidth / 2;
+  return Math.ceil(mediaHeight + GALLERY_CARD_BODY_HEIGHT + GALLERY_CARD_HEIGHT_SAFETY);
+}
+function measureGalleryMetrics(scroll = null) {
+  const viewportWidth = Math.max(
+    320,
+    Number(scroll?.clientWidth)
+      || Number(state.galleryVirtual?.viewportWidth)
+      || (typeof window !== 'undefined' ? window.innerWidth || 1280 : 1280)
+  );
+  const screenWidth = typeof window !== 'undefined' ? window.innerWidth || viewportWidth : viewportWidth;
+  const { columns, gap } = galleryColumnMetrics(screenWidth);
+  return {
+    viewportWidth,
+    columns,
+    gap,
+    cardHeight: estimateGalleryCardHeight(viewportWidth, columns, gap)
+  };
+}
 function galleryMetrics() {
-  const width = typeof window !== 'undefined' ? window.innerWidth || 1280 : 1280;
-  if (width <= 760) return { columns: 1, cardHeight: 338, gap: 10 };
-  if (width <= 1180) return { columns: 2, cardHeight: 318, gap: 8 };
-  return { columns: 3, cardHeight: 306, gap: 8 };
+  return measureGalleryMetrics();
+}
+function syncGalleryLayoutMetrics(options = {}) {
+  const scroll = $('.gallery-scroll');
+  if (!scroll) return false;
+  const next = measureGalleryMetrics(scroll);
+  const previous = state.galleryVirtual || {};
+  const changed = previous.viewportWidth !== next.viewportWidth
+    || previous.cardHeight !== next.cardHeight
+    || previous.columns !== next.columns
+    || previous.gap !== next.gap;
+  state.galleryVirtual = {
+    ...previous,
+    viewportWidth: next.viewportWidth,
+    cardHeight: next.cardHeight,
+    columns: next.columns,
+    gap: next.gap
+  };
+  if (changed && options.render !== false && scroll.dataset.virtual === '1') {
+    renderGalleryListOnly({ layoutChanged: true });
+  }
+  return changed;
+}
+function scheduleGalleryLayoutSync() {
+  if (state.galleryVirtual?.layoutScheduled) return;
+  state.galleryVirtual = { ...(state.galleryVirtual || {}), layoutScheduled: true };
+  nextRenderFrame(() => {
+    state.galleryVirtual = { ...(state.galleryVirtual || {}), layoutScheduled: false };
+    syncGalleryLayoutMetrics();
+  });
 }
 function galleryVirtualWindow(totalItems) {
   const metrics = galleryMetrics();
@@ -3002,7 +3061,12 @@ function renderGalleryListOnly(options = {}) {
   const scroll = $('.gallery-scroll');
   if (!scroll) return render();
   const galleryScrollState = captureGalleryScrollState();
-  state.galleryVirtual = { ...(state.galleryVirtual || {}), scrollTop: galleryScrollState?.scrollTop || 0, viewportHeight: scroll.clientHeight || state.galleryVirtual?.viewportHeight || 720 };
+  state.galleryVirtual = {
+    ...(state.galleryVirtual || {}),
+    scrollTop: galleryScrollState?.scrollTop || 0,
+    viewportHeight: scroll.clientHeight || state.galleryVirtual?.viewportHeight || 720,
+    viewportWidth: scroll.clientWidth || state.galleryVirtual?.viewportWidth || 0
+  };
   const tasks = filteredTasks();
   const windowState = galleryVirtualWindow(tasks.length);
   if (options.virtualScroll && !galleryVirtualRangeChanged(windowState)) return false;
@@ -5605,16 +5669,31 @@ function bindTransientEvents() {
   }
   const galleryScroll = $('.gallery-scroll');
   if (galleryScroll) {
+    galleryResizeObserver?.disconnect();
     state.galleryVirtual = {
       ...(state.galleryVirtual || {}),
       scrollTop: galleryScroll.scrollTop || state.galleryVirtual?.scrollTop || 0,
-      viewportHeight: galleryScroll.clientHeight || state.galleryVirtual?.viewportHeight || 720
+      viewportHeight: galleryScroll.clientHeight || state.galleryVirtual?.viewportHeight || 720,
+      viewportWidth: galleryScroll.clientWidth || state.galleryVirtual?.viewportWidth || 0
     };
+    const galleryLayoutChanged = syncGalleryLayoutMetrics({ render: false });
+    if (galleryLayoutChanged && galleryScroll.dataset.virtual === '1') {
+      renderGalleryListOnly({ layoutChanged: true });
+    }
+    if (typeof ResizeObserver === 'function') {
+      galleryResizeObserver = new ResizeObserver(() => scheduleGalleryLayoutSync());
+      galleryResizeObserver.observe(galleryScroll);
+    }
     galleryScroll.addEventListener('scroll', () => {
       if (state.imageContextMenu) {
         closeImageContextMenu();
       }
-      state.galleryVirtual = { ...(state.galleryVirtual || {}), scrollTop: galleryScroll.scrollTop || 0, viewportHeight: galleryScroll.clientHeight || 720 };
+      state.galleryVirtual = {
+        ...(state.galleryVirtual || {}),
+        scrollTop: galleryScroll.scrollTop || 0,
+        viewportHeight: galleryScroll.clientHeight || 720,
+        viewportWidth: galleryScroll.clientWidth || state.galleryVirtual?.viewportWidth || 0
+      };
       if (galleryScroll.dataset.virtual === '1') scheduleGalleryVirtualRender();
     }, { passive: true });
   }
@@ -7887,6 +7966,8 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     renderPreservingAgentScroll,
     shouldPreserveAgentScrollForTask,
     galleryVirtualWindow,
+    measureGalleryMetrics,
+    estimateGalleryCardHeight,
     galleryVirtualRangeChanged,
     renderGalleryListOnly,
     promptRepoVirtualWindow,
