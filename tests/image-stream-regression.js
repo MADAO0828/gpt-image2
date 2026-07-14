@@ -136,6 +136,25 @@ function streamResponse(chunks, options = {}) {
   assert.strictEqual(resultObject.data.length, 1);
   assert.strictEqual(resultObject.data[0].b64_json, 'cmVzdWx0LW9iamVjdA==');
 
+  const stringContainerResult = await runtime.consumeImageStream(streamResponse([
+    sseEvent({
+      type: 'image_generation.completed',
+      images: ['data:image/png;base64,AAAA']
+    })
+  ], { keepOpen: true }));
+  assert.strictEqual(stringContainerResult.completionReason, 'completed-event');
+  assert.strictEqual(stringContainerResult.data.length, 1);
+  assert.strictEqual(stringContainerResult.data[0].data_url, 'data:image/png;base64,AAAA');
+
+  const compatibilityFieldResult = await runtime.consumeImageStream(streamResponse([
+    sseEvent({
+      type: 'image_generation.completed',
+      image: 'Y29tcGF0aWJpbGl0eS1pbWFnZQ=='
+    })
+  ], { keepOpen: true }));
+  assert.strictEqual(compatibilityFieldResult.data.length, 1);
+  assert.strictEqual(compatibilityFieldResult.data[0].b64_json, 'Y29tcGF0aWJpbGl0eS1pbWFnZQ==');
+
   const completedResponse = streamResponse([
     sseEvent({
       type: 'image_edit.completed',

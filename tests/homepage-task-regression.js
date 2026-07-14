@@ -454,6 +454,21 @@ const candidates = hooks.collectImageCandidates({
   output: [{ content: [{ data_url: 'data:image/png;base64,ccc' }] }]
 });
 ok(candidates.length >= 5, 'recursive image candidate collector should find all nested image results');
+const stringImageCandidates = hooks.collectImageCandidates({
+  images: [
+    'data:image/png;base64,inline-string-image',
+    'https://example.com/string-image.png'
+  ],
+  data: ['c3RyaW5nLWJhc2U2NC1pbWFnZQ=='],
+  result: { image: 'object-image-value' }
+});
+ok(
+  stringImageCandidates.some((item) => item.data_url === 'data:image/png;base64,inline-string-image')
+    && stringImageCandidates.some((item) => item.url === 'https://example.com/string-image.png')
+    && stringImageCandidates.some((item) => item.b64_json === 'c3RyaW5nLWJhc2U2NC1pbWFnZQ==')
+    && stringImageCandidates.some((item) => item.image === 'object-image-value'),
+  'image candidate collector should support string images in containers and image/base64 compatibility fields'
+);
 
 const largeImagePayload = 'a'.repeat(12000);
 const summarized = hooks.summarizeResponse({
@@ -1298,6 +1313,14 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(await hooks.fetchRemoteImageBlob('https://example.com/not-image') === null, 'remote image persistence should reject non-image Content-Type');
   sandbox.fetch = async () => imageResponse('', 'image/png', true);
   ok(await hooks.fetchRemoteImageBlob('https://example.com/empty.png') === null, 'remote image persistence should reject empty blobs');
+  let remoteFetchError;
+  try {
+    await hooks.persistResponseImages({ data: [{ url: 'https://example.com/unavailable.png' }] });
+  } catch (error) {
+    remoteFetchError = error;
+  }
+  ok(remoteFetchError?.code === 'IMAGE_RESPONSE_REMOTE_FETCH_FAILED' && remoteFetchError?.stage === 'image-fetch',
+    'remote image download failures should expose a distinct diagnostic code and stage');
   sandbox.fetch = originalFetch;
 
   const inlineUrlImages = await hooks.persistResponseImages({
@@ -1308,6 +1331,13 @@ if (typeof hooks.openAiSizePayload === 'function') {
   });
   ok(inlineUrlImages.length === 2, 'data URL images returned through url/image_url fields should both be persisted');
   ok(inlineUrlImages.every((image) => image.blobId && !String(image.remoteUrl || image.url || '').startsWith('data:')), 'persisted inline data URL images should not keep data URLs in task state');
+  const stringContainerImages = await hooks.persistResponseImages({
+    images: [
+      `data:image/png;base64,${Buffer.from('container-image-a').toString('base64')}`,
+      `data:image/png;base64,${Buffer.from('container-image-b').toString('base64')}`
+    ]
+  });
+  ok(stringContainerImages.length === 2, 'string image containers should be persisted as image results');
 
   const fakeJpegBytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01]);
   const fakeJpegInfo = await hooks.imageInfoFromBlob(new Blob([fakeJpegBytes], { type: 'image/png' }));

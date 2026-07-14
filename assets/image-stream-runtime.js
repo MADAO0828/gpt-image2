@@ -55,9 +55,16 @@
   }
 
   function candidateFromObject(payload, object, fallbackIndex = 0) {
-    const b64 = firstValue(object?.b64_json, object?.b64Json, object?.base64, object?.image_base64, object?.imageBase64);
+    const rawImage = firstValue(object?.image, object?.image_data, object?.imageData, object?.image_bytes, object?.imageBytes);
+    let b64 = firstValue(object?.b64_json, object?.b64Json, object?.base64, object?.base64_image, object?.base64Image, object?.image_base64, object?.imageBase64);
     const dataUrl = firstValue(object?.data_url, object?.dataUrl, object?.image_data_url, object?.imageDataUrl);
-    const url = firstValue(object?.url, object?.image_url, object?.imageUrl, object?.uri, object?.src, object?.href);
+    const url = firstValue(object?.url, object?.image_url, object?.imageUrl, object?.uri, object?.src, object?.href, object?.download_url, object?.downloadUrl);
+    if (!b64 && !dataUrl && !url && typeof rawImage === 'string') {
+      if (/^data:image\//i.test(rawImage) || /^https?:\/\//i.test(rawImage)) {
+        return candidateFromString(payload, rawImage, 'image', fallbackIndex);
+      }
+      b64 = rawImage;
+    }
     if (!b64 && !dataUrl && !url) return null;
     const outputIndex = Number(firstValue(
       object?.output_index,
@@ -96,24 +103,54 @@
     };
   }
 
+  function candidateFromString(payload, value, key = '', fallbackIndex = 0) {
+    const text = String(value || '').trim();
+    if (!text) return null;
+    const normalizedKey = String(key || '').replace(/[-\s]/g, '_').toLowerCase();
+    const dataUrl = /^data:image\//i.test(text);
+    const url = /^https?:\/\//i.test(text);
+    const imageKey = /^(?:b64_json|b64json|base64|base64_image|base64image|image_base64|imagebase64|image_data|imagedata|image_bytes|imagebytes|image|images|data|output|outputs|result|results|data_url|dataurl|image_data_url|imagedataurl|url|image_url|imageurl|uri|src|href)$/.test(normalizedKey);
+    const b64 = !dataUrl && !url && imageKey && /^[A-Za-z0-9+/_=-]{4,}$/.test(text) ? text : '';
+    if (!dataUrl && !url && !b64) return null;
+    return candidateFromObject(payload, dataUrl ? { data_url: text } : url ? { url: text } : { b64_json: text }, fallbackIndex);
+  }
+
   function collectEventCandidates(payload) {
     const candidates = [];
     const seen = new Set();
-    const visit = (value) => {
-      if (!value || typeof value !== 'object') return;
+    const seenValues = new Set();
+    const visit = (value, key = '') => {
+      if (value === null || value === undefined) return;
+      if (typeof value === 'string') {
+        const candidate = candidateFromString(payload, value, key, candidates.length);
+        if (candidate) {
+          const dedupeValue = candidate.b64_json || candidate.data_url || candidate.url;
+          if (seenValues.has(dedupeValue)) return;
+          const dedupeKey = `${candidate.outputIndex}:${dedupeValue}`;
+          if (!seen.has(dedupeKey)) {
+            seen.add(dedupeKey);
+            seenValues.add(dedupeValue);
+            candidates.push(candidate);
+          }
+        }
+        return;
+      }
+      if (typeof value !== 'object') return;
       const candidate = candidateFromObject(payload, value, candidates.length);
       if (candidate) {
-        const key = `${candidate.outputIndex}:${candidate.b64_json || candidate.data_url || candidate.url}`;
-        if (!seen.has(key)) {
-          seen.add(key);
+        const dedupeValue = candidate.b64_json || candidate.data_url || candidate.url;
+        const dedupeKey = `${candidate.outputIndex}:${dedupeValue}`;
+        if (!seen.has(dedupeKey) && !seenValues.has(dedupeValue)) {
+          seen.add(dedupeKey);
+          seenValues.add(dedupeValue);
           candidates.push(candidate);
         }
       }
       if (Array.isArray(value)) {
-        value.forEach(visit);
+        value.forEach((child) => visit(child, key));
         return;
       }
-      Object.values(value).forEach(visit);
+      Object.entries(value).forEach(([childKey, child]) => visit(child, childKey));
     };
     visit(payload);
     return candidates;

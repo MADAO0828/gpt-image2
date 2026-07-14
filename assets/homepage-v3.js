@@ -7706,9 +7706,15 @@ async function persistResponseImages(response) {
   const unique = [];
   const seen = new Set();
   for (const item of candidates) {
-    const b64 = firstDefined(item.b64_json, item.b64Json, item.base64, item.image_base64, item.imageBase64);
+    const rawImage = firstDefined(item.image, item.image_data, item.imageData, item.image_bytes, item.imageBytes);
+    let b64 = firstDefined(item.b64_json, item.b64Json, item.base64, item.base64_image, item.base64Image, item.image_base64, item.imageBase64);
     let dataUrl = firstDefined(item.data_url, item.dataUrl, item.image_data_url, item.imageDataUrl);
-    let remoteUrl = firstDefined(item.url, item.image_url, item.imageUrl, item.uri, item.src, item.href) || '';
+    let remoteUrl = firstDefined(item.url, item.image_url, item.imageUrl, item.uri, item.src, item.href, item.download_url, item.downloadUrl) || '';
+    if (!b64 && !dataUrl && !remoteUrl && typeof rawImage === 'string') {
+      if (/^data:image\//i.test(rawImage)) dataUrl = rawImage;
+      else if (/^https?:\/\//i.test(rawImage)) remoteUrl = rawImage;
+      else b64 = rawImage;
+    }
     if (!dataUrl && /^data:image\//i.test(String(remoteUrl || ''))) {
       dataUrl = remoteUrl;
       remoteUrl = '';
@@ -7718,18 +7724,48 @@ async function persistResponseImages(response) {
     seen.add(dedupeKey);
     unique.push({ b64, dataUrl, remoteUrl });
   }
+  let remoteFetchFailures = 0;
+  let invalidImageCandidates = 0;
   try {
     const images = (await Promise.all(unique.map(async ({ b64, dataUrl, remoteUrl }) => {
-      let blob = null;
-      if (b64) blob = dataUrlToBlob(String(b64).startsWith('data:') ? b64 : `data:image/png;base64,${b64}`);
-      else if (dataUrl) blob = dataUrlToBlob(dataUrl);
-      else if (remoteUrl) blob = await fetchRemoteImageBlob(remoteUrl);
-      if (!blob) return null;
-      const blobId = await putBlob(blob);
-      const info = await imageInfoFromBlob(blob).catch(async () => ({ ...(await imageSizeFromBlob(blob).catch(() => ({}))), type: blob.type }));
-      return { blobId, remoteUrl: /^blob:|^data:/i.test(String(remoteUrl || '')) ? '' : remoteUrl, width: info.width, height: info.height, type: info.type || blob.type, transparent: info.hasAlpha === undefined ? undefined : !!info.hasAlpha };
+      try {
+        let blob = null;
+        if (b64) blob = dataUrlToBlob(String(b64).startsWith('data:') ? b64 : `data:image/png;base64,${b64}`);
+        else if (dataUrl) blob = dataUrlToBlob(dataUrl);
+        else if (remoteUrl) blob = await fetchRemoteImageBlob(remoteUrl);
+        if (!blob) {
+          if (remoteUrl) remoteFetchFailures += 1;
+          else invalidImageCandidates += 1;
+          return null;
+        }
+        const blobId = await putBlob(blob);
+        const info = await imageInfoFromBlob(blob).catch(async () => ({ ...(await imageSizeFromBlob(blob).catch(() => ({}))), type: blob.type }));
+        return { blobId, remoteUrl: /^blob:|^data:/i.test(String(remoteUrl || '')) ? '' : remoteUrl, width: info.width, height: info.height, type: info.type || blob.type, transparent: info.hasAlpha === undefined ? undefined : !!info.hasAlpha };
+      } catch {
+        if (remoteUrl) remoteFetchFailures += 1;
+        else invalidImageCandidates += 1;
+        return null;
+      }
     }))).filter(Boolean);
-    if (!images.length) throw imageResponseError('图片响应中没有可保存的图片数据', 'IMAGE_RESPONSE_NO_IMAGE', 'image-persist');
+    if (!images.length) {
+      if (remoteFetchFailures && remoteFetchFailures === unique.length) {
+        throw imageResponseError(
+          `图片响应包含 ${remoteFetchFailures} 个图片地址，但本站无法下载`,
+          'IMAGE_RESPONSE_REMOTE_FETCH_FAILED',
+          'image-fetch',
+          `图片候选数：${unique.length}；远程图片下载失败：${remoteFetchFailures}。请检查中转站图片地址是否已过期、是否允许跨域访问。`
+        );
+      }
+      if (invalidImageCandidates && invalidImageCandidates === unique.length) {
+        throw imageResponseError(
+          '图片响应包含图片字段，但图片数据无法解码',
+          'IMAGE_RESPONSE_IMAGE_DATA_INVALID',
+          'image-decode',
+          `图片候选数：${unique.length}；无法解码：${invalidImageCandidates}。请检查中转站返回的 Base64 或 data URL 是否完整。`
+        );
+      }
+      throw imageResponseError('图片响应中没有可保存的图片数据', 'IMAGE_RESPONSE_NO_IMAGE', 'image-persist');
+    }
     return images;
   } finally {
     for (const url of response?.streamObjectUrls || []) revokeTransientObjectUrl(url);
@@ -7737,25 +7773,70 @@ async function persistResponseImages(response) {
 }
 function collectImageCandidates(response) {
   const out = [];
-  for (const obj of collectObjectsDeep(response)) {
-    const hasImageValue = firstDefined(
-      obj.b64_json,
-      obj.b64Json,
-      obj.base64,
-      obj.image_base64,
-      obj.imageBase64,
-      obj.data_url,
-      obj.dataUrl,
-      obj.image_data_url,
-      obj.imageDataUrl,
-      obj.url,
-      obj.image_url,
-      obj.imageUrl,
-      obj.uri,
-      obj.src
-    );
-    if (hasImageValue) out.push(obj);
-  }
+  const seenObjects = new Set();
+  const seenValues = new Set();
+  const imageValueKeys = new Set([
+    'b64_json', 'b64json', 'base64', 'base64_image', 'base64image',
+    'image_base64', 'imagebase64', 'image_data', 'imagedata',
+    'image_bytes', 'imagebytes', 'image', 'images', 'data', 'output',
+    'outputs', 'result', 'results', 'data_url', 'dataurl',
+    'image_data_url', 'imagedataurl', 'url', 'image_url', 'imageurl',
+    'uri', 'src', 'href'
+  ]);
+  const addStringCandidate = (value, key) => {
+    const text = String(value || '').trim();
+    if (!text || seenValues.has(text)) return;
+    const normalizedKey = String(key || '').replace(/[-\s]/g, '_').toLowerCase();
+    const dataUrl = /^data:image\//i.test(text);
+    const remoteUrl = /^https?:\/\//i.test(text);
+    const base64 = imageValueKeys.has(normalizedKey) && /^[A-Za-z0-9+/_=-]{4,}$/.test(text);
+    if (!dataUrl && !remoteUrl && !base64) return;
+    seenValues.add(text);
+    if (dataUrl) out.push({ data_url: text });
+    else if (remoteUrl) out.push({ url: text });
+    else out.push({ b64_json: text });
+  };
+  const visit = (value, key = '', depth = 0) => {
+    if (value === null || value === undefined || depth > 8) return;
+    if (typeof value === 'string') {
+      addStringCandidate(value, key);
+      return;
+    }
+    if (typeof value !== 'object' || seenObjects.has(value)) return;
+    seenObjects.add(value);
+    if (!Array.isArray(value)) {
+      const hasImageValue = firstDefined(
+        value.b64_json,
+        value.b64Json,
+        value.base64,
+        value.base64_image,
+        value.base64Image,
+        value.image_base64,
+        value.imageBase64,
+        value.image_data,
+        value.imageData,
+        value.image_bytes,
+        value.imageBytes,
+        value.image,
+        value.data_url,
+        value.dataUrl,
+        value.image_data_url,
+        value.imageDataUrl,
+        value.url,
+        value.image_url,
+        value.imageUrl,
+        value.uri,
+        value.src,
+        value.href,
+        value.download_url,
+        value.downloadUrl
+      );
+      if (hasImageValue) out.push(value);
+    }
+    if (Array.isArray(value)) value.forEach((child) => visit(child, key, depth + 1));
+    else Object.entries(value).forEach(([childKey, child]) => visit(child, childKey, depth + 1));
+  };
+  visit(response);
   return out;
 }
 function streamCandidateSource(candidate) {
