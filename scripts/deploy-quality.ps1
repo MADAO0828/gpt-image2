@@ -232,8 +232,8 @@ function Test-PreviewSupportsAuth([string]$Url) {
 function Invoke-StaticDeployChecks([string]$Url, [string]$Label) {
   Write-Step "Run static deploy checks against $Label"
   $root = Invoke-WebRequest -UseBasicParsing -Uri ($Url.TrimEnd('/') + '/') -TimeoutSec 45
-  if (-not ($root.Content -match 'home-v3-20260714-image-response-compat-r98')) {
-    throw "$Label HTML does not contain expected asset version home-v3-20260714-image-response-compat-r98."
+  if (-not ($root.Content -match 'home-v3-20260714-image-stream-stack-safe-r99')) {
+    throw "$Label HTML does not contain expected asset version home-v3-20260714-image-stream-stack-safe-r99."
   }
   $js = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($Url.TrimEnd('/') + '/assets/homepage-v3.js') -TimeoutSec 45
   $streamRuntime = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($Url.TrimEnd('/') + '/assets/image-stream-runtime.js') -TimeoutSec 45
@@ -243,7 +243,7 @@ function Invoke-StaticDeployChecks([string]$Url, [string]$Label) {
   $cssType = [string]($css.Headers['Content-Type'])
   if ($jsType -notmatch 'javascript|ecmascript|text/plain') { throw "$Label homepage-v3.js has unexpected content type: $jsType" }
   if ($streamRuntimeType -notmatch 'javascript|ecmascript|text/plain') { throw "$Label image-stream-runtime.js has unexpected content type: $streamRuntimeType" }
-  if ($streamRuntime.Content -notmatch 'IMAGE_STREAM_TRANSPORT_INTERRUPTED') { throw "$Label image-stream-runtime.js does not contain the expected r89 runtime." }
+  if ($streamRuntime.Content -notmatch 'DEFAULT_SCAN_DEPTH') { throw "$Label image-stream-runtime.js does not contain the expected stack-safe r99 runtime." }
   if ($cssType -notmatch 'css|text/plain') { throw "$Label homepage-v3.css has unexpected content type: $cssType" }
   foreach ($path in @('/init_db.sql', '/schema.sql', '/migrations/20260710_session_version_and_auth_rate_limits.sql', '/scripts/deploy-quality.ps1', '/tests/e2e-quality.js', '/README.md', '/wrangler.toml', '/wrangler.jsonc', '/.dev.vars', '/.env')) {
     try {

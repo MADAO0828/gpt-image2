@@ -6,6 +6,8 @@
   const DEFAULT_EVENT_LIMIT = 32 * 1024 * 1024;
   const DEFAULT_OUTPUT_LIMIT = 16;
   const DEFAULT_METADATA_LIMIT = 24;
+  const DEFAULT_SCAN_DEPTH = 12;
+  const DEFAULT_SCAN_NODES = 20000;
 
   function firstValue(...values) {
     return values.find((value) => value !== undefined && value !== null && value !== '');
@@ -119,13 +121,22 @@
     const candidates = [];
     const seen = new Set();
     const seenValues = new Set();
-    const visit = (value, key = '') => {
-      if (value === null || value === undefined) return;
+    const seenObjects = new Set();
+    const stack = [{ value: payload, key: '', depth: 0 }];
+    let scannedNodes = 0;
+    while (stack.length) {
+      const entry = stack.pop();
+      const value = entry?.value;
+      const key = entry?.key || '';
+      const depth = Number(entry?.depth) || 0;
+      if (value === null || value === undefined || depth > DEFAULT_SCAN_DEPTH) continue;
+      scannedNodes += 1;
+      if (scannedNodes > DEFAULT_SCAN_NODES) break;
       if (typeof value === 'string') {
         const candidate = candidateFromString(payload, value, key, candidates.length);
         if (candidate) {
           const dedupeValue = candidate.b64_json || candidate.data_url || candidate.url;
-          if (seenValues.has(dedupeValue)) return;
+          if (seenValues.has(dedupeValue)) continue;
           const dedupeKey = `${candidate.outputIndex}:${dedupeValue}`;
           if (!seen.has(dedupeKey)) {
             seen.add(dedupeKey);
@@ -133,9 +144,10 @@
             candidates.push(candidate);
           }
         }
-        return;
+        continue;
       }
-      if (typeof value !== 'object') return;
+      if (typeof value !== 'object' || seenObjects.has(value)) continue;
+      seenObjects.add(value);
       const candidate = candidateFromObject(payload, value, candidates.length);
       if (candidate) {
         const dedupeValue = candidate.b64_json || candidate.data_url || candidate.url;
@@ -147,12 +159,17 @@
         }
       }
       if (Array.isArray(value)) {
-        value.forEach((child) => visit(child, key));
-        return;
+        for (let index = value.length - 1; index >= 0; index -= 1) {
+          stack.push({ value: value[index], key, depth: depth + 1 });
+        }
+        continue;
       }
-      Object.entries(value).forEach(([childKey, child]) => visit(child, childKey));
-    };
-    visit(payload);
+      const entries = Object.entries(value);
+      for (let index = entries.length - 1; index >= 0; index -= 1) {
+        const [childKey, child] = entries[index];
+        stack.push({ value: child, key: childKey, depth: depth + 1 });
+      }
+    }
     return candidates;
   }
 

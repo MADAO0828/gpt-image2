@@ -155,6 +155,23 @@ function streamResponse(chunks, options = {}) {
   assert.strictEqual(compatibilityFieldResult.data.length, 1);
   assert.strictEqual(compatibilityFieldResult.data[0].b64_json, 'Y29tcGF0aWJpbGl0eS1pbWFnZQ==');
 
+  const deepProgressEvent = { type: 'image.generation.chunk', progress_text: 'working' };
+  let deepCursor = deepProgressEvent;
+  for (let index = 0; index < 12000; index += 1) {
+    deepCursor.data = {};
+    deepCursor = deepCursor.data;
+  }
+  deepCursor.progress_text = 'still working';
+  let deepProgressError;
+  try {
+    await runtime.consumeImageStream(streamResponse([sseEvent(deepProgressEvent)]));
+  } catch (error) {
+    deepProgressError = error;
+  }
+  assert(deepProgressError, 'deep progress payload without an image should finish with a controlled stream error');
+  assert.strictEqual(deepProgressError.code, 'IMAGE_STREAM_NO_IMAGE');
+  assert.notStrictEqual(deepProgressError.message, 'Maximum call stack size exceeded');
+
   const completedResponse = streamResponse([
     sseEvent({
       type: 'image_edit.completed',
