@@ -291,6 +291,183 @@ function proxyFetchFailedMessage(error, profile, apiPath, request, headers) {
     : '请检查 API 地址、模型名称和服务商网关状态后重试。';
   return `${base}。模型：${profile.name || profile.id || profile.model} / ${profile.model}；供应商：${provider}；路径：${apiPath}；模式：${mode}。${suggestion}`;
 }
+function imageProxyStreamKind(apiPath) {
+  return /^images\/edits(?:$|\/|\?)/i.test(String(apiPath || '').replace(/^\/+/, '')) ? 'image_edit' : 'image_generation';
+}
+function firstDefined(...values) {
+  return values.find((value) => value !== undefined && value !== null && value !== '');
+}
+function imageProxyStreamFrame(payload) {
+  return `data: ${JSON.stringify(payload)}\n\n`;
+}
+function parseUpstreamJsonBody(bodyText) {
+  try {
+    return bodyText ? JSON.parse(bodyText) : null;
+  } catch {
+    return null;
+  }
+}
+function imageProxyStreamFailureEvent(error, profile, apiPath, request, upstream = null, bodyText = '') {
+  const kind = imageProxyStreamKind(apiPath);
+  const parsed = parseUpstreamJsonBody(bodyText);
+  const upstreamMessage = firstDefined(
+    parsed?.error?.message,
+    typeof parsed?.error === 'string' ? parsed.error : undefined,
+    parsed?.message,
+    parsed?.detail
+  );
+  const status = Number(upstream?.status || error?.status || 0);
+  let message = upstreamMessage || '';
+  let code = parsed?.error?.code || parsed?.code || error?.code || 'PROXY_FETCH_FAILED';
+  let type = 'proxy_error';
+  if (error?.name === 'AbortError' || error?.code === 'PROXY_TIMEOUT') {
+    message = '本站代理等待 API 响应超时。请降低生成张数/图片尺寸，或更换响应更稳定的 API 服务商。';
+    code = 'PROXY_TIMEOUT';
+    type = 'proxy_timeout';
+  } else if (upstream && looksLikeCloudflareTimeout(bodyText, upstream.status)) {
+    message = '上游 API 服务超时（Cloudflare 524/5xx）。请稍后重试或更换 API 服务商。';
+    code = 'UPSTREAM_CLOUDFLARE_TIMEOUT';
+    type = 'upstream_timeout';
+  } else if (upstream && looksLikeHtml(bodyText, upstream.headers.get('Content-Type'))) {
+    message = '上游 API 返回了 HTML 错误页而不是 JSON。请检查 API 地址和服务商网关状态。';
+    code = 'UPSTREAM_HTML_RESPONSE';
+    type = 'upstream_non_json';
+  }
+  if (!message) message = proxyFetchFailedMessage(error || new Error('上游连接失败'), profile, apiPath, request, new Headers(request.headers));
+  return {
+    type: `${kind}.failed`,
+    status: status || 'failed',
+    upstreamStatus: status || undefined,
+    error: {
+      message: String(message).slice(0, 1200),
+      type,
+      code
+    }
+  };
+}
+function startImageProxyStream({ request, targetUrl, fetchInit, abortController, clearProxyTimeout, profile, apiPath }) {
+  const encoder = new TextEncoder();
+  const kind = imageProxyStreamKind(apiPath);
+  const startedAt = Date.now();
+  let cancelled = false;
+  let closed = false;
+  const enqueue = (streamController, chunk) => {
+    if (cancelled || closed) return false;
+    try {
+      streamController.enqueue(typeof chunk === 'string' ? encoder.encode(chunk) : chunk);
+      return true;
+    } catch {
+      cancelled = true;
+      return false;
+    }
+  };
+  const body = new ReadableStream({
+    start(streamController) {
+      enqueue(streamController, ': nexgen-image-proxy-ready\n\n');
+      enqueue(streamController, imageProxyStreamFrame({
+        type: `${kind}.started`,
+        proxy: true,
+        receivedAt: Date.now()
+      }));
+      void (async () => {
+        try {
+          const upstream = await fetch(targetUrl, fetchInit);
+          const upstreamMs = Date.now() - startedAt;
+          if (upstream.status >= 300 && upstream.status < 400) {
+            const redirectError = new Error('上游 API 返回了重定向，代理已阻止自动跳转。请将配置改为最终 HTTPS API 地址。');
+            redirectError.code = 'UPSTREAM_REDIRECT_BLOCKED';
+            const bodyText = await upstream.text().catch(() => '');
+            enqueue(streamController, imageProxyStreamFrame(imageProxyStreamFailureEvent(redirectError, profile, apiPath, request, upstream, bodyText)));
+            return;
+          }
+          let bodyText = '';
+          if (upstream.ok && upstream.body) {
+            const reader = upstream.body.getReader();
+            const decoder = new TextDecoder();
+            try {
+              const firstPacket = await reader.read();
+              if (!firstPacket.done) {
+                const firstText = decoder.decode(firstPacket.value, { stream: true });
+                const streamLike = isEventStream(upstream.headers) || /^\s*(?:data|event|:)/i.test(firstText);
+                if (streamLike) {
+                  if (enqueue(streamController, firstPacket.value)) {
+                    while (!cancelled) {
+                      const { done, value } = await reader.read();
+                      if (done) break;
+                      if (!enqueue(streamController, value)) {
+                        await reader.cancel?.('image proxy client disconnected').catch?.(() => {});
+                        break;
+                      }
+                    }
+                  }
+                  return;
+                }
+                bodyText = firstText;
+                while (!cancelled) {
+                  const { done, value } = await reader.read();
+                  if (done) break;
+                  bodyText += decoder.decode(value, { stream: true });
+                }
+                bodyText += decoder.decode();
+              }
+            } finally {
+              reader.releaseLock?.();
+            }
+          } else {
+            bodyText = await upstream.text().catch(() => '');
+          }
+          if (!upstream.ok) {
+            enqueue(streamController, imageProxyStreamFrame(imageProxyStreamFailureEvent(new Error('上游图片请求失败'), profile, apiPath, request, upstream, bodyText)));
+            return;
+          }
+          if (/^\s*(?:data|event)\s*:/i.test(bodyText)) {
+            enqueue(streamController, bodyText.endsWith('\n\n') ? bodyText : `${bodyText}\n\n`);
+            return;
+          }
+          const parsed = parseUpstreamJsonBody(bodyText);
+          const hasTerminalType = /(?:completed|done|failed|error)$/i.test(String(parsed?.type || ''));
+          const payload = hasTerminalType
+            ? parsed
+            : {
+                type: `${kind}.completed`,
+                data: parsed?.data ?? parsed,
+                proxy: true,
+                upstreamMs
+              };
+          enqueue(streamController, imageProxyStreamFrame(payload));
+        } catch (error) {
+          if (!cancelled) {
+            const failure = error?.name === 'AbortError'
+              ? Object.assign(new Error(error.message || '上游请求已中止'), { name: 'AbortError', code: 'PROXY_TIMEOUT' })
+              : error;
+            enqueue(streamController, imageProxyStreamFrame(imageProxyStreamFailureEvent(failure, profile, apiPath, request)));
+          }
+        } finally {
+          clearProxyTimeout();
+          if (!cancelled && !closed) {
+            closed = true;
+            streamController.close();
+          }
+        }
+      })();
+    },
+    cancel() {
+      cancelled = true;
+      clearProxyTimeout();
+      abortController.abort();
+    }
+  });
+  const responseHeaders = corsHeaders(request, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-store, must-revalidate',
+    'X-Accel-Buffering': 'no',
+    'X-GPT-Image-Proxy-Streamed': '1',
+    'X-GPT-Image-Proxy-Handshake': '1',
+    'X-GPT-Image-Profile-Id': String(profile.id || ''),
+    'X-GPT-Image-Profile-Name': encodeURIComponent(String(profile.name || ''))
+  });
+  return new Response(body, { status: 200, headers: responseHeaders });
+}
 function requiresNodeDuplex(body) {
   if (body === null || body === undefined) return false;
   if (typeof body === 'string') return false;
@@ -389,7 +566,9 @@ export async function onRequest(ctx) {
       timeoutCleared = true;
       clearTimeout(timeoutId);
     };
-    const wantsImageStream = isImageApiPath(apiPath) && headerBool(headers, 'X-GPT-Image-Stream', profile.streamImages);
+    const wantsImageStream = isImageApiPath(apiPath)
+      && headerBool(headers, 'X-GPT-Image-Stream', profile.streamImages)
+      && !isMobileRequest(ctx.request);
     const body = await proxyBody(ctx.request, headers, apiPath, profile);
     headers.delete('X-GPT-Image-Response-B64');
     headers.delete('X-GPT-Image-Stream');
@@ -398,6 +577,17 @@ export async function onRequest(ctx) {
     const upstreamStart = Date.now();
     const fetchInit = { method: ctx.request.method, headers, body, redirect: 'manual', signal: controller.signal };
     if (ctx.request.method !== 'GET' && ctx.request.method !== 'HEAD' && requiresNodeDuplex(body)) fetchInit.duplex = 'half';
+    if (wantsImageStream) {
+      return startImageProxyStream({
+        request: ctx.request,
+        targetUrl,
+        fetchInit,
+        abortController: controller,
+        clearProxyTimeout,
+        profile,
+        apiPath
+      });
+    }
     const upstream = await fetch(targetUrl, fetchInit);
     const upstreamMs = Date.now() - upstreamStart;
     if (upstream.status >= 300 && upstream.status < 400) {

@@ -838,10 +838,95 @@ test('API proxy timeout remains active while an image response body is streaming
       env: { gpt_image2_db: db, JWT_SECRET: 'test-jwt-secret', ALLOW_SESSION_HEADER_AUTH: 'true' }
     });
     const outcome = await Promise.race([
-      response.text().then(() => 'closed', (error) => error?.name === 'AbortError' || /abort/i.test(String(error)) ? 'aborted' : `error:${error}`),
+      response.text().then((text) => ({ state: 'closed', text }), (error) => ({ state: error?.name === 'AbortError' || /abort/i.test(String(error)) ? 'aborted' : 'error', text: String(error) })),
       new Promise((resolve) => setTimeout(() => resolve('still-open'), 1400))
     ]);
-    assert.equal(outcome, 'aborted');
+    assert.equal(outcome.state, 'closed');
+    assert.match(outcome.text, /PROXY_TIMEOUT/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('streaming image proxy sends an early handshake and serializes upstream transport failures', async () => {
+  const proxy = await importWorkerModule('functions/api-proxy/[[path]].js', ['onRequest']);
+  const userId = 19;
+  const token = await signToken({
+    userId,
+    sessionVersion: 1,
+    exp: Math.floor(Date.now() / 1000) + 60
+  }, 'test-jwt-secret');
+  const db = makeDb({
+    users: [{ id: userId, username: 'stream-handshake-user', role: 'user', session_version: 1 }],
+    settings: {
+      [userId]: settingsRows({
+        profiles: [{
+          id: 'image-handshake',
+          name: 'Image handshake',
+          provider: 'openai',
+          baseUrl: 'https://images.example/v1',
+          apiKey: 'handshake-key',
+          model: 'gpt-image-2',
+          apiMode: 'images',
+          timeout: 5,
+          streamImages: true
+        }],
+        activeProfileId: 'image-handshake',
+        activeImageProfileId: 'image-handshake'
+      })
+    }
+  });
+  const requestFor = () => new Request('https://prod.example/api-proxy/images/edits', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-GPT-Image-Session': token,
+      'X-GPT-Image-Profile-Id': 'image-handshake',
+      'X-GPT-Image-Stream': 'true'
+    },
+    body: JSON.stringify({ prompt: 'test', stream: true })
+  });
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      return new Response(JSON.stringify({ data: [{ b64_json: 'aW1hZ2U=' }] }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    };
+    const startedAt = Date.now();
+    const response = await proxy.onRequest({
+      request: requestFor(),
+      env: { gpt_image2_db: db, JWT_SECRET: 'test-jwt-secret', ALLOW_SESSION_HEADER_AUTH: 'true' }
+    });
+    assert.ok(Date.now() - startedAt < 100, 'streaming proxy should return before slow upstream headers');
+    assert.match(response.headers.get('Content-Type') || '', /text\/event-stream/);
+    const text = await response.text();
+    assert.match(text, /nexgen-image-proxy-ready/);
+    assert.match(text, /image_edit\.completed/);
+
+    globalThis.fetch = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      throw new TypeError('fetch failed');
+    };
+    const failedResponse = await proxy.onRequest({
+      request: requestFor(),
+      env: { gpt_image2_db: db, JWT_SECRET: 'test-jwt-secret', ALLOW_SESSION_HEADER_AUTH: 'true' }
+    });
+    const failedText = await failedResponse.text();
+    assert.match(failedText, /image_edit\.failed/);
+    assert.match(failedText, /fetch failed|API 代理请求失败/);
+
+    globalThis.fetch = async () => new Response(
+      'data: {"type":"image_edit.completed","b64_json":"aW1hZ2U="}\n\n',
+      { headers: { 'Content-Type': 'application/json' } }
+    );
+    const mislabeledResponse = await proxy.onRequest({
+      request: requestFor(),
+      env: { gpt_image2_db: db, JWT_SECRET: 'test-jwt-secret', ALLOW_SESSION_HEADER_AUTH: 'true' }
+    });
+    const mislabeledText = await mislabeledResponse.text();
+    assert.match(mislabeledText, /image_edit\.completed/);
   } finally {
     globalThis.fetch = originalFetch;
   }
