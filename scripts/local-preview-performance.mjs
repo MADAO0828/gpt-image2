@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
-export const DEFAULT_MAX_REQUEST_BODY_BYTES = 48 * 1024 * 1024;
+export const DEFAULT_MAX_REQUEST_BODY_BYTES = 50 * 1024 * 1024;
 
 export function requestBodyLimitBytes(env = process.env) {
   const configured = Number(env.LOCAL_PREVIEW_MAX_BODY_BYTES);

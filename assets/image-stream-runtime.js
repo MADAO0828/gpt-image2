@@ -3,7 +3,7 @@
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   if (root) root.NexGenImageStream = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this, function createImageStreamRuntime() {
-  const DEFAULT_EVENT_LIMIT = 32 * 1024 * 1024;
+  const DEFAULT_EVENT_LIMIT = 96 * 1024 * 1024;
   const DEFAULT_OUTPUT_LIMIT = 16;
   const DEFAULT_METADATA_LIMIT = 24;
   const DEFAULT_SCAN_DEPTH = 12;
@@ -25,8 +25,8 @@
   function classifyImageResponse(contentType, prefix = '') {
     const type = String(contentType || '').toLowerCase();
     const head = String(prefix || '').slice(0, 8192);
+    if (/^\s*(?:data|event|id|retry)\s*:/i.test(head) || /^\s*:/i.test(head)) return 'sse-sniffed';
     if (type.includes('text/event-stream')) return 'sse';
-    if (/^\s*(?:data|event)\s*:/i.test(head)) return 'sse-sniffed';
     if (type.includes('json')) return head ? 'json' : 'undetermined';
     return head ? 'json' : 'undetermined';
   }
@@ -40,7 +40,13 @@
   }
 
   function eventType(payload) {
-    return String(firstValue(payload?.type, payload?.event, payload?.object) || '').toLowerCase();
+    const type = String(firstValue(payload?.type, payload?.event) || '').toLowerCase();
+    const object = String(payload?.object || '').toLowerCase();
+    const upstreamType = String(payload?.upstream_event_type || payload?.upstreamEventType || '').toLowerCase();
+    const terminalPattern = /(?:image[._](?:edit|generation)\.(?:result|completed|failed|error|incomplete|cancelled|canceled)|response\.)/;
+    if (terminalPattern.test(object)) return object;
+    if (terminalPattern.test(upstreamType)) return upstreamType;
+    return type || object || upstreamType;
   }
 
   function eventErrorMessage(payload) {
@@ -139,8 +145,8 @@
     const normalizedKey = String(key || '').replace(/[-\s]/g, '_').toLowerCase();
     const dataUrl = /^data:image\//i.test(text);
     const url = /^https?:\/\//i.test(text);
-    const imageKey = /^(?:b64_json|b64json|base64|base64_image|base64image|image_base64|imagebase64|image_data|imagedata|image_bytes|imagebytes|image|images|data|output|outputs|result|results|data_url|dataurl|image_data_url|imagedataurl|url|image_url|imageurl|uri|src|href)$/.test(normalizedKey);
-    const b64 = !dataUrl && !url && imageKey && /^[A-Za-z0-9+/_=-]{4,}$/.test(text) ? text : '';
+    const imageKey = /^(?:b64_json|b64json|base64|base64_image|base64image|image_base64|imagebase64|image_data|imagedata|image_bytes|imagebytes|image|images|data_url|dataurl|image_data_url|imagedataurl|url|image_url|imageurl|uri|src|href)$/.test(normalizedKey);
+    const b64 = !dataUrl && !url && imageKey && /^[A-Za-z0-9+/_=-]{16,}$/.test(text) ? text : '';
     if (!dataUrl && !url && !b64) return null;
     return candidateFromObject(payload, dataUrl ? { data_url: text } : url ? { url: text } : { b64_json: text }, fallbackIndex);
   }
@@ -148,7 +154,6 @@
   function collectEventCandidates(payload) {
     const candidates = [];
     const seen = new Set();
-    const seenValues = new Set();
     const seenObjects = new Set();
     const stack = [{ value: payload, key: '', depth: 0 }];
     let scannedNodes = 0;
@@ -164,11 +169,9 @@
         const candidate = candidateFromString(payload, value, key, candidates.length);
         if (candidate) {
           const dedupeValue = candidate.b64_json || candidate.data_url || candidate.url;
-          if (seenValues.has(dedupeValue)) continue;
           const dedupeKey = `${candidate.outputIndex}:${dedupeValue}`;
           if (!seen.has(dedupeKey)) {
             seen.add(dedupeKey);
-            seenValues.add(dedupeValue);
             candidates.push(candidate);
           }
         }
@@ -180,9 +183,8 @@
       if (candidate) {
         const dedupeValue = candidate.b64_json || candidate.data_url || candidate.url;
         const dedupeKey = `${candidate.outputIndex}:${dedupeValue}`;
-        if (!seen.has(dedupeKey) && !seenValues.has(dedupeValue)) {
+        if (!seen.has(dedupeKey)) {
           seen.add(dedupeKey);
-          seenValues.add(dedupeValue);
           candidates.push(candidate);
         }
       }
@@ -195,6 +197,7 @@
       const entries = Object.entries(value);
       for (let index = entries.length - 1; index >= 0; index -= 1) {
         const [childKey, child] = entries[index];
+        if (candidate && /^(?:b64_json|b64json|base64|base64_image|base64image|image_base64|imagebase64|image_data|imagedata|image_bytes|imagebytes|image|images|data_url|dataurl|image_data_url|imagedataurl|url|image_url|imageurl|uri|src|href|download_url|downloadurl)$/i.test(childKey)) continue;
         stack.push({ value: child, key: childKey, depth: depth + 1 });
       }
     }
@@ -232,6 +235,7 @@
     const outputLimit = Number(options.outputLimit) || DEFAULT_OUTPUT_LIMIT;
     const metadataLimit = Number(options.metadataLimit) || DEFAULT_METADATA_LIMIT;
     const candidatesByOutput = new Map();
+    const terminalCandidatesByOutput = new Map();
     const streamEvents = [];
     let buffer = '';
     let eventCount = 0;
@@ -240,6 +244,7 @@
     let completionReason = 'connection-closed';
 
     const partialCandidates = () => [...candidatesByOutput.values()].sort((a, b) => a.outputIndex - b.outputIndex);
+    const terminalCandidates = () => [...terminalCandidatesByOutput.values()].sort((a, b) => a.outputIndex - b.outputIndex);
     const context = () => ({
       partialCandidates: partialCandidates(),
       streamEvents: [...streamEvents],
@@ -250,10 +255,15 @@
 
     const acceptCandidates = (payload, candidates) => {
       const type = eventType(payload);
-      const isPartial = /partial_image$/.test(type) || (type === 'image.generation.chunk' && candidates.length > 0);
+      const isTerminal = type === 'image.edit.result'
+        || type === 'image.generation.result'
+        || /(?:image[._](?:edit|generation)|response)\.(?:completed|done)$/.test(type)
+        || ['completed', 'succeeded'].includes(String(payload?.status || payload?.response?.status || '').toLowerCase());
+      const isPartial = !isTerminal && (/partial_image$/.test(type) || (type === 'image.generation.chunk' && candidates.length > 0));
       for (const candidate of candidates) {
-        if (candidatesByOutput.size >= outputLimit && !candidatesByOutput.has(candidate.outputIndex)) continue;
-        candidatesByOutput.set(candidate.outputIndex, candidate);
+        const target = isTerminal ? terminalCandidatesByOutput : candidatesByOutput;
+        if (target.size >= outputLimit && !target.has(candidate.outputIndex)) continue;
+        target.set(candidate.outputIndex, candidate);
         if (isPartial) {
           partialCount += 1;
           try {
@@ -274,7 +284,11 @@
       const doneSignal = String(block || '').split(/\r?\n/).some((line) => /^\s*data:\s*\[DONE\]\s*$/i.test(line));
       if (doneSignal) {
         terminalSuccess = true;
-        completionReason = candidatesByOutput.size ? 'last-partial-fallback' : 'done-empty';
+        completionReason = terminalCandidatesByOutput.size
+          ? 'done-after-result'
+          : candidatesByOutput.size
+            ? 'last-partial-fallback'
+            : 'done-empty';
         return;
       }
       const data = parseSseDataBlock(block);
@@ -356,7 +370,7 @@
       throw error;
     }
 
-    const data = partialCandidates();
+    const data = terminalCandidates().length ? terminalCandidates() : partialCandidates();
     if (data.length && terminalSuccess) {
       return {
         data,

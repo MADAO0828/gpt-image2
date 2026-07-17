@@ -13,7 +13,7 @@ const PROMPT_PAGE_SIZE = 36;
 const PROMPT_VIRTUAL_THRESHOLD = 108;
 const PROMPT_VIRTUAL_BUFFER_ROWS = 3;
 const PROMPT_REPO_CACHE_LIMIT = 24;
-const PROMPT_FAST_VERSION = 'home-v3-20260710-stream-preview-r89';
+const PROMPT_FAST_VERSION = 'home-v3-20260717-image-proxy-parity-r103';
 const PROMPT_FAST_BOOTSTRAP_URL = `/prompts_fast/bootstrap.json?v=${PROMPT_FAST_VERSION}`;
 const PROMPT_FAST_PREVIEWS_URL = `/prompts_fast/category_previews.json?v=${PROMPT_FAST_VERSION}`;
 const PROMPT_FAST_SEARCH_URL = `/prompts_fast/search_index.json?v=${PROMPT_FAST_VERSION}`;
@@ -78,6 +78,7 @@ const STREAM_PARTIAL_TASK_LIMIT = 8;
 const STREAM_INPUT_FILE_LIMIT = 50 * 1024 * 1024;
 const STREAM_INPUT_TOTAL_LIMIT = 512 * 1024 * 1024;
 const streamPartialPersistChains = new Map();
+const streamPartialPersistPending = new Map();
 
 const DEFAULT_AGENT_BUDGET = {
   maxSteps: 5,
@@ -837,7 +838,11 @@ async function performAgentHistoryPersist() {
           && Number(remote?.revision || 0) > Number(baseline.revision || 0)
           && [...baseline.messageKeys].some((key) => !(remote?.messages || []).some((message, index) => agentArchiveMessageKey(message, index) === key));
         const localAdditions = remoteHasDestructiveChange
-          ? snapshot.messages.filter((message, index) => !baseline.messageKeys.has(agentArchiveMessageKey(message, index)))
+          ? snapshot.messages.filter((message, index) => {
+            if (baseline.messageKeys.has(agentArchiveMessageKey(message, index))) return false;
+            const messageTime = Math.max(Number(message?.updatedAt || 0), Number(message?.createdAt || 0));
+            return messageTime > Number(remote?.updatedAt || 0);
+          })
           : snapshot.messages;
         const messages = localIsAdditive && remote && !remote.deleted
           ? mergeAgentArchiveChanges(remote.messages, localAdditions, remoteHasDestructiveChange ? null : baseline)
@@ -1008,7 +1013,10 @@ async function importGalleryMigrationPayload(payload) {
 function dataUrlToBlob(dataUrl) {
   const [meta, body] = String(dataUrl).split(',');
   const type = (meta.match(/data:([^;]+)/) || [])[1] || 'image/png';
-  const bin = atob(body || '');
+  const normalizedBody = String(body || '').replace(/\s/g, '').replace(/-/g, '+').replace(/_/g, '/');
+  const padding = normalizedBody.length % 4;
+  const paddedBody = padding ? `${normalizedBody}${'='.repeat(4 - padding)}` : normalizedBody;
+  const bin = atob(paddedBody);
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   return new Blob([bytes], { type });
@@ -1597,12 +1605,19 @@ function currentEntryKey() {
   return 'gallery';
 }
 function profileDefaultAdvanced(profile = imageProfile()) {
+  const partialImages = Number(profile.streamPartialImages);
   return {
     responseFormatB64Json: !!profile.responseFormatB64Json,
     streamImages: !!profile.streamImages,
-    streamPartialImages: Number(profile.streamPartialImages) || 1,
+    streamPartialImages: Number.isFinite(partialImages) ? Math.max(0, Math.min(3, partialImages)) : 1,
     timeout: Number(profile.timeout) || Number(state.runtime?.timeout) || 600
   };
+}
+function normalizeStreamPartialImages(value, fallback = 1) {
+  const number = Number(value);
+  const fallbackNumber = Number(fallback);
+  const normalized = Number.isFinite(number) ? number : (Number.isFinite(fallbackNumber) ? fallbackNumber : 1);
+  return Math.max(0, Math.min(3, Math.floor(normalized)));
 }
 function effectiveAdvanced(entry = currentEntryKey(), profile = imageProfile()) {
   const defaults = profileDefaultAdvanced(profile);
@@ -1610,7 +1625,7 @@ function effectiveAdvanced(entry = currentEntryKey(), profile = imageProfile()) 
   return {
     responseFormatB64Json: overrides.responseFormatB64Json === null || overrides.responseFormatB64Json === undefined ? defaults.responseFormatB64Json : !!overrides.responseFormatB64Json,
     streamImages: overrides.streamImages === null || overrides.streamImages === undefined ? defaults.streamImages : !!overrides.streamImages,
-    streamPartialImages: overrides.streamPartialImages === null || overrides.streamPartialImages === undefined ? defaults.streamPartialImages : Math.max(0, Math.min(3, Number(overrides.streamPartialImages) || 0)),
+    streamPartialImages: overrides.streamPartialImages === null || overrides.streamPartialImages === undefined ? defaults.streamPartialImages : normalizeStreamPartialImages(overrides.streamPartialImages, defaults.streamPartialImages),
     timeout: overrides.timeout === null || overrides.timeout === undefined ? defaults.timeout : Math.max(1, Number(overrides.timeout) || defaults.timeout),
     open: !!overrides.open
   };
@@ -1642,7 +1657,7 @@ function applyAdvancedToJsonBody(body, entry = currentEntryKey(), profile = imag
   if (advanced.responseFormatB64Json && provider !== 'google' && provider !== 'xai') body.response_format = 'b64_json';
   if (advanced.streamImages && streamSupported(profile)) {
     body.stream = true;
-    body.partial_images = Math.max(0, Math.min(3, Number(advanced.streamPartialImages) || 1));
+    body.partial_images = normalizeStreamPartialImages(advanced.streamPartialImages, 1);
   }
   return body;
 }
@@ -1652,7 +1667,7 @@ function appendAdvancedToFormData(form, entry = currentEntryKey(), profile = ima
   if (advanced.responseFormatB64Json && provider !== 'google' && provider !== 'xai') form.append('response_format', 'b64_json');
   if (advanced.streamImages && streamSupported(profile)) {
     form.append('stream', 'true');
-    form.append('partial_images', String(Math.max(0, Math.min(3, Number(advanced.streamPartialImages) || 1))));
+    form.append('partial_images', String(normalizeStreamPartialImages(advanced.streamPartialImages, 1)));
   }
 }
 function writePersistedPrompt() {
@@ -6672,9 +6687,10 @@ function imageResponseError(message, code, stage, detail = '') {
 }
 function classifyImageResponse(contentType, firstChunk = '') {
   const normalizedType = String(contentType || '').toLowerCase();
-  if (normalizedType.includes('text/event-stream')) return 'sse';
   const prefix = String(firstChunk || '').replace(/^\uFEFF/, '').trimStart();
-  if (/^(?:data|event)\s*:/i.test(prefix) || prefix.startsWith(':')) return 'sse-sniffed';
+  if (/^(?:data|event|id|retry)\s*:/i.test(prefix) || prefix.startsWith(':')) return 'sse-sniffed';
+  if (prefix.startsWith('{') || prefix.startsWith('[')) return 'json';
+  if (normalizedType.includes('text/event-stream')) return 'sse';
   const lowerPrefix = prefix.toLowerCase();
   if (!lowerPrefix || ['data:', 'event:'].some((marker) => marker.startsWith(lowerPrefix))) return 'undetermined';
   return 'json';
@@ -6769,7 +6785,7 @@ async function consumeImageHttpResponse(response, options = {}) {
   const contentType = response?.headers?.get?.('Content-Type') || '';
   let responseMode = classifyImageResponse(contentType);
   if (isImageContentType(contentType)) responseMode = 'binary';
-  if ((responseMode === 'json' || responseMode === 'undetermined') && options.streamRequested && response?.body?.tee) {
+  if (responseMode !== 'binary' && response?.body?.tee) {
     const [probeBody, replayBody] = response.body.tee();
     const probeReader = probeBody.getReader();
     const decoder = new TextDecoder();
@@ -6800,9 +6816,9 @@ async function consumeImageHttpResponse(response, options = {}) {
       throw imageResponseError(response.statusText || '图片响应失败', 'IMAGE_RESPONSE_HTTP_ERROR', 'response-headers', text);
     }
     const bytes = await readableBodyBytes(readableResponse.body);
-    const mime = detectImageMimeFromBytes(bytes) || normalizeImageMime(contentType);
+    const mime = detectImageMimeFromBytes(bytes);
     if (!bytes.length || !mime) {
-      throw imageResponseError('图片响应中没有可保存的图片数据', 'IMAGE_RESPONSE_NO_IMAGE', 'response-parse');
+      throw imageResponseError('图片响应包含无法识别的图片数据', 'IMAGE_RESPONSE_IMAGE_DATA_INVALID', 'response-parse');
     }
     return attachImageResponseMetadata({
       data: [{
@@ -6838,7 +6854,7 @@ async function consumeImageHttpResponse(response, options = {}) {
   try {
     data = text ? JSON.parse(text) : null;
   } catch {
-    if (/^\s*(?:data|event)\s*:/i.test(text) || /^\s*:/i.test(text)) {
+     if (/^\s*(?:data|event|id|retry)\s*:/i.test(text) || /^\s*:/i.test(text)) {
       const streamResponse = imageTextStreamResponse(text, response);
       const payload = await consumeImageStream(streamResponse, options.onPartialImage);
       return attachImageResponseMetadata(payload, {
@@ -6879,18 +6895,35 @@ async function fetchImageHttpResponse(url, fetchOptions = {}, responseOptions = 
   const abortFromExternal = () => controller.abort();
   externalSignal?.addEventListener?.('abort', abortFromExternal, { once: true });
   try {
+    if (externalSignal?.aborted) {
+      throw imageResponseError('图片请求已取消', 'IMAGE_REQUEST_ABORTED', 'request-cancelled');
+    }
     const response = await fetch(url, { credentials: 'same-origin', cache: 'no-store', ...fetchOptions, signal: controller.signal });
     return await consumeImageHttpResponse(response, {
       ...responseOptions,
       responseHeaderMs: Date.now() - requestStartedAt
     });
   } catch (error) {
-    if (timedOut || error?.name === 'AbortError') {
+    if (timedOut) {
       const timeoutError = imageResponseError(`本站等待图片响应超过 ${timeoutSeconds} 秒`, 'IMAGE_CLIENT_TIMEOUT', 'client-total-timeout');
       timeoutError.timing = { responseHeaderMs: Date.now() - requestStartedAt, totalMs: Date.now() - requestStartedAt };
       throw timeoutError;
     }
-    if (!error.stage) error.stage = 'request-transport';
+    if (externalSignal?.aborted || error?.name === 'AbortError') {
+      const abortError = imageResponseError('图片请求已取消', 'IMAGE_REQUEST_ABORTED', 'request-cancelled');
+      abortError.timing = { responseHeaderMs: Date.now() - requestStartedAt, totalMs: Date.now() - requestStartedAt };
+      throw abortError;
+    }
+    if (!error.stage) {
+      const message = String(error?.message || error || '');
+      if (/failed to fetch|networkerror|network request failed|load failed|fetch failed/i.test(message)) {
+        error.code = error.code || 'IMAGE_REQUEST_NETWORK_ERROR';
+        error.stage = 'request-network';
+      } else {
+        error.code = error.code || 'IMAGE_REQUEST_TRANSPORT_FAILED';
+        error.stage = 'request-transport';
+      }
+    }
     throw error;
   } finally {
     clearTimeout(timeoutId);
@@ -7504,6 +7537,9 @@ async function generateImageTask(seedTask = null) {
     task.streamEventCount = Number(err?.streamEventCount || task.streamEventCount || 0);
     task.streamPartialCount = Number(err?.partialCount || task.streamPartialCount || 0);
     task.lastStreamEventType = err?.lastStreamEventType || task.lastStreamEventType || '';
+    if (!(task.streamPartialImages || []).length && Array.isArray(err?.partialCandidates)) {
+      for (const candidate of err.partialCandidates) queueTaskStreamPartialPersist(task, candidate);
+    }
     await waitForTaskStreamPartialPersistence(task.id);
     if ((task.images || []).length) {
       const expected = Number(task.expectedCount || effectiveParams.count || task.images.length);
@@ -7512,14 +7548,16 @@ async function generateImageTask(seedTask = null) {
       task.error = task.failedCount ? `部分图片生成失败：${task.failedCount} 张未完成` : '';
       task.errorDetail = task.failedCount ? normalized.detail : '';
       task.status = task.failedCount ? 'partial_success' : 'success';
-    } else if (err?.code === 'IMAGE_STREAM_TRANSPORT_INTERRUPTED' && (task.streamPartialImages || []).length) {
+    } else if (['IMAGE_STREAM_TRANSPORT_INTERRUPTED', 'IMAGE_STREAM_PARTIAL_ONLY'].includes(err?.code) && (task.streamPartialImages || []).length) {
       task.actualCount = 0;
       task.failedCount = Number(task.expectedCount || effectiveParams.count || 1);
-      task.error = '流式连接已中断，已保留预览图；该图片不是最终输出。';
+      task.error = err?.code === 'IMAGE_STREAM_PARTIAL_ONLY'
+        ? '流式响应只返回预览图，未收到最终输出。'
+        : '流式连接已中断，已保留预览图；该图片不是最终输出。';
       task.errorDetail = normalized.detail;
       task.status = 'partial_success';
       task.streamState = 'interrupted';
-      task.completionReason = 'stream-transport-interrupted';
+      task.completionReason = err?.code === 'IMAGE_STREAM_PARTIAL_ONLY' ? 'last-partial-fallback' : 'stream-transport-interrupted';
     } else {
       task.error = normalized.summary;
       task.errorDetail = normalized.detail;
@@ -7540,12 +7578,15 @@ async function collectGenerationResult(prompt, params, options = {}) {
   const expected = Math.max(1, Number(params.count || state.settings.n) || 1);
   const profile = options.profile || imageProfile();
   const provider = providerKey(profile);
-  const forceSingleRequests = provider === 'google';
+  const advanced = effectiveAdvanced(options.entry || currentEntryKey(), profile);
+  const splitRequests = expected > 1 && (
+    profile.codexCli === true
+    || provider === 'google'
+    || (advanced.streamImages && streamSupported(profile))
+  );
   const responses = [];
   const images = [];
   const partialErrors = [];
-  const maxAttempts = forceSingleRequests ? expected : 1;
-  let lastError = null;
   let apiElapsedMs = 0;
   let persistElapsedMs = 0;
   let postProcessElapsedMs = 0;
@@ -7556,66 +7597,141 @@ async function collectGenerationResult(prompt, params, options = {}) {
   let transparentProcessedCount = 0;
   let transparentFailedCount = 0;
   const transparentPostProcessErrors = [];
-  for (let attempt = 0; attempt < maxAttempts && images.length < expected; attempt++) {
-    const remaining = Math.max(1, expected - images.length);
-    const requestParams = forceSingleRequests ? { ...params, count: 1 } : (attempt === 0 ? params : { ...params, count: remaining });
-    try {
-      const apiStartedAt = Date.now();
-      const response = await sendGenerationRequest(prompt, requestParams, { ...options, profile });
-      apiElapsedMs += Date.now() - apiStartedAt;
-      responseHeaderMs += Number(response?.timing?.responseHeaderMs) || 0;
-      streamReadMs += Number(response?.timing?.streamReadMs) || 0;
-      upstreamHeaderMs += Number(response?.timing?.upstreamHeaderMs) || 0;
-      proxyHeaderMs += Number(response?.timing?.proxyHeaderMs) || 0;
-      responses.push(response);
-      const persistStartedAt = Date.now();
-      let batch = await persistResponseImages(response, {
-        requestedFormat: params.format || params.output_format,
-        outputQuality: firstDefined(params.outputQuality, params.output_quality),
-        outputCompression: firstDefined(params.output_compression, params.outputCompression)
+  const requestCount = splitRequests ? expected : 1;
+  const runRequest = async (requestIndex) => {
+    const requestParams = splitRequests ? { ...params, count: 1 } : params;
+    const apiStartedAt = Date.now();
+    const response = await sendGenerationRequest(prompt, requestParams, {
+      ...options,
+      profile,
+      onPartialImage: typeof options.onPartialImage === 'function'
+        ? (candidate) => {
+          const sourceOutputIndex = Number(candidate?.outputIndex ?? candidate?.output_index ?? 0);
+          const outputIndex = splitRequests ? requestIndex : sourceOutputIndex;
+          options.onPartialImage({
+            ...candidate,
+            sourceOutputIndex,
+            outputIndex,
+            output_index: outputIndex,
+            requestIndex: splitRequests ? requestIndex : candidate?.requestIndex
+          });
+        }
+        : undefined
+    });
+    if (response?.completionReason === 'last-partial-fallback') {
+      const partialError = imageResponseError(
+        '流式响应只包含预览图，没有收到最终图片；已保留预览供查看和下载。',
+        'IMAGE_STREAM_PARTIAL_ONLY',
+        'stream-complete'
+      );
+      Object.assign(partialError, {
+        partialCandidates: response.partialCandidates || response.data || [],
+        streamEvents: response.streamEvents,
+        streamEventCount: response.streamEventCount,
+        partialCount: response.partialCount,
+        lastStreamEventType: response.lastStreamEventType,
+        responseMode: response.responseMode,
+        timing: response.timing
       });
-      persistElapsedMs += Date.now() - persistStartedAt;
-      if (options.transparentOutput) {
-        const postProcessStartedAt = Date.now();
-        const transparentResult = await postProcessTransparentImages(batch);
-        postProcessElapsedMs += Date.now() - postProcessStartedAt;
-        batch = transparentResult.images;
-        transparentProcessedCount += transparentResult.processedCount;
-        transparentFailedCount += transparentResult.failedCount;
-        transparentPostProcessErrors.push(...transparentResult.errors);
-      }
-      images.push(...batch);
-      if (typeof options.onPersistedImages === 'function') {
-        options.onPersistedImages(batch, {
-          images: [...images],
-          expectedCount: expected,
-          actualCount: images.length,
-          failedCount: Math.max(0, expected - images.length),
-          responses: [...responses]
-        });
-      }
-    } catch (err) {
-      lastError = err;
-      const normalized = normalizeError(err, '单张生成失败');
-      partialErrors.push({ summary: normalized.summary, detail: normalized.detail, attempt: attempt + 1 });
-      if (!forceSingleRequests) break;
-      if (!images.length && attempt >= maxAttempts - 1) throw err;
-      continue;
+      throw partialError;
     }
-    if (!forceSingleRequests) {
-      break;
+    const apiElapsed = Date.now() - apiStartedAt;
+    const persistStartedAt = Date.now();
+    let batch = await persistResponseImages(response, {
+      requestedFormat: params.format || params.output_format,
+      outputQuality: firstDefined(params.outputQuality, params.output_quality),
+      outputCompression: firstDefined(params.output_compression, params.outputCompression)
+    });
+    const persistElapsed = Date.now() - persistStartedAt;
+    let postProcessElapsed = 0;
+    let processedCount = 0;
+    let failedCount = 0;
+    const postProcessErrors = [];
+    if (options.transparentOutput) {
+      const postProcessStartedAt = Date.now();
+      const transparentResult = await postProcessTransparentImages(batch);
+      postProcessElapsed = Date.now() - postProcessStartedAt;
+      batch = transparentResult.images;
+      processedCount = transparentResult.processedCount;
+      failedCount = transparentResult.failedCount;
+      postProcessErrors.push(...transparentResult.errors);
     }
-    if (images.length >= expected) {
-      break;
+    return {
+      requestIndex,
+      response,
+      batch,
+      apiElapsed,
+      persistElapsed,
+      postProcessElapsed,
+      processedCount,
+      failedCount,
+      postProcessErrors
+    };
+  };
+  const settled = splitRequests
+    ? await Promise.allSettled(Array.from({ length: requestCount }, (_, requestIndex) => runRequest(requestIndex)))
+    : await Promise.allSettled([runRequest(0)]);
+  const successful = settled
+    .filter((result) => result.status === 'fulfilled')
+    .map((result) => result.value)
+    .sort((a, b) => a.requestIndex - b.requestIndex);
+  const failed = settled
+    .map((result, requestIndex) => ({ result, requestIndex }))
+    .filter(({ result }) => result.status === 'rejected')
+    .map(({ result, requestIndex }) => ({ requestIndex, error: result.reason }));
+  if (!successful.length) {
+    const firstError = failed[0]?.error;
+    if (firstError) throw firstError;
+    throw imageResponseError('没有收到可保存的图片结果', 'IMAGE_RESPONSE_NO_IMAGE', 'image-persist');
+  }
+  for (const result of successful) {
+    const response = result.response;
+    responses.push(response);
+    apiElapsedMs += result.apiElapsed;
+    persistElapsedMs += result.persistElapsed;
+    postProcessElapsedMs += result.postProcessElapsed;
+    responseHeaderMs += Number(response?.timing?.responseHeaderMs) || 0;
+    streamReadMs += Number(response?.timing?.streamReadMs) || 0;
+    upstreamHeaderMs += Number(response?.timing?.upstreamHeaderMs) || 0;
+    proxyHeaderMs += Number(response?.timing?.proxyHeaderMs) || 0;
+    transparentProcessedCount += result.processedCount;
+    transparentFailedCount += result.failedCount;
+    transparentPostProcessErrors.push(...result.postProcessErrors);
+    images.push(...result.batch);
+    if (typeof options.onPersistedImages === 'function') {
+      options.onPersistedImages(result.batch, {
+        images: [...images],
+        expectedCount: expected,
+        actualCount: images.length,
+        failedCount: Math.max(0, expected - images.length),
+        responses: [...responses],
+        requestIndex: result.requestIndex
+      });
     }
   }
-  if (!images.length && lastError) throw lastError;
+  for (const item of failed) {
+    const normalized = normalizeError(item.error, '单张生成失败');
+    partialErrors.push({
+      summary: normalized.summary,
+      detail: normalized.detail,
+      attempt: item.requestIndex + 1,
+      requestIndex: item.requestIndex
+    });
+  }
+  if (!images.length) {
+    const firstError = failed[0]?.error;
+    if (firstError) throw firstError;
+    throw imageResponseError('图片响应中没有可保存的图片数据', 'IMAGE_RESPONSE_NO_IMAGE', 'image-persist');
+  }
   const response = responses.length === 1 ? responses[0] : {
     source: readDeepAlias(responses, ['source', 'provider', 'model']),
     responses,
     data: responses.flatMap((item) => Array.isArray(item?.data) ? item.data : []),
     images: responses.flatMap((item) => Array.isArray(item?.images) ? item.images : []),
-    count: images.length
+    count: images.length,
+    streamEventCount: responses.reduce((sum, item) => sum + Number(item?.streamEventCount || 0), 0),
+    partialCount: responses.reduce((sum, item) => sum + Number(item?.partialCount || 0), 0),
+    lastStreamEventType: responses.at(-1)?.lastStreamEventType || ''
   };
   const transparentPostProcessError = transparentPostProcessErrors
     .map((item) => item.detail || item.summary || item.error || item)
@@ -7701,6 +7817,9 @@ async function sendGenerationRequest(prompt, params = {}, options = {}) {
   const sourceRefs = Array.isArray(options.references) ? options.references : state.references;
   if (!validateReferenceCountForProfile(profile, sourceRefs)) throw new Error(`参考图数量超过当前模型限制：${referenceLimit(profile)}`);
   const refs = await Promise.all(sourceRefs.map(async (ref, index) => ({ ref, blob: await getBlob(ref.blobId), index })));
+  if (sourceRefs.length && refs.some((item) => !item.blob)) {
+    throw imageResponseError('参考图文件已丢失，请重新上传后再生成', 'IMAGE_EDIT_INPUT_MISSING', 'request-validation');
+  }
   const hasRefs = refs.some((item) => item.blob);
   const endpoint = hasRefs ? '/api-proxy/images/edits' : '/api-proxy/images/generations';
   const provider = providerKey(profile);
@@ -7713,12 +7832,16 @@ async function sendGenerationRequest(prompt, params = {}, options = {}) {
   const requestPrompt = promptWithCanvasConstraint(prompt, provider, requestParams);
   if (hasRefs) {
     const validRefs = refs.filter((item) => item.blob);
-    const totalBytes = validRefs.reduce((sum, item) => sum + Number(item.blob?.size || 0), 0);
     if (!validRefs.length) throw imageResponseError('参考图文件不存在或为空', 'IMAGE_EDIT_INPUT_EMPTY', 'request-validation');
     if (validRefs.some((item) => !item.blob?.size)) throw imageResponseError('参考图包含空文件', 'IMAGE_EDIT_INPUT_EMPTY_FILE', 'request-validation');
     if (validRefs.some((item) => !String(item.blob?.type || '').toLowerCase().startsWith('image/'))) throw imageResponseError('参考图包含不支持的文件类型', 'IMAGE_EDIT_INPUT_TYPE', 'request-validation');
-    if (validRefs.some((item) => Number(item.blob?.size || 0) > STREAM_INPUT_FILE_LIMIT)) throw imageResponseError('单张参考图超过 50MB 安全上限', 'IMAGE_EDIT_INPUT_TOO_LARGE', 'request-validation');
-    if (totalBytes > STREAM_INPUT_TOTAL_LIMIT) throw imageResponseError('参考图总大小超过 512MB 安全上限', 'IMAGE_EDIT_INPUT_TOTAL_TOO_LARGE', 'request-validation');
+    const prepared = await prepareEditReferenceFiles(validRefs);
+    const totalBytes = prepared.refs.reduce((sum, item) => sum + Number(item.blob?.size || 0), 0) + Number(prepared.mask?.size || 0);
+    if (prepared.refs.some((item) => Number(item.blob?.size || 0) > STREAM_INPUT_FILE_LIMIT)
+      || Number(prepared.mask?.size || 0) > STREAM_INPUT_FILE_LIMIT) {
+      throw imageResponseError('单张参考图或遮罩超过 50MB 安全上限', 'IMAGE_EDIT_INPUT_TOO_LARGE', 'request-validation');
+    }
+    if (totalBytes > STREAM_INPUT_TOTAL_LIMIT) throw imageResponseError('参考图与遮罩总大小超过 512MB 安全上限', 'IMAGE_EDIT_INPUT_TOTAL_TOO_LARGE', 'request-validation');
     const defaultEditImageField = (currentProvider) => IMAGE_STREAM_RUNTIME?.defaultEditImageField?.(currentProvider) || 'image[]';
     const shouldRetryEditImageField = (error) => IMAGE_STREAM_RUNTIME?.shouldRetryEditImageField?.({
       status: error?.status,
@@ -7753,7 +7876,8 @@ async function sendGenerationRequest(prompt, params = {}, options = {}) {
         appendNegativePromptParams(fd, requestParams);
         fd.append('n', String(provider === 'google' ? 1 : (requestParams.count || state.settings.n || 1)));
       }
-      validRefs.forEach(({ ref, blob }, idx) => fd.append(imageFieldName, blob, ref.name || `reference-${idx + 1}.png`));
+      prepared.refs.forEach(({ ref, blob }, idx) => fd.append(imageFieldName, blob, ref.name || `reference-${idx + 1}.png`));
+      if (prepared.mask) fd.append('mask', prepared.mask, 'mask.png');
       if (provider !== 'openai') appendAdvancedToFormData(fd, entry, profile);
       return fetchImageHttpResponse(endpoint, {
         method: 'POST',
@@ -7857,10 +7981,12 @@ function imageOutputParams(params = {}, profile = imageProfile()) {
   const requestParams = params && typeof params === 'object' ? params : {};
   const format = String(firstDefined(requestParams.format, requestParams.output_format, state.settings.output_format) || 'png').toLowerCase();
   const out = {
-    quality: normalizeImageQuality(firstDefined(requestParams.quality, state.settings.quality)),
     output_format: format,
     moderation: firstDefined(requestParams.moderation, state.settings.moderation)
   };
+  if (!profile?.codexCli) {
+    out.quality = normalizeImageQuality(firstDefined(requestParams.quality, state.settings.quality));
+  }
   if (format === 'png') {
     const transparent = !!firstDefined(requestParams.transparent, requestParams.transparent_background, state.settings.transparent_output, false);
     if (providerKey(profile) !== 'openai' || openAiTransparentBackgroundSupported(profile)) {
@@ -7893,23 +8019,131 @@ function appendNegativePromptParams(target, params = {}) {
   if (!negativePrompt) return;
   if (target instanceof FormData) {
     target.append('negative_prompt', negativePrompt);
-    target.append('negativePrompt', negativePrompt);
   } else {
     target.negative_prompt = negativePrompt;
-    target.negativePrompt = negativePrompt;
   }
 }
-async function fetchRemoteImageBlob(url) {
+async function normalizeEditImageBlob(blob, label = '图片') {
+  if (!blob?.size) throw imageResponseError(`${label}文件不存在或为空`, 'IMAGE_EDIT_INPUT_EMPTY_FILE', 'request-validation');
+  const normalized = await normalizeImageBlobType(blob, blob.type || 'image/png');
+  if (!normalized.blob || !String(normalized.info?.type || '').startsWith('image/')) {
+    throw imageResponseError(`${label}无法识别为图片`, 'IMAGE_EDIT_INPUT_TYPE', 'request-validation');
+  }
+  let output = normalized.blob;
+  if (normalized.info.type !== 'image/png') {
+    try {
+      output = await transcodeImageBlob(normalized.blob, 'image/png', 1);
+    } catch (error) {
+      throw imageResponseError(
+        `${label}无法规范化为 PNG`,
+        'IMAGE_EDIT_INPUT_DECODE_FAILED',
+        'request-validation',
+        error?.message || '浏览器图片解码失败'
+      );
+    }
+  }
+  const info = await imageInfoFromBlob(output).catch(() => normalized.info || {});
+  if (!info.width || !info.height) {
+    throw imageResponseError(`${label}尺寸无法读取`, 'IMAGE_EDIT_INPUT_DIMENSIONS', 'request-validation');
+  }
+  return { blob: output, info: { ...info, type: 'image/png' } };
+}
+async function prepareEditReferenceFiles(validRefs = []) {
+  const refs = Array.isArray(validRefs) ? validRefs : [];
+  const maskIndexes = refs
+    .map(({ ref }, index) => ref?.maskBlobId ? index : -1)
+    .filter((index) => index >= 0);
+  if (maskIndexes.length > 1 || (maskIndexes.length && maskIndexes[0] !== 0)) {
+    throw imageResponseError(
+      '遮罩只能绑定第一张主参考图',
+      'IMAGE_EDIT_MASK_PRIMARY_REQUIRED',
+      'request-validation'
+    );
+  }
+  const first = refs[0];
+  const prepared = [];
+  let mask = null;
+  for (let index = 0; index < refs.length; index += 1) {
+    const item = refs[index];
+    let blob = item.blob;
+    if (index === 0 && first?.ref?.maskBlobId) {
+      const original = await getBlob(first.ref.originalBlobId || first.ref.blobId).catch(() => null);
+      const normalizedOriginal = await normalizeEditImageBlob(original, '遮罩主图');
+      blob = normalizedOriginal.blob;
+      const maskBlob = await getBlob(first.ref.maskBlobId).catch(() => null);
+      const normalizedMask = await normalizeEditImageBlob(maskBlob, '遮罩');
+      if (normalizedOriginal.info.width !== normalizedMask.info.width || normalizedOriginal.info.height !== normalizedMask.info.height) {
+        throw imageResponseError(
+          '遮罩尺寸与遮罩主图不一致，请重新绘制遮罩',
+          'IMAGE_EDIT_MASK_DIMENSIONS_MISMATCH',
+          'request-validation',
+          `主图：${normalizedOriginal.info.width}x${normalizedOriginal.info.height}；遮罩：${normalizedMask.info.width}x${normalizedMask.info.height}。`
+        );
+      }
+      mask = normalizedMask.blob;
+    }
+    prepared.push({ ...item, blob });
+  }
+  return { refs: prepared, mask };
+}
+async function fetchRemoteImageBlob(url, options = {}) {
+  const timeoutMs = Math.max(1000, Math.min(Number(options.timeoutMs) || 120000, 600000));
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  const externalSignal = options.signal;
+  const abortFromExternal = () => controller.abort();
+  externalSignal?.addEventListener?.('abort', abortFromExternal, { once: true });
   try {
-    const response = await fetch(url);
-    const contentType = normalizeImageMime(response?.headers?.get?.('content-type'));
-    if (!response?.ok) return null;
-    const blob = await response.blob();
-    const normalized = await normalizeImageBlobType(blob, contentType);
-    if (!normalized.blob || !String(normalized.info?.type || '').startsWith('image/')) return null;
-    return normalized.blob;
-  } catch {
+    if (externalSignal?.aborted) throw new DOMException('请求已停止', 'AbortError');
+    const sources = [String(url || '')];
+    if (options.useProxy !== false && sources[0] && !sources[0].startsWith('/api-proxy/image-download')) {
+      sources.push(`/api-proxy/image-download?url=${encodeURIComponent(sources[0])}`);
+    }
+    let lastError = null;
+    for (let index = 0; index < sources.length; index += 1) {
+      const source = sources[index];
+      try {
+        const response = await fetch(source, {
+          credentials: index === 0 ? 'omit' : 'same-origin',
+          cache: 'no-store',
+          signal: controller.signal
+        });
+        if (!response?.ok) {
+          lastError = new Error(`远程图片下载失败：HTTP ${response?.status || 0}`);
+          continue;
+        }
+        const contentType = normalizeImageMime(response?.headers?.get?.('content-type'));
+        const blob = await response.blob();
+        const normalized = await normalizeImageBlobType(blob, contentType);
+        if (normalized.blob && String(normalized.info?.type || '').startsWith('image/')) return normalized.blob;
+        lastError = new Error('远程响应不是可识别的图片');
+      } catch (error) {
+        if (error?.name === 'AbortError' || externalSignal?.aborted) throw error;
+        lastError = error;
+      }
+    }
+    if (lastError && options.throwOnFailure) throw lastError;
     return null;
+  } catch (error) {
+    if (timedOut) {
+      throw imageResponseError(
+        `远程图片下载超过 ${Math.round(timeoutMs / 1000)} 秒`,
+        'IMAGE_RESPONSE_REMOTE_TIMEOUT',
+        'image-fetch',
+        `图片地址：${String(url || '').slice(0, 240)}`
+      );
+    }
+    if (error?.name === 'AbortError' || externalSignal?.aborted) {
+      throw imageResponseError('远程图片下载已取消', 'IMAGE_RESPONSE_REMOTE_ABORTED', 'image-fetch');
+    }
+    return null;
+  } finally {
+    clearTimeout(timeoutId);
+    externalSignal?.removeEventListener?.('abort', abortFromExternal);
   }
 }
 function imageCandidateMime(candidate, fallback = 'image/png') {
@@ -7929,6 +8163,11 @@ function imageCandidateMime(candidate, fallback = 'image/png') {
   ));
   return dataUrlMime || hintedMime || hintedFormat || normalizeImageMime(fallback) || 'image/png';
 }
+async function strictImageMimeFromBlob(blob) {
+  if (!blob?.size) return '';
+  const head = new Uint8Array(await blob.slice(0, 64).arrayBuffer());
+  return detectImageMimeFromBytes(head);
+}
 async function persistResponseImages(response, options = {}) {
   const candidates = collectImageCandidates(response);
   const requestedMime = imageFormatMime(firstDefined(
@@ -7944,7 +8183,6 @@ async function persistResponseImages(response, options = {}) {
       ? Math.max(0.1, Math.min(1, (100 - requestedCompression) / 100))
     : 0.92;
   const unique = [];
-  const seen = new Set();
   for (const item of candidates) {
     const rawImage = firstDefined(item.image, item.image_data, item.imageData, item.image_bytes, item.imageBytes);
     let b64 = firstDefined(item.b64_json, item.b64Json, item.base64, item.base64_image, item.base64Image, item.image_base64, item.imageBase64);
@@ -7959,9 +8197,7 @@ async function persistResponseImages(response, options = {}) {
       dataUrl = remoteUrl;
       remoteUrl = '';
     }
-    const dedupeKey = dataUrl ? `data:${dataUrl}` : remoteUrl ? `url:${remoteUrl}` : b64 ? `b64:${String(b64)}` : '';
-    if (!dedupeKey || seen.has(dedupeKey)) continue;
-    seen.add(dedupeKey);
+    if (!dataUrl && !remoteUrl && !b64) continue;
     unique.push({ ...item, b64, dataUrl, remoteUrl });
   }
   let remoteFetchFailures = 0;
@@ -7973,14 +8209,23 @@ async function persistResponseImages(response, options = {}) {
         const candidateMime = imageCandidateMime({ ...candidate, b64_json: b64, data_url: dataUrl }, 'image/png');
         if (b64) blob = dataUrlToBlob(String(b64).startsWith('data:') ? b64 : `data:${candidateMime};base64,${b64}`);
         else if (dataUrl) blob = dataUrlToBlob(dataUrl);
-        else if (remoteUrl) blob = await fetchRemoteImageBlob(remoteUrl);
+        else if (remoteUrl) blob = await fetchRemoteImageBlob(remoteUrl, {
+          signal: options.signal,
+          timeoutMs: options.remoteTimeoutMs
+        });
          const normalized = await normalizeImageBlobType(blob, candidateMime);
          if (!normalized.blob) {
            if (remoteUrl) remoteFetchFailures += 1;
            else invalidImageCandidates += 1;
            return null;
          }
-         const sourceInfo = normalized.info;
+          const strictSourceMime = await strictImageMimeFromBlob(normalized.blob);
+          if (!strictSourceMime) {
+            if (remoteUrl) remoteFetchFailures += 1;
+            else invalidImageCandidates += 1;
+            return null;
+          }
+          const sourceInfo = { ...normalized.info, type: strictSourceMime };
          const shouldTranscode = requestedMime && sourceInfo.type !== requestedMime;
          let outputBlob = normalized.blob;
          if (shouldTranscode) {
@@ -8018,7 +8263,9 @@ async function persistResponseImages(response, options = {}) {
            transparent: info.hasAlpha === undefined ? undefined : !!info.hasAlpha
          };
         } catch (error) {
-          if (error?.code === 'IMAGE_RESPONSE_TRANSCODE_FAILED') throw error;
+          if (error?.code === 'IMAGE_RESPONSE_TRANSCODE_FAILED'
+            || error?.code === 'IMAGE_RESPONSE_REMOTE_TIMEOUT'
+            || error?.code === 'IMAGE_RESPONSE_REMOTE_ABORTED') throw error;
           if (remoteUrl) remoteFetchFailures += 1;
           else invalidImageCandidates += 1;
           return null;
@@ -8051,7 +8298,6 @@ async function persistResponseImages(response, options = {}) {
 function collectImageCandidates(response) {
   const out = [];
   const seenObjects = new Set();
-  const seenValues = new Set();
   const stack = [{ value: response, key: '', depth: 0 }];
   const maxDepth = 8;
   const maxNodes = 20000;
@@ -8066,13 +8312,14 @@ function collectImageCandidates(response) {
   ]);
   const addStringCandidate = (value, key) => {
     const text = String(value || '').trim();
-    if (!text || seenValues.has(text)) return;
+    if (!text) return;
     const normalizedKey = String(key || '').replace(/[-\s]/g, '_').toLowerCase();
     const dataUrl = /^data:image\//i.test(text);
     const remoteUrl = /^https?:\/\//i.test(text);
-    const base64 = imageValueKeys.has(normalizedKey) && /^[A-Za-z0-9+/_=-]{4,}$/.test(text);
+    const base64 = imageValueKeys.has(normalizedKey)
+      && !['data', 'output', 'outputs', 'result', 'results'].includes(normalizedKey)
+      && /^[A-Za-z0-9+/_=-]{16,}$/.test(text);
     if (!dataUrl && !remoteUrl && !base64) return;
-    seenValues.add(text);
     const outputFormat = firstDefined(response?.output_format, response?.outputFormat, response?.format, response?.response_format?.output_format);
     if (dataUrl) out.push({ data_url: text, output_format: outputFormat });
     else if (remoteUrl) out.push({ url: text });
@@ -8092,7 +8339,7 @@ function collectImageCandidates(response) {
     seenObjects.add(value);
     scannedNodes += 1;
     if (!Array.isArray(value)) {
-      const hasImageValue = firstDefined(
+      const directImageValue = firstDefined(
         value.b64_json,
         value.b64Json,
         value.base64,
@@ -8118,7 +8365,27 @@ function collectImageCandidates(response) {
         value.download_url,
         value.downloadUrl
       );
-      if (hasImageValue) out.push(value);
+      if (typeof directImageValue === 'string' && directImageValue.trim()) {
+        const candidate = { ...value };
+        const directB64 = firstDefined(
+          value.b64_json,
+          value.b64Json,
+          value.base64,
+          value.base64_image,
+          value.base64Image,
+          value.image_base64,
+          value.imageBase64
+        );
+        const directDataUrl = firstDefined(value.data_url, value.dataUrl, value.image_data_url, value.imageDataUrl);
+        const directUrl = firstDefined(value.url, value.image_url, value.imageUrl, value.uri, value.src, value.href, value.download_url, value.downloadUrl);
+        if (!candidate.b64_json && directB64) candidate.b64_json = directB64;
+        if (!candidate.data_url && directDataUrl) candidate.data_url = directDataUrl;
+        if (!candidate.url && directUrl) candidate.url = directUrl;
+        if (!candidate.data_url && !candidate.url && /^data:image\//i.test(directImageValue)) candidate.data_url = directImageValue;
+        if (!candidate.url && /^https?:\/\//i.test(directImageValue)) candidate.url = directImageValue;
+        out.push(candidate);
+        continue;
+      }
     }
     if (Array.isArray(value)) {
       for (let index = value.length - 1; index >= 0; index -= 1) {
@@ -8180,54 +8447,88 @@ async function candidateToBlob(candidate) {
   if (/^data:/i.test(source)) return dataUrlToBlob(source);
   return fetchRemoteImageBlob(source);
 }
+async function persistTaskStreamPartialCandidate(task, candidate) {
+  if (!task || !candidate || !state.tasks.some((item) => item.id === task.id)) return;
+  const blob = await candidateToBlob(candidate);
+  if (!blob?.size) return;
+  const blobId = await putBlob(blob);
+  const outputIndex = Number(candidate.outputIndex || candidate.output_index || 0);
+  const receivedAt = Number(candidate.receivedAt || Date.now());
+  const current = Array.isArray(task.streamPartialImages) ? [...task.streamPartialImages] : [];
+  const sameOutput = current
+    .filter((item) => Number(item.outputIndex || 0) === outputIndex)
+    .sort((a, b) => Number(a.receivedAt || 0) - Number(b.receivedAt || 0));
+  let kind = 'first';
+  const removeIds = [];
+  if (sameOutput.length) {
+    kind = 'latest';
+    const oldLatest = sameOutput.find((item) => item.kind === 'latest')
+      || (sameOutput.length >= STREAM_PARTIAL_PER_OUTPUT_LIMIT ? sameOutput.at(-1) : null);
+    if (oldLatest) {
+      removeIds.push(oldLatest.blobId);
+      const oldIndex = current.indexOf(oldLatest);
+      if (oldIndex >= 0) current.splice(oldIndex, 1);
+    }
+  }
+  current.push({
+    blobId,
+    outputIndex,
+    partialIndex: candidate.partialIndex,
+    kind,
+    eventType: candidate.eventType || '',
+    receivedAt,
+    type: blob.type || 'image/png'
+  });
+  while (current.length > STREAM_PARTIAL_TASK_LIMIT) {
+    const evicted = current.shift();
+    if (evicted?.blobId) removeIds.push(evicted.blobId);
+  }
+  task.streamPartialImages = current;
+  writeStore();
+  await Promise.all(removeIds.filter((id) => id && id !== blobId).map((id) => deleteBlob(id).catch(() => {})));
+}
 function queueTaskStreamPartialPersist(task, candidate) {
   if (!task || !candidate) return Promise.resolve();
   const taskId = task.id;
-  const previous = streamPartialPersistChains.get(taskId) || Promise.resolve();
-  const next = previous.then(async () => {
-    if (!state.tasks.some((item) => item.id === taskId)) return;
-    const blob = await candidateToBlob(candidate);
-    if (!blob?.size) return;
-    const blobId = await putBlob(blob);
-    const outputIndex = Number(candidate.outputIndex || candidate.output_index || 0);
-    const receivedAt = Number(candidate.receivedAt || Date.now());
-    const current = Array.isArray(task.streamPartialImages) ? [...task.streamPartialImages] : [];
-    const sameOutput = current.filter((item) => Number(item.outputIndex || 0) === outputIndex).sort((a, b) => Number(a.receivedAt || 0) - Number(b.receivedAt || 0));
-    let kind = 'first';
-    const removeIds = [];
-    if (sameOutput.length) {
-      kind = 'latest';
-      const oldLatest = sameOutput.find((item) => item.kind === 'latest') || (sameOutput.length >= STREAM_PARTIAL_PER_OUTPUT_LIMIT ? sameOutput.at(-1) : null);
-      if (oldLatest) {
-        removeIds.push(oldLatest.blobId);
-        const oldIndex = current.indexOf(oldLatest);
-        if (oldIndex >= 0) current.splice(oldIndex, 1);
+  const outputIndex = Number(candidate.outputIndex || candidate.output_index || 0);
+  let pendingState = streamPartialPersistPending.get(taskId);
+  if (!pendingState) {
+    pendingState = { pending: new Map() };
+    streamPartialPersistPending.set(taskId, pendingState);
+  }
+  const outputKey = String(outputIndex);
+  const queued = pendingState.pending.get(outputKey) || { first: null, latest: null };
+  const persistedFirst = (task.streamPartialImages || []).some((item) =>
+    Number(item.outputIndex || 0) === outputIndex && item.kind === 'first'
+  );
+  if (!queued.first && !persistedFirst) queued.first = candidate;
+  queued.latest = candidate;
+  pendingState.pending.set(outputKey, queued);
+  if (!streamPartialPersistChains.has(taskId)) {
+    const next = (async () => {
+      try {
+        while (pendingState.pending.size) {
+          const batch = [...pendingState.pending.values()];
+          pendingState.pending.clear();
+          for (const item of batch) {
+            if (!state.tasks.some((entry) => entry.id === taskId)) continue;
+            if (item.first) await persistTaskStreamPartialCandidate(task, item.first);
+            if (item.latest && item.latest !== item.first) {
+              await persistTaskStreamPartialCandidate(task, item.latest);
+            }
+          }
+        }
+      } catch (error) {
+        console.warn('[home-v3] failed to persist stream preview', error);
+        task.streamPersistError = error?.message || String(error);
+      } finally {
+        if (streamPartialPersistChains.get(taskId) === next) streamPartialPersistChains.delete(taskId);
+        if (streamPartialPersistPending.get(taskId) === pendingState) streamPartialPersistPending.delete(taskId);
       }
-    }
-    current.push({
-      blobId,
-      outputIndex,
-      partialIndex: candidate.partialIndex,
-      kind,
-      eventType: candidate.eventType || '',
-      receivedAt,
-      type: blob.type || 'image/png'
-    });
-    while (current.length > STREAM_PARTIAL_TASK_LIMIT) {
-      const evicted = current.shift();
-      if (evicted?.blobId) removeIds.push(evicted.blobId);
-    }
-    task.streamPartialImages = current;
-    writeStore();
-    await Promise.all(removeIds.filter((id) => id && id !== blobId).map((id) => deleteBlob(id).catch(() => {})));
-  }).catch((error) => {
-    console.warn('[home-v3] failed to persist stream preview', error);
-    task.streamPersistError = error?.message || String(error);
-  }).finally(() => {
-    if (streamPartialPersistChains.get(taskId) === next) streamPartialPersistChains.delete(taskId);
-  });
-  streamPartialPersistChains.set(taskId, next);
-  return next;
+    })();
+    streamPartialPersistChains.set(taskId, next);
+  }
+  return streamPartialPersistChains.get(taskId) || Promise.resolve();
 }
 async function waitForTaskStreamPartialPersistence(taskId) {
   await streamPartialPersistChains.get(taskId)?.catch?.(() => {});

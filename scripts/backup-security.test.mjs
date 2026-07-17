@@ -751,6 +751,36 @@ test('API proxy rejects unsafe upstream URLs and blocks redirects with manual mo
   }
 });
 
+test('remote image proxy rejects hostnames that resolve to private addresses', async () => {
+  const mod = await importWorkerModule('functions/api-proxy/[[path]].js', ['onRequest']);
+  const userId = 7;
+  const token = await signToken({ userId, exp: Math.floor(Date.now() / 1000) + 60 }, 'test-jwt-secret');
+  const db = makeDb({ users: [{ id: userId, username: 'remote-image-user', role: 'user' }] });
+  const originalFetch = globalThis.fetch;
+  let dnsRequests = 0;
+  globalThis.fetch = async (url) => {
+    assert.match(String(url), /cloudflare-dns\.com\/dns-query/);
+    dnsRequests += 1;
+    return new Response(JSON.stringify({ Answer: [{ type: 1, data: '127.0.0.1' }] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/dns-json' }
+    });
+  };
+  try {
+    const response = await mod.onRequest({
+      request: new Request('https://prod.example/api-proxy/image-download?url=https%3A%2F%2Fimages.example%2Fprivate.png', {
+        headers: { 'X-GPT-Image-Session': token }
+      }),
+      env: { gpt_image2_db: db, JWT_SECRET: 'test-jwt-secret', ALLOW_SESSION_HEADER_AUTH: 'true' }
+    });
+    assert.equal(response.status, 400);
+    assert.match(await response.text(), /REMOTE_IMAGE_HOST_REJECTED/);
+    assert.equal(dnsRequests, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('API proxy CORS permits only the request origin and rejects cross-origin callers', async () => {
   const mod = await importWorkerModule('functions/api-proxy/[[path]].js', ['onRequest']);
   const db = makeDb({ users: [{ id: 16, username: 'cors-user', role: 'user' }] });
@@ -1153,6 +1183,216 @@ test('professional workbench endpoints reject unsafe upstream URLs before fetch'
     });
     assert.equal(renderRes.status, 400);
     assert.equal(fetchCount, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('professional render accepts mislabeled image SSE and stops at the wrapped terminal result', async () => {
+  const render = await importWorkerModule('functions/api/pro-workbench/render.js', ['onRequestPost']);
+  const userId = 32;
+  const token = await signToken({ userId, sessionVersion: 1, exp: Math.floor(Date.now() / 1000) + 60 }, 'test-jwt-secret');
+  const db = makeDb({
+    users: [{ id: userId, username: 'workbench-stream-user', role: 'user', session_version: 1 }],
+    settings: {
+      [userId]: settingsRows({
+        profiles: [{
+          id: 'image-stream',
+          apiMode: 'images',
+          provider: 'openai',
+          baseUrl: 'https://images.example/v1',
+          apiKey: 'stream-key',
+          model: 'gpt-image-2',
+          streamImages: true,
+          responseFormatB64Json: true
+        }],
+        activeImageProfileId: 'image-stream'
+      })
+    }
+  });
+  const encoder = new TextEncoder();
+  const events = [
+    `data: ${JSON.stringify({
+      type: 'image.generation.chunk',
+      data: [{ b64_json: 'cHJldmlldy1pbWFnZS1kYXRh' }]
+    })}\n\n`,
+    `data: ${JSON.stringify({
+      type: 'image.generation.chunk',
+      object: 'image.generation.result',
+      upstream_event_type: 'image.generation.result',
+      data: [{ b64_json: 'ZmluYWwtaW1hZ2UtZGF0YQ==', output_format: 'jpeg' }]
+    })}\n\n`
+  ];
+  let index = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(new ReadableStream({
+    pull(controller) {
+      if (index < events.length) {
+        controller.enqueue(encoder.encode(events[index++]));
+        return;
+      }
+      return new Promise(() => {});
+    },
+    cancel() {}
+  }), { headers: { 'Content-Type': 'application/json' } });
+  try {
+    const form = new FormData();
+    form.append('prompt', 'stream render');
+    form.append('stream', 'true');
+    form.append('response_format', 'true');
+    const response = await Promise.race([
+      render.onRequestPost({
+        request: new Request('https://prod.example/api/pro-workbench/render', {
+          method: 'POST',
+          headers: { 'X-GPT-Image-Session': token },
+          body: form
+        }),
+        env: { gpt_image2_db: db, JWT_SECRET: 'test-jwt-secret', ALLOW_SESSION_HEADER_AUTH: 'true' }
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('professional render waited past terminal SSE event')), 1000))
+    ]);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.data[0].b64_json, 'ZmluYWwtaW1hZ2UtZGF0YQ==');
+    assert.equal(body.data[0].output_format, 'jpeg');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('professional render preserves partial candidates when the stream ends without a final image', async () => {
+  const render = await importWorkerModule('functions/api/pro-workbench/render.js', ['onRequestPost']);
+  const userId = 33;
+  const token = await signToken({ userId, sessionVersion: 1, exp: Math.floor(Date.now() / 1000) + 60 }, 'test-jwt-secret');
+  const db = makeDb({
+    users: [{ id: userId, username: 'workbench-partial-user', role: 'user', session_version: 1 }],
+    settings: {
+      [userId]: settingsRows({
+        profiles: [{
+          id: 'image-stream',
+          apiMode: 'images',
+          provider: 'openai',
+          baseUrl: 'https://images.example/v1',
+          apiKey: 'stream-key',
+          model: 'gpt-image-2',
+          streamImages: true,
+          responseFormatB64Json: true
+        }],
+        activeImageProfileId: 'image-stream'
+      })
+    }
+  });
+  const encoder = new TextEncoder();
+  const events = [
+    `data: ${JSON.stringify({
+      type: 'image.generation.partial_image',
+      b64_json: 'cHJldmlldy1wYXJ0aWFsLWltYWdl',
+      output_index: 0
+    })}\n\n`,
+    'data: [DONE]\n\n'
+  ];
+  let index = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(new ReadableStream({
+    pull(controller) {
+      if (index < events.length) {
+        controller.enqueue(encoder.encode(events[index++]));
+        return;
+      }
+      controller.close();
+    }
+  }), { headers: { 'Content-Type': 'application/json' } });
+  try {
+    const form = new FormData();
+    form.append('prompt', 'partial render');
+    form.append('stream', 'true');
+    const response = await render.onRequestPost({
+      request: new Request('https://prod.example/api/pro-workbench/render', {
+        method: 'POST',
+        headers: { 'X-GPT-Image-Session': token },
+        body: form
+      }),
+      env: { gpt_image2_db: db, JWT_SECRET: 'test-jwt-secret', ALLOW_SESSION_HEADER_AUTH: 'true' }
+    });
+    assert.equal(response.status, 502);
+    const body = await response.json();
+    assert.equal(body.code, 'IMAGE_STREAM_PARTIAL_ONLY');
+    assert.equal(body.stage, 'stream-complete');
+    assert.equal(body.partialCandidates[0].b64_json, 'cHJldmlldy1wYXJ0aWFsLWltYWdl');
+    assert.equal(body.partialCount, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('professional render retains the latest partial for every output slot', async () => {
+  const render = await importWorkerModule('functions/api/pro-workbench/render.js', ['onRequestPost']);
+  const userId = 34;
+  const token = await signToken({ userId, sessionVersion: 1, exp: Math.floor(Date.now() / 1000) + 60 }, 'test-jwt-secret');
+  const db = makeDb({
+    users: [{ id: userId, username: 'workbench-multi-partial-user', role: 'user', session_version: 1 }],
+    settings: {
+      [userId]: settingsRows({
+        profiles: [{
+          id: 'image-stream',
+          apiMode: 'images',
+          provider: 'openai',
+          baseUrl: 'https://images.example/v1',
+          apiKey: 'stream-key',
+          model: 'gpt-image-2',
+          streamImages: true,
+          responseFormatB64Json: true
+        }],
+        activeImageProfileId: 'image-stream'
+      })
+    }
+  });
+  const encoder = new TextEncoder();
+  const events = [
+    `data: ${JSON.stringify({
+      type: 'image.generation.partial_image',
+      data: [{ output_index: 0, b64_json: 'b3V0cHV0LTAtZmlyc3Q=' }]
+    })}\n\n`,
+    `data: ${JSON.stringify({
+      type: 'image.generation.partial_image',
+      data: [{ output_index: 1, b64_json: 'b3V0cHV0LTE=' }]
+    })}\n\n`,
+    `data: ${JSON.stringify({
+      type: 'image.generation.partial_image',
+      data: [{ output_index: 0, b64_json: 'b3V0cHV0LTAtbGF0ZXN0' }]
+    })}\n\n`,
+    'data: [DONE]\n\n'
+  ];
+  let index = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(new ReadableStream({
+    pull(controller) {
+      if (index < events.length) {
+        controller.enqueue(encoder.encode(events[index++]));
+        return;
+      }
+      controller.close();
+    }
+  }), { headers: { 'Content-Type': 'application/json' } });
+  try {
+    const form = new FormData();
+    form.append('prompt', 'multi partial render');
+    form.append('stream', 'true');
+    const response = await render.onRequestPost({
+      request: new Request('https://prod.example/api/pro-workbench/render', {
+        method: 'POST',
+        headers: { 'X-GPT-Image-Session': token },
+        body: form
+      }),
+      env: { gpt_image2_db: db, JWT_SECRET: 'test-jwt-secret', ALLOW_SESSION_HEADER_AUTH: 'true' }
+    });
+    assert.equal(response.status, 502);
+    const body = await response.json();
+    assert.equal(body.code, 'IMAGE_STREAM_PARTIAL_ONLY');
+    assert.deepEqual(body.partialCandidates.map((item) => item.output_index), [0, 1]);
+    assert.equal(body.partialCandidates[0].b64_json, 'b3V0cHV0LTAtbGF0ZXN0');
+    assert.equal(body.partialCandidates[1].b64_json, 'b3V0cHV0LTE=');
+    assert.equal(body.partialCount, 3);
   } finally {
     globalThis.fetch = originalFetch;
   }

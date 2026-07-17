@@ -38,7 +38,7 @@ assertContains('OpenAI-compatible edits default to repeated image[] fields', "IM
 assertContains('legacy image field retry is guarded', "if (imageFieldName === 'image' || !shouldRetryEditImageField(error)) throw error");
 assertContains('JSON sends provider payload', 'Object.assign(body, providerPayload(provider, requestParams))');
 assertContains('multipart sends provider payload', 'appendProviderParams(fd, provider, requestParams)');
-assertPattern('output params include normalized quality', /quality:\s*normalizeImageQuality\(firstDefined\(/);
+assertPattern('output params include normalized quality', /out\.quality\s*=\s*normalizeImageQuality\(firstDefined\(/);
 assertContains('output params include format', 'output_format: format');
 assertContains('non-png converts output quality to compression', 'out.output_compression = outputCompressionFromQuality(outputQuality, 90)');
 assertContains('native transparency requires explicit capability', "profile?.supportsNativeTransparency === true");

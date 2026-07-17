@@ -219,6 +219,7 @@ ok(typeof hooks.taskStreamMediaCount === 'function', 'taskStreamMediaCount hook 
 ok(typeof hooks.renderTaskStreamPreviewImage === 'function', 'renderTaskStreamPreviewImage hook missing');
 ok(typeof hooks.normalizeImageQuality === 'function', 'normalizeImageQuality hook missing');
 ok(hooks.classifyImageResponse('application/json', 'da') === 'undetermined', 'split SSE data prefix should remain undetermined until more bytes arrive');
+ok(hooks.classifyImageResponse('text/event-stream', '{"data":[]}') === 'json', 'JSON content must win over a conflicting event-stream header after body sniffing');
 ok(typeof hooks.fetchRemoteImageBlob === 'function', 'fetchRemoteImageBlob hook missing');
 ok(typeof hooks.hydrateBlobImage === 'function', 'hydrateBlobImage hook missing');
 ok(typeof hooks.rememberObjectUrl === 'function', 'rememberObjectUrl hook missing');
@@ -461,7 +462,7 @@ const stringImageCandidates = hooks.collectImageCandidates({
     'data:image/png;base64,inline-string-image',
     'https://example.com/string-image.png'
   ],
-  data: ['c3RyaW5nLWJhc2U2NC1pbWFnZQ=='],
+  data: [{ base64: 'c3RyaW5nLWJhc2U2NC1pbWFnZQ==' }],
   result: { image: 'object-image-value' }
 });
 ok(
@@ -470,6 +471,10 @@ ok(
     && stringImageCandidates.some((item) => item.b64_json === 'c3RyaW5nLWJhc2U2NC1pbWFnZQ==')
     && stringImageCandidates.some((item) => item.image === 'object-image-value'),
   'image candidate collector should support string images in containers and image/base64 compatibility fields'
+);
+ok(
+  hooks.collectImageCandidates({ type: 'image.generation.chunk', data: { progress_text: '正在生成，请稍候' } }).length === 0,
+  'progress text in generic data containers must not be treated as an image candidate'
 );
 
 const cyclicErrorPayload = { error: {} };
@@ -986,7 +991,7 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(googleBody.prompt === 'google portrait', 'Google request prompt should remain exactly the user prompt');
   ok(googleBody.quality === 'high', 'Google generation request body should include selected quality');
   ok(googleBody.output_format === 'png', 'Google generation request body should include selected output format');
-  ok(googleBody.negative_prompt === '不要文字，不要水印' && googleBody.negativePrompt === '不要文字，不要水印', 'JSON generation request should include extracted negative prompt aliases');
+  ok(googleBody.negative_prompt === '不要文字，不要水印' && googleBody.negativePrompt === undefined, 'JSON generation request should send one canonical negative prompt field');
   ok(googleBody.transparent_background === false, 'Google png request body should explicitly include selected transparent background false value');
   ok(googleBody.background === 'auto', 'Google opaque png request body should include background=auto for gateway compatibility');
   ok(googleBody.moderation === 'auto', 'Google generation request body should include selected moderation');
@@ -1103,6 +1108,10 @@ if (typeof hooks.openAiSizePayload === 'function') {
     ok(hooks.imageOutputParams({ format: 'webp', quality }, { provider: 'openai' }).quality === quality, `OpenAI ${quality} quality should be preserved in image output params`);
   }
   ok(hooks.imageOutputParams({ format: 'webp', quality: 'hd' }, { provider: 'openai' }).quality === 'high', 'legacy hd must not be sent to the image API');
+  ok(!Object.prototype.hasOwnProperty.call(
+    hooks.imageOutputParams({ format: 'png', quality: 'high' }, { provider: 'openai', model: 'gpt-image-2', codexCli: true }),
+    'quality'
+  ), 'Codex CLI image requests should omit the unsupported quality field');
 
   const greenPixels = new Uint8ClampedArray([
     0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255,
@@ -1176,7 +1185,7 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(openAiEditForm && typeof openAiEditForm.getAll === 'function', 'OpenAI reference request should use FormData');
   ok(openAiEditForm.getAll('image[]').length === 1, 'OpenAI/gpt-image2 edits must send reference files as image[]');
   ok(openAiEditForm.getAll('image').length === 0, 'OpenAI/gpt-image2 edits should not use the legacy image field by default');
-  ok(openAiEditForm.get('negative_prompt') === '不要边框，不要裁切' && openAiEditForm.get('negativePrompt') === '不要边框，不要裁切', 'FormData edit request should include extracted negative prompt aliases');
+  ok(openAiEditForm.get('negative_prompt') === '不要边框，不要裁切' && openAiEditForm.get('negativePrompt') === null, 'FormData edit request should send one canonical negative prompt field');
   ok(openAiEditForm.get('response_format') === null || openAiEditForm.get('response_format') === 'b64_json', 'OpenAI/gpt-image2 edits should only include supported response_format values');
   ok(openAiEditForm.get('n') === null, 'OpenAI/gpt-image2 edits should omit the default n=1 field');
   const openAiEditFields = openAiEditForm.fields.map((item) => item[0]);
@@ -1315,11 +1324,32 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(persistedBatches.length === 2, 'Google split collector should notify after each persisted successful split image');
   ok(persistedBatches[0]?.snapshot?.images?.length === 1, 'Google split persisted callback should expose the first saved image before the whole task finishes');
 
+  requestCount = 0;
+  const openAiStreamPreviewSlots = [];
+  const openAiStreamRequestCounts = [];
+  sandbox.sendGenerationRequest = async (prompt, params, options) => {
+    const requestIndex = requestCount++;
+    openAiStreamRequestCounts.push(Number(params.count));
+    options?.onPartialImage?.({ outputIndex: 0, partialIndex: 1, eventType: 'image_generation.partial_image', b64_json: Buffer.from(`stream-slot-${requestIndex}`).toString('base64') });
+    return { data: [{ b64_json: Buffer.from(`stream-final-${requestIndex}`).toString('base64') }], slot: requestIndex };
+  };
+  sandbox.persistResponseImages = async (response) => [{ blobId: `stream-final-${response.slot}`, width: 1024, height: 1024, type: 'image/png' }];
+  const openAiStreamMulti = await hooks.collectGenerationResult('stream split images', { count: 3 }, {
+    entry: 'gallery',
+    profile: { id: 'openai-stream-image', name: 'OpenAI Stream', provider: 'openai', model: 'gpt-image-2', streamImages: true },
+    onPartialImage: (candidate) => openAiStreamPreviewSlots.push(candidate.outputIndex)
+  });
+  ok(openAiStreamMulti.images.length === 3, 'streaming OpenAI multi-image requests should merge one result per split request');
+  ok(openAiStreamRequestCounts.every((count) => count === 1) && openAiStreamRequestCounts.length === 3, 'streaming OpenAI multi-image requests should send concurrent n=1 requests');
+  ok(openAiStreamPreviewSlots.sort((a, b) => a - b).join(',') === '0,1,2', 'streaming OpenAI multi-image previews should use independent output slots');
+
   const commonPrefix = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9s=';
   const imageA = commonPrefix + Buffer.from('first-image-tail').toString('base64');
   const imageB = commonPrefix + Buffer.from('second-image-tail').toString('base64');
   const persistedImages = typeof hooks.persistResponseImages === 'function' ? await hooks.persistResponseImages({ data: [{ b64_json: imageA }, { b64_json: imageB }] }) : [];
   ok(persistedImages.length === 2, 'persistResponseImages should keep two base64 images with the same encoded prefix');
+  const duplicatedImages = await hooks.persistResponseImages({ data: [{ b64_json: imageA }, { b64_json: imageA }] });
+  ok(duplicatedImages.length === 2, 'persistResponseImages should preserve duplicate image bytes when they represent separate output items');
 
   let activeFetches = 0;
   let maxActiveFetches = 0;
@@ -1329,7 +1359,7 @@ if (typeof hooks.openAiSizePayload === 'function') {
     maxActiveFetches = Math.max(maxActiveFetches, activeFetches);
     await new Promise((resolve) => setTimeout(resolve, 15));
     activeFetches -= 1;
-    return imageResponse('remote-image');
+    return imageResponse(Buffer.from(commonPrefix, 'base64'));
   };
   const remotePersisted = await hooks.persistResponseImages({ data: [{ url: 'https://example.com/a.png' }, { url: 'https://example.com/b.png' }] });
   sandbox.fetch = originalFetch;
@@ -1342,6 +1372,15 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(await hooks.fetchRemoteImageBlob('https://example.com/not-image') === null, 'remote image persistence should reject non-image Content-Type');
   sandbox.fetch = async () => imageResponse('', 'image/png', true);
   ok(await hooks.fetchRemoteImageBlob('https://example.com/empty.png') === null, 'remote image persistence should reject empty blobs');
+  const abortedRemoteImage = new AbortController();
+  abortedRemoteImage.abort();
+  let remoteAbortError;
+  try {
+    await hooks.fetchRemoteImageBlob('https://example.com/aborted.png', { signal: abortedRemoteImage.signal });
+  } catch (error) {
+    remoteAbortError = error;
+  }
+  ok(remoteAbortError?.code === 'IMAGE_RESPONSE_REMOTE_ABORTED' && remoteAbortError?.stage === 'image-fetch', 'remote image cancellation should expose a distinct diagnostic code');
   let remoteFetchError;
   try {
     await hooks.persistResponseImages({ data: [{ url: 'https://example.com/unavailable.png' }] });
@@ -1354,19 +1393,52 @@ if (typeof hooks.openAiSizePayload === 'function') {
 
   const inlineUrlImages = await hooks.persistResponseImages({
     data: [
-      { url: `data:image/png;base64,${Buffer.from('nano-inline-a').toString('base64')}` },
-      { image_url: `data:image/png;base64,${Buffer.from('nano-inline-b').toString('base64')}` }
+      { url: `data:image/png;base64,${commonPrefix}` },
+      { image_url: `data:image/png;base64,${commonPrefix}` }
     ]
   });
   ok(inlineUrlImages.length === 2, 'data URL images returned through url/image_url fields should both be persisted');
   ok(inlineUrlImages.every((image) => image.blobId && !String(image.remoteUrl || image.url || '').startsWith('data:')), 'persisted inline data URL images should not keep data URLs in task state');
   const stringContainerImages = await hooks.persistResponseImages({
     images: [
-      `data:image/png;base64,${Buffer.from('container-image-a').toString('base64')}`,
-      `data:image/png;base64,${Buffer.from('container-image-b').toString('base64')}`
+      `data:image/png;base64,${commonPrefix}`,
+      `data:image/png;base64,${commonPrefix}`
     ]
   });
   ok(stringContainerImages.length === 2, 'string image containers should be persisted as image results');
+  let invalidBase64Error;
+  try {
+    await hooks.persistResponseImages({ data: [{ b64_json: Buffer.from('not-an-image').toString('base64') }] });
+  } catch (error) {
+    invalidBase64Error = error;
+  }
+  ok(invalidBase64Error?.code === 'IMAGE_RESPONSE_IMAGE_DATA_INVALID', 'invalid Base64 image data should be rejected by image magic validation');
+
+  const onePixelPng = Buffer.from(commonPrefix, 'base64');
+  fakeIndexedDbStore.set('mask-display', new Blob([onePixelPng], { type: 'image/png' }));
+  fakeIndexedDbStore.set('mask-original', new Blob([onePixelPng], { type: 'image/png' }));
+  fakeIndexedDbStore.set('mask-source', new Blob([onePixelPng], { type: 'image/png' }));
+  capturedRequest = null;
+  sandbox.fetch = async (url, options) => {
+    capturedRequest = { url, options };
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      text: async () => JSON.stringify({ data: [] })
+    };
+  };
+  await hooks.sendGenerationRequest('masked edit', {
+    format: 'png',
+    count: 1
+  }, {
+    profile: { id: 'openai-mask-image', name: 'OpenAI Mask', provider: 'openai', model: 'gpt-image-2' },
+    references: [{ blobId: 'mask-display', originalBlobId: 'mask-original', maskBlobId: 'mask-source', name: 'source.png' }]
+  });
+  const maskForm = capturedRequest?.options?.body;
+  ok(maskForm?.getAll?.('image[]').length === 1 && maskForm?.get?.('mask') instanceof Blob, 'masked OpenAI edits should send the original main image and a separate mask field');
+  ok(maskForm?.fields?.find((item) => item[0] === 'mask')?.[2] === 'mask.png', 'masked OpenAI edits should send the mask as mask.png');
+  sandbox.fetch = originalFetch;
 
   const fakeJpegBytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01]);
   const fakeJpegInfo = await hooks.imageInfoFromBlob(new Blob([fakeJpegBytes], { type: 'image/png' }));
@@ -1731,7 +1803,7 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(partialStreamCandidates.every((candidate) => candidate.outputIndex === 0 && candidate.eventType === 'image_generation.partial_image'), 'stream preview callback should identify output slots and event type');
   const streamRevokedBeforePersist = revokedObjectUrls.length;
   const fetchBeforeStreamPersist = sandbox.fetch;
-  sandbox.fetch = async () => imageResponse('streamed-image');
+  sandbox.fetch = async () => imageResponse(Buffer.from(commonPrefix, 'base64'));
   const persistedStreamImages = await hooks.persistResponseImages(imageStreamPayload);
   sandbox.fetch = fetchBeforeStreamPersist;
   ok(persistedStreamImages.length === 1, 'streamed Blob URL should remain persistable as an image result');
@@ -1795,6 +1867,28 @@ if (typeof hooks.openAiSizePayload === 'function') {
   const mislabeledSsePayload = await hooks.consumeImageHttpResponse(mislabeledSseResponse, { streamRequested: true });
   ok(mislabeledSsePayload.responseMode === 'sse-sniffed', 'stream request should sniff SSE when Content-Type is incorrect');
   ok(mislabeledSsePayload.data.length === 1, 'mislabeled SSE should still return the completed image');
+  const httpPartialCandidates = [];
+  const httpStreamText = [
+    `data: ${JSON.stringify({
+      type: 'image_generation.partial_image',
+      output_index: 0,
+      partial_image_index: 0,
+      b64_json: Buffer.from('http-preview').toString('base64')
+    })}`,
+    `data: ${JSON.stringify({
+      type: 'image_generation.completed',
+      output_index: 0,
+      b64_json: Buffer.from('http-final').toString('base64')
+    })}`
+  ].join('\n\n') + '\n\n';
+  const httpStreamPayload = await hooks.consumeImageHttpResponse(new Response(httpStreamText, {
+    headers: { 'Content-Type': 'application/json' }
+  }), {
+    streamRequested: true,
+    onPartialImage: (candidate) => httpPartialCandidates.push(candidate)
+  });
+  ok(httpPartialCandidates.length === 1 && httpPartialCandidates[0].partialIndex === 0, 'HTTP image stream should forward partial previews through the response parser');
+  ok(httpStreamPayload.data.length === 1, 'HTTP image stream should still return the final image after preview callbacks');
 
   const regularJsonB64 = Buffer.from('regular-json-image').toString('base64');
   const regularJsonPayload = await hooks.consumeImageHttpResponse(new Response(JSON.stringify({
@@ -1815,7 +1909,7 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(twoOutputPayload.data.length === 2, 'image stream should retain one final artwork per output index');
   const twoOutputTexts = await Promise.all(twoOutputPayload.data.map((item) => createdObjectUrlBlobs.get(item.url)?.text()));
   ok(twoOutputTexts.join('|') === 'output-0-final|output-1-final', 'each output index should retain only its latest final frame');
-  sandbox.fetch = async () => imageResponse('streamed-image');
+  sandbox.fetch = async () => imageResponse(Buffer.from(commonPrefix, 'base64'));
   await hooks.persistResponseImages(twoOutputPayload);
   sandbox.fetch = fetchBeforeStreamPersist;
 
@@ -1906,12 +2000,12 @@ if (typeof hooks.openAiSizePayload === 'function') {
   const fourMbImageEventHead = new TextEncoder().encode(`data: ${'x'.repeat(4 * 1024 * 1024 - 6)}`);
   const fourMbImageEventTail = new Uint8Array(4 * 1024 * 1024).fill(120);
   await expectOversizedImageStreamRejected(
-    [oversizedImagePartial, fourMbImageEventHead, ...Array(7).fill(fourMbImageEventTail), new Uint8Array([120])],
-    'image stream with an unterminated event over 32MB'
+    [oversizedImagePartial, fourMbImageEventHead, ...Array(24).fill(fourMbImageEventTail), new Uint8Array([120])],
+    'image stream with an unterminated event over 96MB'
   );
   await expectOversizedImageStreamRejected(
-    [oversizedImagePartial, new Uint8Array(32 * 1024 * 1024 + 1).fill(120)],
-    'image stream with a single reader chunk over 32MB'
+    [oversizedImagePartial, new Uint8Array(96 * 1024 * 1024 + 1).fill(120)],
+    'image stream with a single reader chunk over 96MB'
   );
 
   const missingTransparentResult = await hooks.postProcessTransparentImages([

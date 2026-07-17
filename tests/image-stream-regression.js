@@ -208,6 +208,17 @@ function streamResponse(chunks, options = {}) {
   assert.strictEqual(cookSleepResult.data[0].b64_json, 'ZmluYWwtY29va3NsZWVw');
   assert.strictEqual(cookSleepResult.data[0].mime_type, 'image/jpeg');
 
+  const wrappedResult = await runtime.consumeImageStream(streamResponse([
+    sseEvent({
+      type: 'image.generation.chunk',
+      object: 'image.generation.result',
+      upstream_event_type: 'image.generation.result',
+      data: [{ b64_json: 'd3JhcHBlZC1yZXN1bHQ=' }]
+    })
+  ], { keepOpen: true }));
+  assert.strictEqual(wrappedResult.completionReason, 'result-object', 'wrapped result events should prioritize terminal object metadata over generic chunk type');
+  assert.strictEqual(wrappedResult.data[0].b64_json, 'd3JhcHBlZC1yZXN1bHQ=');
+
   const stringContainerResult = await runtime.consumeImageStream(streamResponse([
     sseEvent({
       type: 'image_generation.completed',
@@ -282,8 +293,44 @@ function streamResponse(chunks, options = {}) {
   );
   assert.strictEqual(multiOutput.completionReason, 'last-partial-fallback');
 
+  const mixedOutput = await runtime.consumeImageStream(streamResponse([
+    sseEvent({
+      type: 'image_generation.partial_image',
+      output_index: 0,
+      b64_json: 'c2hhcmVkLXByZXZpZXctMA=='
+    }),
+    sseEvent({
+      type: 'image_generation.partial_image',
+      output_index: 1,
+      b64_json: 'c2hhcmVkLXByZXZpZXctMA=='
+    }),
+    sseEvent({
+      object: 'image.generation.result',
+      data: [{ output_index: 0, b64_json: 'c2hhcmVkLWZpbmFsLTA=' }]
+    })
+  ], { keepOpen: true }));
+  assert.deepStrictEqual(mixedOutput.data.map((item) => item.output_index), [0], 'a terminal result must not promote partial images from other output slots');
+
+  const nestedOutput = await runtime.consumeImageStream(streamResponse([
+    sseEvent({
+      type: 'image.generation.chunk',
+      b64_json: 'dG9wLWNodW5rLWltYWdl',
+      data: [{ b64_json: 'bmVzdGVkLWNodW5rLWltYWdl' }]
+    }),
+    'data: [DONE]\n\n'
+  ]));
+  assert.deepStrictEqual(
+    nestedOutput.data.map((item) => item.output_index),
+    [0, 1],
+    'a candidate object must still scan nested output candidates'
+  );
+
   assert.strictEqual(
     runtime.classifyImageResponse('application/json', 'data: {"type":"image_edit.partial_image"}\n\n'),
+    'sse-sniffed'
+  );
+  assert.strictEqual(
+    runtime.classifyImageResponse('application/json', 'id: 1\nretry: 1000\n'),
     'sse-sniffed'
   );
 

@@ -92,6 +92,12 @@ function headerNum(headers, name, fallback) {
   const value = Number(headers.get(name));
   return Number.isFinite(value) ? value : fallback;
 }
+function boundedPartialImages(value, fallback = 1) {
+  const number = Number(value);
+  const fallbackNumber = Number(fallback);
+  const normalized = Number.isFinite(number) ? number : (Number.isFinite(fallbackNumber) ? fallbackNumber : 1);
+  return Math.max(0, Math.min(3, Math.floor(normalized)));
+}
 function sanitizeGoogleImageBody(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return body;
   const format = body.response_format;
@@ -156,14 +162,27 @@ async function readReaderBytes(reader, firstChunk = null, maxBytes = IMAGE_RESPO
   const append = (value) => {
     const chunk = value instanceof Uint8Array ? value : new Uint8Array(value || []);
     total += chunk.byteLength;
-    if (total > maxBytes) throw new Error('上游图片响应超过代理安全上限');
+    if (total > maxBytes) {
+      const error = new Error('上游图片响应超过代理安全上限');
+      error.code = 'UPSTREAM_RESPONSE_TOO_LARGE';
+      error.status = 502;
+      throw error;
+    }
     if (chunk.byteLength) chunks.push(chunk);
   };
   if (firstChunk) append(firstChunk);
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    append(value);
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      append(value);
+    }
+  } catch (error) {
+    const wrapped = new Error(error?.message || '上游图片响应读取中断');
+    wrapped.code = 'UPSTREAM_BODY_READ_FAILED';
+    wrapped.status = 502;
+    wrapped.cause = error;
+    throw wrapped;
   }
   return joinByteChunks(chunks, total);
 }
@@ -185,6 +204,7 @@ async function sniffImageBody(body, maxBytes = 64) {
         chunks.push(clipped);
         total += clipped.byteLength;
         prefix += decoder.decode(clipped, { stream: true });
+        if (detectImageMimeFromBytes(joinByteChunks(chunks, total)) || looksLikeSsePrefix(prefix) || looksLikeJsonPrefix(prefix)) break;
       }
     }
     prefix += decoder.decode();
@@ -200,11 +220,206 @@ function isImageContentType(value) {
   return normalizeImageMime(value).startsWith('image/');
 }
 function looksLikeSsePrefix(value) {
-  return /^\s*(?:data|event)\s*:/i.test(String(value || '')) || /^\s*:/i.test(String(value || ''));
+  const prefix = String(value || '').replace(/^\uFEFF/, '');
+  return /^\s*(?:data|event|id|retry)\s*:/i.test(prefix) || /^\s*:/i.test(prefix);
 }
 function looksLikeJsonPrefix(value) {
   const prefix = String(value || '').replace(/^\uFEFF/, '').trimStart();
   return prefix.startsWith('{') || prefix.startsWith('[');
+}
+function isPrivateRemoteHostname(value) {
+  const host = String(value || '').trim().toLowerCase();
+  if (!host || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.internal') || host.includes(':')) return true;
+  if (!/^\d+\.\d+\.\d+\.\d+$/.test(host)) return false;
+  const octets = host.split('.').map(Number);
+  if (octets.some((item) => !Number.isInteger(item) || item < 0 || item > 255)) return true;
+  const [a, b] = octets;
+  return a === 0 || a === 10 || a === 127 || a === 169 && b === 254 || a === 192 && b === 168 || a === 172 && b >= 16 && b <= 31;
+}
+function isPrivateIpAddress(value) {
+  const host = String(value || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (!host) return true;
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) return isPrivateRemoteHostname(host);
+  if (!host.includes(':')) return false;
+  const parts = host.split('::');
+  if (parts.length > 2) return true;
+  const parseParts = (value) => String(value || '').split(':').filter(Boolean).flatMap((part) => {
+    if (!part.includes('.')) return [Number.parseInt(part, 16)];
+    const octets = part.split('.').map(Number);
+    if (octets.length !== 4 || octets.some((item) => !Number.isInteger(item) || item < 0 || item > 255)) return [Number.NaN];
+    return [(octets[0] << 8) | octets[1], (octets[2] << 8) | octets[3]];
+  });
+  const left = parseParts(parts[0]);
+  const right = parseParts(parts[1]);
+  if ([...left, ...right].some((item) => !Number.isInteger(item) || item < 0 || item > 0xffff)) return true;
+  const groups = parts.length === 2
+    ? [...left, ...Array(Math.max(0, 8 - left.length - right.length)).fill(0), ...right]
+    : [...left];
+  if (groups.length !== 8) return true;
+  const allZero = groups.every((item) => item === 0);
+  const loopback = allZero || groups.slice(0, 7).every((item) => item === 0) && groups[7] === 1;
+  const uniqueLocal = (groups[0] & 0xfe00) === 0xfc00;
+  const linkLocal = (groups[0] & 0xffc0) === 0xfe80;
+  const multicast = (groups[0] & 0xff00) === 0xff00;
+  const documentation = groups[0] === 0x2001 && groups[1] === 0x0db8;
+  const mapped = groups.slice(0, 5).every((item) => item === 0) && groups[5] === 0xffff;
+  if (mapped) return isPrivateIpAddress(`${groups[6] >> 8}.${groups[6] & 255}.${groups[7] >> 8}.${groups[7] & 255}`);
+  return loopback || uniqueLocal || linkLocal || multicast || documentation;
+}
+function normalizeRemoteIpAddress(value) {
+  const host = String(value || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (!host.includes(':')) return host;
+  try {
+    return new URL(`https://[${host}]/`).hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  } catch {
+    return host;
+  }
+}
+async function assertPublicRemoteHostname(hostname, signal) {
+  const host = String(hostname || '').trim().toLowerCase();
+  if (isPrivateRemoteHostname(host)) {
+    const error = new Error('远程图片地址不允许访问内部网络');
+    error.code = 'REMOTE_IMAGE_HOST_REJECTED';
+    throw error;
+  }
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5000);
+  const abortFromCaller = () => controller.abort();
+  signal?.addEventListener?.('abort', abortFromCaller, { once: true });
+  try {
+    let hasAddress = false;
+    const addresses = new Set();
+    for (const recordType of ['A', 'AAAA']) {
+      const dnsUrl = `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(host)}&type=${recordType}`;
+      const response = await fetch(dnsUrl, {
+        headers: { Accept: 'application/dns-json' },
+        signal: controller.signal
+      });
+      if (!response.ok) throw new Error('公网 DNS 校验失败');
+      const payload = await response.json();
+      for (const answer of Array.isArray(payload?.Answer) ? payload.Answer : []) {
+        if (![1, 28].includes(Number(answer?.type))) continue;
+        const address = String(answer?.data || '').trim();
+        if (!address) continue;
+        hasAddress = true;
+        addresses.add(normalizeRemoteIpAddress(address));
+        if (isPrivateIpAddress(address)) {
+          const error = new Error('远程图片地址解析到了内部网络');
+          error.code = 'REMOTE_IMAGE_HOST_REJECTED';
+          throw error;
+        }
+      }
+    }
+    if (!hasAddress) {
+      const error = new Error('远程图片地址没有可用的公网解析结果');
+      error.code = 'REMOTE_IMAGE_HOST_REJECTED';
+      throw error;
+    }
+    return [...addresses].sort();
+  } catch (error) {
+    if (error?.code === 'REMOTE_IMAGE_HOST_REJECTED') throw error;
+    const wrapped = new Error(error?.name === 'AbortError' ? '远程图片域名校验超时' : '远程图片域名校验失败');
+    wrapped.code = 'REMOTE_IMAGE_HOST_REJECTED';
+    throw wrapped;
+  } finally {
+    clearTimeout(timeoutId);
+    signal?.removeEventListener?.('abort', abortFromCaller);
+  }
+}
+function sameDnsAnswers(first, second) {
+  return Array.isArray(first)
+    && Array.isArray(second)
+    && first.length === second.length
+    && first.every((address, index) => address === second[index]);
+}
+function safeRemoteImageUrl(value) {
+  let parsed;
+  try {
+    parsed = new URL(String(value || ''));
+  } catch {
+    throw new Error('远程图片地址无效');
+  }
+  if (parsed.protocol !== 'https:') throw new Error('远程图片地址必须使用 HTTPS');
+  if (parsed.username || parsed.password || isPrivateRemoteHostname(parsed.hostname)) {
+    throw new Error('远程图片地址不允许访问内部网络');
+  }
+  parsed.hash = '';
+  return parsed;
+}
+async function proxyRemoteImage(request, value) {
+  if (!['GET', 'HEAD'].includes(request.method)) return json({ error: 'Image download only supports GET or HEAD' }, 405, corsHeaders(request));
+  let target;
+  try {
+    target = safeRemoteImageUrl(value);
+  } catch (error) {
+    return json({ error: error.message || 'Invalid remote image URL', code: 'REMOTE_IMAGE_URL_REJECTED' }, 400, corsHeaders(request));
+  }
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 120000);
+  let clientAborted = false;
+  const abortFromClient = () => {
+    clientAborted = true;
+    controller.abort();
+  };
+  request.signal?.addEventListener?.('abort', abortFromClient, { once: true });
+  const cleanup = () => {
+    clearTimeout(timeoutId);
+    request.signal?.removeEventListener?.('abort', abortFromClient);
+  };
+  try {
+    let upstream;
+    let current = target;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const resolvedBeforeFetch = await assertPublicRemoteHostname(current.hostname, controller.signal);
+      upstream = await fetch(current, { method: request.method, redirect: 'manual', signal: controller.signal });
+      const resolvedAfterFetch = await assertPublicRemoteHostname(current.hostname, controller.signal);
+      if (!sameDnsAnswers(resolvedBeforeFetch, resolvedAfterFetch)) {
+        await upstream.body?.cancel?.().catch?.(() => {});
+        const error = new Error('远程图片域名解析在请求期间发生变化');
+        error.code = 'REMOTE_IMAGE_DNS_CHANGED';
+        throw error;
+      }
+      if (upstream.status < 300 || upstream.status >= 400) break;
+      const location = upstream.headers.get('Location');
+      if (!location) break;
+      current = safeRemoteImageUrl(new URL(location, current).href);
+    }
+    if (!upstream?.ok) {
+      cleanup();
+      return upstreamError(request, '远程图片下载失败', 'REMOTE_IMAGE_FETCH_FAILED', 'image_fetch', upstream?.status || 502, upstream);
+    }
+    if (request.method === 'HEAD' || !upstream.body) {
+      cleanup();
+      return new Response(null, { status: upstream.status, headers: corsHeaders(request, { 'Content-Type': normalizeImageMime(upstream.headers.get('Content-Type')) || 'application/octet-stream' }) });
+    }
+    const sniffed = await sniffImageBody(upstream.body);
+    const mime = sniffed.mime || normalizeImageMime(upstream.headers.get('Content-Type'));
+    if (!mime || !isImageContentType(mime)) {
+      cleanup();
+      return json({ error: '远程响应不是可识别的图片', code: 'REMOTE_IMAGE_NOT_IMAGE' }, 502, corsHeaders(request));
+    }
+    const headers = corsHeaders(request, {
+      'Content-Type': mime,
+      'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0'
+    });
+    return new Response(streamBodyWithTimeout(sniffed.body, controller, cleanup, IMAGE_RESPONSE_LIMIT), {
+      status: upstream.status,
+      statusText: upstream.statusText,
+      headers
+    });
+  } catch (error) {
+    cleanup();
+    if (clientAborted || error?.name === 'AbortError') {
+      return upstreamError(request, '远程图片下载已取消或超时', 'REMOTE_IMAGE_ABORTED', 'image_fetch', 504, null);
+    }
+    if (error?.code === 'REMOTE_IMAGE_HOST_REJECTED') {
+      return json({ error: error.message || '远程图片地址被安全策略拒绝', code: error.code }, 400, corsHeaders(request));
+    }
+    if (error?.code === 'REMOTE_IMAGE_DNS_CHANGED') {
+      return json({ error: error.message, code: error.code }, 409, corsHeaders(request));
+    }
+    return upstreamError(request, '远程图片下载失败', 'REMOTE_IMAGE_FETCH_FAILED', 'image_fetch', 502, null);
+  }
 }
 const GOOGLE_OFFICIAL_IMAGE_SIZES = {
   '1K': { '1:1': '1024x1024', '3:2': '1264x848', '2:3': '848x1264', '16:9': '1376x768', '9:16': '768x1376', '4:3': '1200x896', '3:4': '896x1200', '4:5': '928x1152', '5:4': '1152x928', '21:9': '1584x672' },
@@ -369,7 +584,10 @@ async function proxyBody(request, headers, apiPath, profile) {
         if (body.quality !== undefined) body.quality = normalizeImageQuality(body.quality);
         const wantsB64 = headerBool(headers, 'X-GPT-Image-Response-B64', profile.responseFormatB64Json);
         const wantsStream = headerBool(headers, 'X-GPT-Image-Stream', profile.streamImages);
-        const partialImages = Math.max(0, Math.min(3, headerNum(headers, 'X-GPT-Image-Partial-Images', profile.streamPartialImages || 1)));
+        const partialImages = boundedPartialImages(
+          headerNum(headers, 'X-GPT-Image-Partial-Images', profile.streamPartialImages),
+          1
+        );
         if (wantsB64 && !isGoogleImageProfile(profile)) body.response_format = 'b64_json';
         if (wantsStream && isStreamCompatibleImageProfile(profile) && !isMobileRequest(request)) {
           body.stream = true;
@@ -422,13 +640,14 @@ function requiresNodeDuplex(body) {
   if (typeof body[Symbol.asyncIterator] === 'function') return true;
   return false;
 }
-function streamBodyWithTimeout(body, controller, clearTimeoutState) {
+function streamBodyWithTimeout(body, controller, clearTimeoutState, maxBytes = 0) {
   const reader = body?.getReader?.();
   if (!reader || typeof ReadableStream === 'undefined') {
     clearTimeoutState();
     return body;
   }
   let finished = false;
+  let totalBytes = 0;
   const finish = () => {
     if (finished) return;
     finished = true;
@@ -441,6 +660,16 @@ function streamBodyWithTimeout(body, controller, clearTimeoutState) {
         if (done) {
           finish();
           output.close();
+          return;
+        }
+        totalBytes += Number(value?.byteLength || 0);
+        if (maxBytes > 0 && totalBytes > maxBytes) {
+          const error = new Error('远程图片响应超过代理安全上限');
+          error.code = 'REMOTE_IMAGE_RESPONSE_TOO_LARGE';
+          finish();
+          controller.abort();
+          await reader.cancel?.(error).catch?.(() => {});
+          output.error(error);
           return;
         }
         output.enqueue(value);
@@ -460,6 +689,7 @@ function streamBodyWithTimeout(body, controller, clearTimeoutState) {
 export async function onRequest(ctx) {
   const proxyStart = Date.now();
   let clearProxyTimeout = () => {};
+  let detachClientAbort = () => {};
   if (!isSameOriginRequest(ctx.request)) {
     return json({ error: 'Cross-origin proxy requests are not allowed' }, 403, corsHeaders(ctx.request));
   }
@@ -470,6 +700,9 @@ export async function onRequest(ctx) {
   const url = new URL(ctx.request.url);
   const apiPath = url.pathname.replace(/^\/api-proxy\/?/, '') + url.search;
   if (!apiPath || apiPath === '/') return json({ error: 'API Proxy - no path specified' }, 400, corsHeaders(ctx.request));
+  if (apiPath.split('?')[0] === 'image-download') {
+    return proxyRemoteImage(ctx.request, url.searchParams.get('url') || '');
+  }
   let profile;
   try {
     profile = selectedProfile(settings, apiPath, ctx.request.headers.get('X-GPT-Image-Profile-Id') || '');
@@ -498,6 +731,14 @@ export async function onRequest(ctx) {
     headers.set('Authorization', 'Bearer ' + apiKey);
     if (ctx.request.method !== 'GET' && ctx.request.method !== 'HEAD' && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
     const controller = new AbortController();
+    const abortFromClient = () => {
+      controller.abort();
+    };
+    if (ctx.request.signal?.aborted) abortFromClient();
+    else {
+      ctx.request.signal?.addEventListener?.('abort', abortFromClient, { once: true });
+      detachClientAbort = () => ctx.request.signal?.removeEventListener?.('abort', abortFromClient);
+    }
     const timeoutMs = Math.max(1000, Math.min(Number(timeoutOverride || profile.timeout || settings.timeout || 600) * 1000, 6000 * 1000));
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     timeoutId.unref?.();
@@ -506,6 +747,8 @@ export async function onRequest(ctx) {
       if (timeoutCleared) return;
       timeoutCleared = true;
       clearTimeout(timeoutId);
+      detachClientAbort();
+      detachClientAbort = () => {};
     };
     const body = await proxyBody(ctx.request, headers, apiPath, profile);
     headers.delete('X-GPT-Image-Response-B64');
@@ -533,6 +776,9 @@ export async function onRequest(ctx) {
     responseHeaders.delete('Set-Cookie');
     responseHeaders.delete('Set-Cookie2');
     responseHeaders.delete('Clear-Site-Data');
+    responseHeaders.delete('Content-Length');
+    responseHeaders.delete('Content-Encoding');
+    responseHeaders.delete('Transfer-Encoding');
     Object.entries(corsHeaders(ctx.request, {
       'X-GPT-Image-Upstream-Ms': String(upstreamMs),
       'X-GPT-Image-Proxy-Ms': String(Date.now() - proxyStart),
@@ -547,7 +793,10 @@ export async function onRequest(ctx) {
       responseBody = sniffed.body;
       binaryProbeMime = sniffed.mime;
       const responsePrefix = sniffed.prefix || '';
-      const sseLike = !binaryProbeMime && (isEventStream(upstream.headers) || looksLikeSsePrefix(responsePrefix));
+      const sseLike = !binaryProbeMime && (
+        looksLikeSsePrefix(responsePrefix)
+        || (isEventStream(upstream.headers) && !looksLikeJsonPrefix(responsePrefix))
+      );
       const binaryLike = !!binaryProbeMime || isImageContentType(upstreamContentType);
       const jsonLike = upstreamContentType.includes('json') || looksLikeJsonPrefix(responsePrefix);
       if (sseLike) {
@@ -663,7 +912,15 @@ export async function onRequest(ctx) {
         configuredModel: e.configuredModel || profile?.model || undefined
       }, 400, corsHeaders(ctx.request));
     }
-    if (e.name === 'AbortError') return upstreamError(ctx.request, '本站代理等待 API 响应超时。请降低生成张数/图片尺寸，或更换响应更稳定的 API 服务商。', 'PROXY_TIMEOUT', 'proxy_timeout', 504, null, { proxyMs: Date.now() - proxyStart });
+    if (e.name === 'AbortError') {
+      if (ctx.request.signal?.aborted) {
+        return upstreamError(ctx.request, '客户端已取消图片请求。', 'PROXY_CLIENT_ABORTED', 'client_abort', 499, null, { proxyMs: Date.now() - proxyStart });
+      }
+      return upstreamError(ctx.request, '本站代理等待 API 响应超时。请降低生成张数/图片尺寸，或更换响应更稳定的 API 服务商。', 'PROXY_TIMEOUT', 'proxy_timeout', 504, null, { proxyMs: Date.now() - proxyStart });
+    }
+    if (e?.code === 'UPSTREAM_RESPONSE_TOO_LARGE' || e?.code === 'UPSTREAM_BODY_READ_FAILED') {
+      return upstreamError(ctx.request, e.message || '上游图片响应读取失败', e.code, 'upstream_read', 502, null, { proxyMs: Date.now() - proxyStart });
+    }
     return upstreamError(ctx.request, proxyFetchFailedMessage(e, profile, apiPath, ctx.request, new Headers(ctx.request.headers)), 'PROXY_FETCH_FAILED', 'proxy_error', 502, null, { proxyMs: Date.now() - proxyStart });
   }
 }
