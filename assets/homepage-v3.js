@@ -23,6 +23,7 @@ const IMAGE_OBJECT_URL_CACHE_LIMIT = 72;
 const REFERENCE_OBJECT_URL_CACHE_LIMIT = 48;
 const STREAM_IMAGE_LIMIT = 8;
 const IMAGE_STREAM_EVENT_LIMIT = 32 * 1024 * 1024;
+const IMAGE_BINARY_RESPONSE_LIMIT = 128 * 1024 * 1024;
 const STREAM_EVENT_METADATA_LIMIT = 24;
 const AGENT_STREAM_TEXT_LIMIT = 4 * 1024 * 1024;
 const AGENT_STREAM_EVENT_LIMIT = 8 * 1024 * 1024;
@@ -295,7 +296,7 @@ function normalizeImageQuality(value, fallback = 'high') {
 }
 
 function outputQualityPercent(value, fallback = 90) {
-  const number = Number(value);
+  const number = value === undefined || value === null || value === '' ? Number.NaN : Number(value);
   const fallbackNumber = Number(fallback);
   const normalized = Number.isFinite(number) ? number : (Number.isFinite(fallbackNumber) ? fallbackNumber : 90);
   return Math.max(0, Math.min(100, Math.round(normalized)));
@@ -311,22 +312,34 @@ function outputQualityFromCompression(value, fallback = undefined) {
 }
 
 function collectObjectsDeep(value, options = {}) {
-  const maxDepth = options.maxDepth ?? 6;
+  const maxDepthRaw = Number(options.maxDepth ?? 6);
+  const maxDepth = Number.isFinite(maxDepthRaw) ? Math.max(0, Math.floor(maxDepthRaw)) : 6;
+  const maxNodesRaw = Number(options.maxNodes ?? 4096);
+  const maxNodes = Number.isFinite(maxNodesRaw) ? Math.max(1, Math.floor(maxNodesRaw)) : 4096;
   const seen = new Set();
   const out = [];
-  const visit = (item, depth) => {
-    if (item === null || item === undefined || depth > maxDepth) return;
-    if (typeof item !== 'object') return;
-    if (seen.has(item)) return;
+  const stack = [{ value, depth: 0 }];
+  let scannedNodes = 0;
+  while (stack.length && scannedNodes < maxNodes) {
+    const entry = stack.pop();
+    const item = entry?.value;
+    const depth = Number(entry?.depth) || 0;
+    if (item === null || item === undefined || depth > maxDepth) continue;
+    if (typeof item !== 'object' || seen.has(item)) continue;
     seen.add(item);
+    scannedNodes += 1;
     if (Array.isArray(item)) {
-      item.forEach((child) => visit(child, depth + 1));
-      return;
+      for (let index = item.length - 1; index >= 0; index -= 1) {
+        stack.push({ value: item[index], depth: depth + 1 });
+      }
+      continue;
     }
     out.push(item);
-    Object.values(item).forEach((child) => visit(child, depth + 1));
-  };
-  visit(value, 0);
+    const children = Object.values(item);
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      stack.push({ value: children[index], depth: depth + 1 });
+    }
+  }
   return out;
 }
 
@@ -652,7 +665,7 @@ function deleteStoreKeysNotIn(store, keep, normalizeKey = (key) => key, isProtec
     cursorRequest.onsuccess = () => {
       const cursor = cursorRequest.result;
       if (!cursor) return;
-      if (!keep.has(normalizeKey(cursor.key)) && !isProtected(cursor.key)) cursor.delete();
+      if (!keep.has(normalizeKey(cursor.key)) && !isProtected(cursor.key)) store.delete(cursor.key);
       cursor.continue();
     };
     return;
@@ -1031,11 +1044,39 @@ function parseImageSizeFromBytes(bytes) {
   }
   return {};
 }
+function normalizeImageMime(value) {
+  const raw = String(value || '').trim().toLowerCase().split(';')[0];
+  if (raw === 'png' || raw === 'image/png') return 'image/png';
+  if (raw === 'jpg' || raw === 'jpeg' || raw === 'image/jpg' || raw === 'image/jpeg') return 'image/jpeg';
+  if (raw === 'webp' || raw === 'image/webp') return 'image/webp';
+  if (raw === 'gif' || raw === 'image/gif') return 'image/gif';
+  return /^image\/[a-z0-9.+-]+$/.test(raw) ? raw : '';
+}
+function imageFormatFromMime(value) {
+  const mime = normalizeImageMime(value);
+  if (mime === 'image/jpeg') return 'jpeg';
+  if (mime === 'image/webp') return 'webp';
+  if (mime === 'image/gif') return 'gif';
+  return mime === 'image/png' ? 'png' : '';
+}
+function bytesToBase64(bytes) {
+  let binary = '';
+  for (let index = 0; index < bytes.length; index += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+  }
+  return btoa(binary);
+}
+function bytesToImageDataUrl(bytes, fallbackMime = 'image/png') {
+  const mime = detectImageMimeFromBytes(bytes) || normalizeImageMime(fallbackMime);
+  if (!mime) return '';
+  return `data:${mime};base64,${bytesToBase64(bytes)}`;
+}
 function detectImageMimeFromBytes(bytes) {
-  if (!bytes || bytes.length < 12) return '';
+  if (!bytes || bytes.length < 4) return '';
   if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'image/png';
   if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
-  if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return 'image/webp';
+  if (bytes.length >= 12 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return 'image/webp';
+  if (bytes.length >= 6 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38 && (bytes[4] === 0x37 || bytes[4] === 0x39) && bytes[5] === 0x61) return 'image/gif';
   return '';
 }
 function pngMayHaveAlpha(bytes) {
@@ -1063,13 +1104,77 @@ async function fastImageSizeFromBlob(blob) {
 async function imageInfoFromBlob(blob) {
   const head = new Uint8Array(await blob.slice(0, 262144).arrayBuffer());
   const size = parseImageSizeFromBytes(head);
-  const detectedType = detectImageMimeFromBytes(head) || blob.type || '';
+  const detectedType = detectImageMimeFromBytes(head) || normalizeImageMime(blob.type) || '';
   return {
     width: size.width,
     height: size.height,
     type: detectedType,
     hasAlpha: detectedType === 'image/png' ? pngMayHaveAlpha(head) : undefined
   };
+}
+async function normalizeImageBlobType(blob, fallbackMime = '') {
+  if (!blob?.size) return { blob: null, info: {} };
+  const info = await imageInfoFromBlob(blob).catch(() => ({ type: normalizeImageMime(fallbackMime) || blob.type || '' }));
+  const detectedType = normalizeImageMime(info.type || fallbackMime);
+  if (!detectedType || detectedType === normalizeImageMime(blob.type)) {
+    return { blob, info: { ...info, type: detectedType || normalizeImageMime(blob.type) || blob.type || '' } };
+  }
+  const normalizedBlob = new Blob([await blob.arrayBuffer()], { type: detectedType });
+  return { blob: normalizedBlob, info: { ...info, type: detectedType } };
+}
+function imageFormatMime(value) {
+  const normalized = normalizeImageMime(value);
+  if (normalized) return normalized;
+  const format = String(value || '').trim().toLowerCase();
+  return normalizeImageMime(format ? `image/${format}` : '');
+}
+async function transcodeImageBlob(blob, targetMime, quality = 0.92) {
+  const mime = imageFormatMime(targetMime);
+  if (!blob?.size || !mime || mime === normalizeImageMime(blob.type)) return blob;
+  const boundedQuality = Math.max(0.1, Math.min(1, Number(quality) || 0.92));
+  let bitmap = null;
+  let objectUrl = '';
+  try {
+    if (typeof createImageBitmap === 'function') {
+      bitmap = await createImageBitmap(blob);
+    } else if (typeof Image !== 'undefined' && typeof document !== 'undefined') {
+      objectUrl = URL.createObjectURL(blob);
+      const image = new Image();
+      await new Promise((resolve, reject) => {
+        image.onload = resolve;
+        image.onerror = reject;
+        image.src = objectUrl;
+      });
+      bitmap = image;
+    } else {
+      throw new Error('当前浏览器不支持图片格式转换');
+    }
+    const width = Number(bitmap.width || bitmap.naturalWidth || 0);
+    const height = Number(bitmap.height || bitmap.naturalHeight || 0);
+    if (!width || !height) throw new Error('无法读取上游图片尺寸');
+    const canvas = typeof OffscreenCanvas !== 'undefined'
+      ? new OffscreenCanvas(width, height)
+      : typeof document !== 'undefined'
+        ? Object.assign(document.createElement('canvas'), { width, height })
+        : null;
+    if (!canvas) throw new Error('当前浏览器不支持图片格式转换画布');
+    const context = canvas.getContext('2d', { alpha: mime !== 'image/jpeg' });
+    if (!context) throw new Error('无法创建图片格式转换画布');
+    if (mime === 'image/jpeg') {
+      context.fillStyle = '#ffffff';
+      context.fillRect(0, 0, width, height);
+    }
+    context.drawImage(bitmap, 0, 0, width, height);
+    if (typeof canvas.convertToBlob === 'function') {
+      return await canvas.convertToBlob({ type: mime, quality: boundedQuality });
+    }
+    return await new Promise((resolve, reject) => {
+      canvas.toBlob((result) => result ? resolve(result) : reject(new Error('图片格式转换失败')), mime, boundedQuality);
+    });
+  } finally {
+    bitmap?.close?.();
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+  }
 }
 async function imageSizeFromBlob(blob) {
   const fast = await fastImageSizeFromBlob(blob).catch(() => ({}));
@@ -2348,15 +2453,27 @@ function normalizeError(error, fallback = '操作失败') {
   let code = error?.code || '';
   const readObject = (obj) => {
     if (!obj || typeof obj !== 'object') return '';
-    code = code || obj.code || obj.type || obj.status || '';
-    const message = obj.message || obj.error_description || obj.error || obj.detail || obj.msg;
-    if (typeof message === 'string') return message;
-    if (message && typeof message === 'object') return readObject(message);
-    for (const value of Object.values(obj)) {
-      if (typeof value === 'string' && value.trim() && value !== '[object Object]') return value;
-      if (value && typeof value === 'object') {
-        const nested = readObject(value);
-        if (nested) return nested;
+    const stack = [{ value: obj, depth: 0 }];
+    const seen = new Set();
+    let scannedNodes = 0;
+    while (stack.length && scannedNodes < 4096) {
+      const entry = stack.pop();
+      const current = entry?.value;
+      const depth = Number(entry?.depth) || 0;
+      if (!current || typeof current !== 'object' || depth > 12 || seen.has(current)) continue;
+      seen.add(current);
+      scannedNodes += 1;
+      code = code || current.code || current.type || current.status || '';
+      const message = current.message || current.error_description || current.error || current.detail || current.msg;
+      if (typeof message === 'string' && message.trim() && message !== '[object Object]') return message;
+      const values = Object.values(current);
+      for (let index = values.length - 1; index >= 0; index -= 1) {
+        const value = values[index];
+        if (typeof value === 'string' && value.trim() && value !== '[object Object]') return value;
+        if (value && typeof value === 'object') stack.push({ value, depth: depth + 1 });
+      }
+      if (message && typeof message === 'object') {
+        stack.push({ value: message, depth: depth + 1 });
       }
     }
     return '';
@@ -2368,7 +2485,19 @@ function normalizeError(error, fallback = '操作失败') {
   if (!summary || summary === '[object Object]') summary = fallback;
   try {
     if (typeof raw === 'string') detail = raw;
-    else detail = JSON.stringify(raw, null, 2);
+    else if (raw instanceof Error) {
+      detail = JSON.stringify({
+        name: raw.name,
+        message: raw.message,
+        code: raw.code,
+        stage: raw.stage,
+        status: raw.status,
+        responseMode: raw.responseMode,
+        detail: typeof raw.detail === 'string' ? raw.detail.slice(0, 4000) : undefined
+      }, null, 2);
+    } else {
+      detail = JSON.stringify(summarizeResponse(raw), null, 2);
+    }
   } catch {
     detail = String(raw || summary);
   }
@@ -6577,6 +6706,33 @@ async function readableBodyText(body) {
   }
   return text + decoder.decode();
 }
+function isImageContentType(value) {
+  return normalizeImageMime(value).startsWith('image/');
+}
+async function readableBodyBytes(body, maxBytes = IMAGE_BINARY_RESPONSE_LIMIT) {
+  const reader = body?.getReader?.();
+  if (!reader) return new Uint8Array();
+  const chunks = [];
+  let total = 0;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    const chunk = value instanceof Uint8Array ? value : new Uint8Array(value || []);
+    total += chunk.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel?.().catch?.(() => {});
+      throw imageResponseError('图片响应超过本地安全上限', 'IMAGE_RESPONSE_TOO_LARGE', 'response-read');
+    }
+    chunks.push(chunk);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
 function imageResponseWithBody(response, body) {
   return {
     ok: response.ok,
@@ -6610,27 +6766,56 @@ function imageTextStreamResponse(text, response) {
 async function consumeImageHttpResponse(response, options = {}) {
   const startedAt = Date.now();
   let readableResponse = response;
-  let responseMode = classifyImageResponse(response?.headers?.get?.('Content-Type'));
+  const contentType = response?.headers?.get?.('Content-Type') || '';
+  let responseMode = classifyImageResponse(contentType);
+  if (isImageContentType(contentType)) responseMode = 'binary';
   if ((responseMode === 'json' || responseMode === 'undetermined') && options.streamRequested && response?.body?.tee) {
     const [probeBody, replayBody] = response.body.tee();
     const probeReader = probeBody.getReader();
     const decoder = new TextDecoder();
     let prefix = '';
+    const probeBytes = [];
+    let sniffedMime = '';
     try {
       while (prefix.length < 8192) {
         const { value, done } = await probeReader.read();
         if (done) break;
+        const chunk = value instanceof Uint8Array ? value : new Uint8Array(value || []);
+        if (probeBytes.length < 64) probeBytes.push(...chunk.subarray(0, 64 - probeBytes.length));
         prefix += decoder.decode(value, { stream: true });
-        if (classifyImageResponse(response?.headers?.get?.('Content-Type'), prefix) !== 'undetermined') break;
+        sniffedMime = detectImageMimeFromBytes(new Uint8Array(probeBytes));
+        if (sniffedMime || classifyImageResponse(contentType, prefix) !== 'undetermined') break;
       }
     } finally {
       probeReader.cancel().catch(() => {});
     }
-    responseMode = classifyImageResponse(response?.headers?.get?.('Content-Type'), prefix);
+    responseMode = sniffedMime ? 'binary' : classifyImageResponse(contentType, prefix);
     if (responseMode === 'undetermined') responseMode = 'json';
     readableResponse = imageResponseWithBody(response, replayBody);
   }
   if (responseMode === 'undetermined') responseMode = 'json';
+  if (responseMode === 'binary') {
+    if (!response.ok) {
+      const text = await readableResponse.text().catch(() => '');
+      throw imageResponseError(response.statusText || '图片响应失败', 'IMAGE_RESPONSE_HTTP_ERROR', 'response-headers', text);
+    }
+    const bytes = await readableBodyBytes(readableResponse.body);
+    const mime = detectImageMimeFromBytes(bytes) || normalizeImageMime(contentType);
+    if (!bytes.length || !mime) {
+      throw imageResponseError('图片响应中没有可保存的图片数据', 'IMAGE_RESPONSE_NO_IMAGE', 'response-parse');
+    }
+    return attachImageResponseMetadata({
+      data: [{
+        data_url: bytesToImageDataUrl(bytes, mime),
+        mime_type: mime,
+        output_format: imageFormatFromMime(mime)
+      }]
+    }, {
+      responseMode: 'binary',
+      completionReason: 'binary-response',
+      timing: imageResponseTiming(response, startedAt, options.responseHeaderMs)
+    });
+  }
   if (responseMode === 'sse' || responseMode === 'sse-sniffed') {
     if (!response.ok) {
       const text = await readableResponse.text().catch(() => '');
@@ -6653,7 +6838,7 @@ async function consumeImageHttpResponse(response, options = {}) {
   try {
     data = text ? JSON.parse(text) : null;
   } catch {
-    if (/^\s*(?:data|event)\s*:/i.test(text)) {
+    if (/^\s*(?:data|event)\s*:/i.test(text) || /^\s*:/i.test(text)) {
       const streamResponse = imageTextStreamResponse(text, response);
       const payload = await consumeImageStream(streamResponse, options.onPartialImage);
       return attachImageResponseMetadata(payload, {
@@ -7384,7 +7569,11 @@ async function collectGenerationResult(prompt, params, options = {}) {
       proxyHeaderMs += Number(response?.timing?.proxyHeaderMs) || 0;
       responses.push(response);
       const persistStartedAt = Date.now();
-      let batch = await persistResponseImages(response);
+      let batch = await persistResponseImages(response, {
+        requestedFormat: params.format || params.output_format,
+        outputQuality: firstDefined(params.outputQuality, params.output_quality),
+        outputCompression: firstDefined(params.output_compression, params.outputCompression)
+      });
       persistElapsedMs += Date.now() - persistStartedAt;
       if (options.transparentOutput) {
         const postProcessStartedAt = Date.now();
@@ -7541,12 +7730,31 @@ async function sendGenerationRequest(prompt, params = {}, options = {}) {
       const fd = new FormData();
       fd.append('model', profile.model || 'gpt-image-2');
       fd.append('prompt', requestPrompt);
-      appendProviderParams(fd, provider, requestParams);
-      appendImageOutputParams(fd, requestParams, profile);
-      appendNegativePromptParams(fd, requestParams);
-      fd.append('n', String(provider === 'google' ? 1 : (requestParams.count || state.settings.n || 1)));
+      if (provider === 'openai') {
+        const output = imageOutputParams(requestParams, profile);
+        fd.append('size', openAiSizePayload(requestParams));
+        fd.append('output_format', String(output.output_format || 'png'));
+        if (output.moderation !== undefined && output.moderation !== null && output.moderation !== '') {
+          fd.append('moderation', String(output.moderation));
+        }
+        if (!profile.codexCli && output.quality !== undefined && output.quality !== null && output.quality !== '') {
+          fd.append('quality', String(output.quality));
+        }
+        if (output.output_format !== 'png' && output.output_compression !== undefined && output.output_compression !== null) {
+          fd.append('output_compression', String(output.output_compression));
+        }
+        const count = Number(requestParams.count || state.settings.n) || 1;
+        if (count > 1) fd.append('n', String(count));
+        appendAdvancedToFormData(fd, entry, profile);
+        appendNegativePromptParams(fd, requestParams);
+      } else {
+        appendProviderParams(fd, provider, requestParams);
+        appendImageOutputParams(fd, requestParams, profile);
+        appendNegativePromptParams(fd, requestParams);
+        fd.append('n', String(provider === 'google' ? 1 : (requestParams.count || state.settings.n || 1)));
+      }
       validRefs.forEach(({ ref, blob }, idx) => fd.append(imageFieldName, blob, ref.name || `reference-${idx + 1}.png`));
-      appendAdvancedToFormData(fd, entry, profile);
+      if (provider !== 'openai') appendAdvancedToFormData(fd, entry, profile);
       return fetchImageHttpResponse(endpoint, {
         method: 'POST',
         headers: appendAdvancedHeaders({}, entry, profile),
@@ -7564,11 +7772,13 @@ async function sendGenerationRequest(prompt, params = {}, options = {}) {
   const body = {
     model: profile.model || 'gpt-image-2',
     prompt: requestPrompt,
-    n: provider === 'google' ? 1 : (Number(requestParams.count || state.settings.n) || 1)
+    n: provider === 'google' ? 1 : undefined
   };
   appendImageOutputParams(body, requestParams, profile);
   appendNegativePromptParams(body, requestParams);
   Object.assign(body, providerPayload(provider, requestParams));
+  const count = Number(requestParams.count || state.settings.n) || 1;
+  if (provider !== 'google' && count > 1) body.n = count;
   applyAdvancedToJsonBody(body, entry, profile);
   const headers = appendAdvancedHeaders({ 'Content-Type': 'application/json' }, entry, profile);
   let response;
@@ -7692,17 +7902,47 @@ function appendNegativePromptParams(target, params = {}) {
 async function fetchRemoteImageBlob(url) {
   try {
     const response = await fetch(url);
-    const contentType = String(response?.headers?.get?.('content-type') || '').split(';')[0].trim().toLowerCase();
-    if (!response?.ok || !contentType.startsWith('image/')) return null;
+    const contentType = normalizeImageMime(response?.headers?.get?.('content-type'));
+    if (!response?.ok) return null;
     const blob = await response.blob();
-    if (!blob || !Number(blob.size)) return null;
-    return blob.type ? blob : new Blob([blob], { type: contentType });
+    const normalized = await normalizeImageBlobType(blob, contentType);
+    if (!normalized.blob || !String(normalized.info?.type || '').startsWith('image/')) return null;
+    return normalized.blob;
   } catch {
     return null;
   }
 }
-async function persistResponseImages(response) {
+function imageCandidateMime(candidate, fallback = 'image/png') {
+  const dataUrl = String(firstDefined(candidate?.data_url, candidate?.dataUrl) || '');
+  const dataUrlMime = normalizeImageMime((dataUrl.match(/^data:([^;,]+)/i) || [])[1]);
+  const hintedMime = normalizeImageMime(firstDefined(
+    candidate?.mime_type,
+    candidate?.mimeType,
+    candidate?.content_type,
+    candidate?.contentType,
+    candidate?.type
+  ));
+  const hintedFormat = normalizeImageMime(firstDefined(
+    candidate?.output_format,
+    candidate?.outputFormat,
+    candidate?.format
+  ));
+  return dataUrlMime || hintedMime || hintedFormat || normalizeImageMime(fallback) || 'image/png';
+}
+async function persistResponseImages(response, options = {}) {
   const candidates = collectImageCandidates(response);
+  const requestedMime = imageFormatMime(firstDefined(
+    options.requestedFormat,
+    options.outputFormat,
+    response?.requestedOutputFormat
+  ));
+  const requestedQuality = Number(options.outputQuality);
+  const requestedCompression = Number(options.outputCompression);
+  const transcodeQuality = Number.isFinite(requestedQuality)
+    ? Math.max(0.1, Math.min(1, requestedQuality / 100))
+    : Number.isFinite(requestedCompression)
+      ? Math.max(0.1, Math.min(1, (100 - requestedCompression) / 100))
+    : 0.92;
   const unique = [];
   const seen = new Set();
   for (const item of candidates) {
@@ -7722,29 +7962,66 @@ async function persistResponseImages(response) {
     const dedupeKey = dataUrl ? `data:${dataUrl}` : remoteUrl ? `url:${remoteUrl}` : b64 ? `b64:${String(b64)}` : '';
     if (!dedupeKey || seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);
-    unique.push({ b64, dataUrl, remoteUrl });
+    unique.push({ ...item, b64, dataUrl, remoteUrl });
   }
   let remoteFetchFailures = 0;
   let invalidImageCandidates = 0;
   try {
-    const images = (await Promise.all(unique.map(async ({ b64, dataUrl, remoteUrl }) => {
+    const images = (await Promise.all(unique.map(async ({ b64, dataUrl, remoteUrl, ...candidate }) => {
       try {
         let blob = null;
-        if (b64) blob = dataUrlToBlob(String(b64).startsWith('data:') ? b64 : `data:image/png;base64,${b64}`);
+        const candidateMime = imageCandidateMime({ ...candidate, b64_json: b64, data_url: dataUrl }, 'image/png');
+        if (b64) blob = dataUrlToBlob(String(b64).startsWith('data:') ? b64 : `data:${candidateMime};base64,${b64}`);
         else if (dataUrl) blob = dataUrlToBlob(dataUrl);
         else if (remoteUrl) blob = await fetchRemoteImageBlob(remoteUrl);
-        if (!blob) {
+         const normalized = await normalizeImageBlobType(blob, candidateMime);
+         if (!normalized.blob) {
+           if (remoteUrl) remoteFetchFailures += 1;
+           else invalidImageCandidates += 1;
+           return null;
+         }
+         const sourceInfo = normalized.info;
+         const shouldTranscode = requestedMime && sourceInfo.type !== requestedMime;
+         let outputBlob = normalized.blob;
+         if (shouldTranscode) {
+           try {
+             outputBlob = await transcodeImageBlob(normalized.blob, requestedMime, transcodeQuality);
+           } catch (error) {
+             throw imageResponseError(
+               `上游返回的图片无法转换为 ${requestedMime}`,
+               'IMAGE_RESPONSE_TRANSCODE_FAILED',
+               'image-transcode',
+               error?.message || '浏览器图片格式转换失败'
+             );
+           }
+         }
+         const output = await normalizeImageBlobType(outputBlob, requestedMime || sourceInfo.type);
+         if (!output.blob || (requestedMime && output.info.type !== requestedMime)) {
+           throw imageResponseError(
+             `上游返回的图片格式无法转换为 ${requestedMime || '目标格式'}`,
+             'IMAGE_RESPONSE_TRANSCODE_FAILED',
+             'image-transcode',
+             `上游格式：${sourceInfo.type || '未知'}；目标格式：${requestedMime || '未知'}。`
+           );
+         }
+         const blobId = await putBlob(output.blob);
+         const info = output.info;
+         return {
+           blobId,
+           remoteUrl: /^blob:|^data:/i.test(String(remoteUrl || '')) ? '' : remoteUrl,
+           width: info.width,
+           height: info.height,
+           type: info.type || output.blob.type,
+           sourceType: sourceInfo.type || normalized.blob.type || '',
+           requestedType: requestedMime || '',
+           transcoded: shouldTranscode,
+           transparent: info.hasAlpha === undefined ? undefined : !!info.hasAlpha
+         };
+        } catch (error) {
+          if (error?.code === 'IMAGE_RESPONSE_TRANSCODE_FAILED') throw error;
           if (remoteUrl) remoteFetchFailures += 1;
           else invalidImageCandidates += 1;
           return null;
-        }
-        const blobId = await putBlob(blob);
-        const info = await imageInfoFromBlob(blob).catch(async () => ({ ...(await imageSizeFromBlob(blob).catch(() => ({}))), type: blob.type }));
-        return { blobId, remoteUrl: /^blob:|^data:/i.test(String(remoteUrl || '')) ? '' : remoteUrl, width: info.width, height: info.height, type: info.type || blob.type, transparent: info.hasAlpha === undefined ? undefined : !!info.hasAlpha };
-      } catch {
-        if (remoteUrl) remoteFetchFailures += 1;
-        else invalidImageCandidates += 1;
-        return null;
       }
     }))).filter(Boolean);
     if (!images.length) {
@@ -7775,6 +8052,10 @@ function collectImageCandidates(response) {
   const out = [];
   const seenObjects = new Set();
   const seenValues = new Set();
+  const stack = [{ value: response, key: '', depth: 0 }];
+  const maxDepth = 8;
+  const maxNodes = 20000;
+  let scannedNodes = 0;
   const imageValueKeys = new Set([
     'b64_json', 'b64json', 'base64', 'base64_image', 'base64image',
     'image_base64', 'imagebase64', 'image_data', 'imagedata',
@@ -7792,18 +8073,24 @@ function collectImageCandidates(response) {
     const base64 = imageValueKeys.has(normalizedKey) && /^[A-Za-z0-9+/_=-]{4,}$/.test(text);
     if (!dataUrl && !remoteUrl && !base64) return;
     seenValues.add(text);
-    if (dataUrl) out.push({ data_url: text });
+    const outputFormat = firstDefined(response?.output_format, response?.outputFormat, response?.format, response?.response_format?.output_format);
+    if (dataUrl) out.push({ data_url: text, output_format: outputFormat });
     else if (remoteUrl) out.push({ url: text });
-    else out.push({ b64_json: text });
+    else out.push({ b64_json: text, output_format: outputFormat });
   };
-  const visit = (value, key = '', depth = 0) => {
-    if (value === null || value === undefined || depth > 8) return;
+  while (stack.length && scannedNodes < maxNodes) {
+    const entry = stack.pop();
+    const value = entry?.value;
+    const key = entry?.key || '';
+    const depth = Number(entry?.depth) || 0;
+    if (value === null || value === undefined || depth > maxDepth) continue;
     if (typeof value === 'string') {
       addStringCandidate(value, key);
-      return;
+      continue;
     }
-    if (typeof value !== 'object' || seenObjects.has(value)) return;
+    if (typeof value !== 'object' || seenObjects.has(value)) continue;
     seenObjects.add(value);
+    scannedNodes += 1;
     if (!Array.isArray(value)) {
       const hasImageValue = firstDefined(
         value.b64_json,
@@ -7833,10 +8120,18 @@ function collectImageCandidates(response) {
       );
       if (hasImageValue) out.push(value);
     }
-    if (Array.isArray(value)) value.forEach((child) => visit(child, key, depth + 1));
-    else Object.entries(value).forEach(([childKey, child]) => visit(child, childKey, depth + 1));
-  };
-  visit(response);
+    if (Array.isArray(value)) {
+      for (let index = value.length - 1; index >= 0; index -= 1) {
+        stack.push({ value: value[index], key, depth: depth + 1 });
+      }
+    } else {
+      const entries = Object.entries(value);
+      for (let index = entries.length - 1; index >= 0; index -= 1) {
+        const [childKey, child] = entries[index];
+        stack.push({ value: child, key: childKey, depth: depth + 1 });
+      }
+    }
+  }
   return out;
 }
 function streamCandidateSource(candidate) {
@@ -7844,7 +8139,10 @@ function streamCandidateSource(candidate) {
   const b64 = firstDefined(candidate?.b64_json, candidate?.b64Json);
   const remoteUrl = firstDefined(candidate?.url, candidate?.remoteUrl);
   if (dataUrl) return String(dataUrl);
-  if (b64) return String(b64).startsWith('data:') ? String(b64) : `data:image/png;base64,${b64}`;
+  if (b64) {
+    const mime = imageCandidateMime(candidate, 'image/png');
+    return String(b64).startsWith('data:') ? String(b64) : `data:${mime};base64,${b64}`;
+  }
   return remoteUrl ? String(remoteUrl) : '';
 }
 function streamCandidateObjectUrl(candidate) {
@@ -8014,6 +8312,8 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     collectGenerationResult,
     sendGenerationRequest,
     persistResponseImages,
+    normalizeError,
+    collectObjectsDeep,
     imageInfoFromBlob,
     detectImageMimeFromBytes,
     resolveTaskProfile,
@@ -8206,26 +8506,67 @@ function summarizeResponse(response) {
     'image_data_url',
     'imageDataUrl'
   ]);
-  const visit = (value, depth = 0) => {
-    if (value === null || value === undefined) return value;
-    if (typeof value === 'string') {
-      if (value.startsWith('data:image/') || value.length > 2000) return `[text:${value.length}]`;
-      return value;
+  const holder = { value: undefined };
+  const stack = [{ value: response, parent: holder, key: 'value', depth: 0 }];
+  const seen = new Set();
+  const maxDepth = 6;
+  const maxNodes = 4096;
+  let scannedNodes = 0;
+  while (stack.length) {
+    const entry = stack.pop();
+    const value = entry?.value;
+    const parent = entry?.parent;
+    const key = entry?.key;
+    const depth = Number(entry?.depth) || 0;
+    if (!parent) continue;
+    if (value === null || value === undefined) {
+      parent[key] = value;
+      continue;
     }
-    if (typeof value !== 'object') return value;
-    if (depth > 6) return '[depth-truncated]';
-    if (Array.isArray(value)) return value.slice(0, 20).map((item) => visit(item, depth + 1));
+    if (typeof value === 'string') {
+      parent[key] = value.startsWith('data:image/') || value.length > 2000 ? `[text:${value.length}]` : value;
+      continue;
+    }
+    if (typeof value !== 'object') {
+      parent[key] = value;
+      continue;
+    }
+    if (depth > maxDepth) {
+      parent[key] = '[depth-truncated]';
+      continue;
+    }
+    if (seen.has(value)) {
+      parent[key] = '[circular]';
+      continue;
+    }
+    if (scannedNodes >= maxNodes) {
+      parent[key] = '[node-limit]';
+      continue;
+    }
+    seen.add(value);
+    scannedNodes += 1;
+    if (Array.isArray(value)) {
+      const out = [];
+      parent[key] = out;
+      const limit = Math.min(value.length, 20);
+      for (let index = limit - 1; index >= 0; index -= 1) {
+        stack.push({ value: value[index], parent: out, key: index, depth: depth + 1 });
+      }
+      continue;
+    }
     const out = {};
-    for (const [key, item] of Object.entries(value)) {
-      if (binaryKeys.has(key)) {
-        out[key] = item ? '[image-data]' : item;
+    parent[key] = out;
+    const entries = Object.entries(value);
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const [childKey, child] = entries[index];
+      if (binaryKeys.has(childKey)) {
+        out[childKey] = child ? '[image-data]' : child;
       } else {
-        out[key] = visit(item, depth + 1);
+        stack.push({ value: child, parent: out, key: childKey, depth: depth + 1 });
       }
     }
-    return out;
-  };
-  return visit(response);
+  }
+  return holder.value;
 }
 async function retryTask(id) {
   const task = state.tasks.find((t) => t.id === id);

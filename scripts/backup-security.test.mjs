@@ -815,11 +815,15 @@ test('API proxy timeout remains active while an image response body is streaming
     }
   });
   const originalFetch = globalThis.fetch;
+  let upstreamAborted = false;
   globalThis.fetch = async (_url, init) => {
     const stream = new ReadableStream({
       start(controller) {
         controller.enqueue(new TextEncoder().encode('data: {"type":"image_edit.partial_image"}\n\n'));
-        init.signal.addEventListener('abort', () => controller.error(new DOMException('Aborted', 'AbortError')), { once: true });
+        init.signal.addEventListener('abort', () => {
+          upstreamAborted = true;
+          controller.error(new DOMException('Aborted', 'AbortError'));
+        }, { once: true });
       }
     });
     return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } });
@@ -841,14 +845,14 @@ test('API proxy timeout remains active while an image response body is streaming
       response.text().then((text) => ({ state: 'closed', text }), (error) => ({ state: error?.name === 'AbortError' || /abort/i.test(String(error)) ? 'aborted' : 'error', text: String(error) })),
       new Promise((resolve) => setTimeout(() => resolve('still-open'), 1400))
     ]);
-    assert.equal(outcome.state, 'closed');
-    assert.match(outcome.text, /PROXY_TIMEOUT/);
+    assert.notEqual(outcome, 'still-open');
+    assert.equal(upstreamAborted, true);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test('streaming image proxy sends an early handshake and serializes upstream transport failures', async () => {
+test('streaming image proxy preserves upstream response bytes and status semantics', async () => {
   const proxy = await importWorkerModule('functions/api-proxy/[[path]].js', ['onRequest']);
   const userId = 19;
   const token = await signToken({
@@ -899,11 +903,10 @@ test('streaming image proxy sends an early handshake and serializes upstream tra
       request: requestFor(),
       env: { gpt_image2_db: db, JWT_SECRET: 'test-jwt-secret', ALLOW_SESSION_HEADER_AUTH: 'true' }
     });
-    assert.ok(Date.now() - startedAt < 100, 'streaming proxy should return before slow upstream headers');
-    assert.match(response.headers.get('Content-Type') || '', /text\/event-stream/);
+    assert.ok(Date.now() - startedAt >= 100, 'raw passthrough waits for upstream response headers');
+    assert.match(response.headers.get('Content-Type') || '', /application\/json/);
     const text = await response.text();
-    assert.match(text, /nexgen-image-proxy-ready/);
-    assert.match(text, /image_edit\.completed/);
+    assert.deepEqual(JSON.parse(text), { data: [{ b64_json: 'aW1hZ2U=' }] });
 
     globalThis.fetch = async () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -913,20 +916,101 @@ test('streaming image proxy sends an early handshake and serializes upstream tra
       request: requestFor(),
       env: { gpt_image2_db: db, JWT_SECRET: 'test-jwt-secret', ALLOW_SESSION_HEADER_AUTH: 'true' }
     });
+    assert.equal(failedResponse.status, 502);
     const failedText = await failedResponse.text();
-    assert.match(failedText, /image_edit\.failed/);
+    assert.match(failedText, /PROXY_FETCH_FAILED/);
     assert.match(failedText, /fetch failed|API 代理请求失败/);
 
+    const rawSse = 'data: {"object":"image.generation.result","data":[{"b64_json":"aW1hZ2U="}]}\n\n';
     globalThis.fetch = async () => new Response(
-      'data: {"type":"image_edit.completed","b64_json":"aW1hZ2U="}\n\n',
+      rawSse,
       { headers: { 'Content-Type': 'application/json' } }
     );
     const mislabeledResponse = await proxy.onRequest({
       request: requestFor(),
       env: { gpt_image2_db: db, JWT_SECRET: 'test-jwt-secret', ALLOW_SESSION_HEADER_AUTH: 'true' }
     });
+    assert.match(mislabeledResponse.headers.get('Content-Type') || '', /text\/event-stream/);
     const mislabeledText = await mislabeledResponse.text();
-    assert.match(mislabeledText, /image_edit\.completed/);
+    assert.equal(mislabeledText, rawSse);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('图片代理兼容上游二进制图片响应并保留真实格式', async () => {
+  const proxy = await importWorkerModule('functions/api-proxy/[[path]].js', ['onRequest']);
+  const userId = 20;
+  const token = await signToken({
+    userId,
+    sessionVersion: 1,
+    exp: Math.floor(Date.now() / 1000) + 60
+  }, 'test-jwt-secret');
+  const db = makeDb({
+    users: [{ id: userId, username: 'binary-image-user', role: 'user', session_version: 1 }],
+    settings: {
+      [userId]: settingsRows({
+        profiles: [{
+          id: 'binary-image',
+          name: 'Binary image',
+          provider: 'openai',
+          baseUrl: 'https://images.example/v1',
+          apiKey: 'binary-key',
+          model: 'gpt-image-2',
+          apiMode: 'images',
+          timeout: 5,
+          streamImages: true
+        }],
+        activeProfileId: 'binary-image',
+        activeImageProfileId: 'binary-image'
+      })
+    }
+  });
+  const pngBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
+  const jpegBytes = Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x00]);
+  const originalFetch = globalThis.fetch;
+  const requestFor = (headers = {}, body = JSON.stringify({ prompt: 'test' })) => new Request('https://prod.example/api-proxy/images/edits', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-GPT-Image-Session': token,
+      'X-GPT-Image-Profile-Id': 'binary-image',
+      ...headers
+    },
+    body
+  });
+  try {
+    globalThis.fetch = async () => new Response(pngBytes, { headers: { 'Content-Type': 'application/octet-stream' } });
+    const streamResponse = await proxy.onRequest({
+      request: requestFor({ 'X-GPT-Image-Stream': 'true' }),
+      env: { gpt_image2_db: db, JWT_SECRET: 'test-jwt-secret', ALLOW_SESSION_HEADER_AUTH: 'true' }
+    });
+    assert.equal(streamResponse.headers.get('Content-Type'), 'image/png');
+    assert.deepEqual(new Uint8Array(await streamResponse.arrayBuffer()), pngBytes);
+
+    globalThis.fetch = async () => new Response(jpegBytes, { headers: { 'Content-Type': 'image/jpeg' } });
+    const directResponse = await proxy.onRequest({
+      request: requestFor({ 'X-GPT-Image-Stream': 'false' }),
+      env: { gpt_image2_db: db, JWT_SECRET: 'test-jwt-secret', ALLOW_SESSION_HEADER_AUTH: 'true' }
+    });
+    assert.equal(directResponse.headers.get('Content-Type'), 'image/jpeg');
+    assert.deepEqual(new Uint8Array(await directResponse.arrayBuffer()), jpegBytes);
+
+    globalThis.fetch = async () => new Response(pngBytes, { headers: { 'Content-Type': 'application/json' } });
+    const jsonLabeledBinaryResponse = await proxy.onRequest({
+      request: requestFor({ 'X-GPT-Image-Stream': 'false' }),
+      env: { gpt_image2_db: db, JWT_SECRET: 'test-jwt-secret', ALLOW_SESSION_HEADER_AUTH: 'true' }
+    });
+    assert.equal(jsonLabeledBinaryResponse.headers.get('Content-Type'), 'image/png');
+    assert.deepEqual(new Uint8Array(await jsonLabeledBinaryResponse.arrayBuffer()), pngBytes);
+
+    globalThis.fetch = async () => new Response(pngBytes, { headers: { 'Content-Type': 'text/event-stream' } });
+    const streamLabeledBinaryResponse = await proxy.onRequest({
+      request: requestFor({ 'X-GPT-Image-Stream': 'true' }),
+      env: { gpt_image2_db: db, JWT_SECRET: 'test-jwt-secret', ALLOW_SESSION_HEADER_AUTH: 'true' }
+    });
+    assert.equal(streamLabeledBinaryResponse.headers.get('Content-Type'), 'image/png');
+    assert.deepEqual(new Uint8Array(await streamLabeledBinaryResponse.arrayBuffer()), pngBytes);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -957,10 +1041,20 @@ test('API proxy normalizes legacy image quality in JSON and multipart requests',
     }
   });
   const seenQualities = [];
+  const seenImageCounts = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (_url, init) => {
     if (typeof init.body === 'string') seenQualities.push(JSON.parse(init.body).quality);
-    else if (init.body instanceof FormData) seenQualities.push(init.body.get('quality'));
+    else if (init.body?.getReader) {
+      const forwarded = await new Request('https://images.example/v1/images/edits', {
+        method: 'POST',
+        headers: init.headers,
+        body: init.body,
+        duplex: 'half'
+      }).formData();
+      seenQualities.push(forwarded.get('quality'));
+      seenImageCounts.push(forwarded.getAll('image[]').length + forwarded.getAll('image').length);
+    }
     return new Response(JSON.stringify({ data: [] }), { headers: { 'Content-Type': 'application/json' } });
   };
   try {
@@ -975,9 +1069,10 @@ test('API proxy normalizes legacy image quality in JSON and multipart requests',
     });
     await jsonResponse.text();
     const form = new FormData();
+    form.append('model', 'gpt-image-2');
     form.append('prompt', 'test');
     form.append('quality', 'standard');
-    form.append('image', new Blob(['image'], { type: 'image/png' }), 'image.png');
+    form.append('image[]', new Blob(['image'], { type: 'image/png' }), 'image.png');
     const multipartResponse = await proxy.onRequest({
       request: new Request('https://prod.example/api-proxy/images/edits', {
         method: 'POST',
@@ -987,7 +1082,23 @@ test('API proxy normalizes legacy image quality in JSON and multipart requests',
       env: { gpt_image2_db: db, JWT_SECRET: 'test-jwt-secret', ALLOW_SESSION_HEADER_AUTH: 'true' }
     });
     await multipartResponse.text();
-    assert.deepEqual(seenQualities, ['high', 'medium']);
+    assert.deepEqual(seenQualities, ['high', 'standard']);
+    assert.deepEqual(seenImageCounts, [1]);
+
+    const mismatchedForm = new FormData();
+    mismatchedForm.append('model', 'different-image-model');
+    mismatchedForm.append('prompt', 'test');
+    mismatchedForm.append('image[]', new Blob(['image'], { type: 'image/png' }), 'image.png');
+    const mismatchResponse = await proxy.onRequest({
+      request: new Request('https://prod.example/api-proxy/images/edits', {
+        method: 'POST',
+        headers,
+        body: mismatchedForm
+      }),
+      env: { gpt_image2_db: db, JWT_SECRET: 'test-jwt-secret', ALLOW_SESSION_HEADER_AUTH: 'true' }
+    });
+    assert.equal(mismatchResponse.status, 400);
+    assert.equal((await mismatchResponse.json()).code, 'IMAGE_PROFILE_MODEL_MISMATCH');
   } finally {
     globalThis.fetch = originalFetch;
   }

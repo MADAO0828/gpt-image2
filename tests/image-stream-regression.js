@@ -61,6 +61,46 @@ function streamResponse(chunks, options = {}) {
   assert.strictEqual(disconnectError.partialCandidates[0].outputIndex, 0);
   assert.strictEqual(partials.length, 1);
 
+  const stackTransportChunks = Array.from({ length: 25 }, (_, index) => sseEvent({
+    type: 'image.generation.chunk',
+    progress_text: 'working',
+    index
+  }));
+  stackTransportChunks.push(new RangeError('Maximum call stack size exceeded'));
+  let stackTransportError;
+  try {
+    await runtime.consumeImageStream(streamResponse(stackTransportChunks));
+  } catch (error) {
+    stackTransportError = error;
+  }
+  assert(stackTransportError, 'transport RangeError after progress events must be surfaced as a stream error');
+  assert.strictEqual(stackTransportError.code, 'IMAGE_STREAM_TRANSPORT_INTERRUPTED');
+  assert.strictEqual(stackTransportError.stage, 'stream-transport');
+  assert.strictEqual(stackTransportError.streamEventCount, 25);
+  assert.match(stackTransportError.message, /Maximum call stack size exceeded/);
+
+  let partialCallbackError;
+  try {
+    await runtime.consumeImageStream(streamResponse([
+      sseEvent({
+        type: 'image_generation.partial_image',
+        b64_json: 'Y2FsbGJhY2stZXJyb3I=',
+        output_index: 0,
+        partial_image_index: 0
+      })
+    ]), {
+      onPartialImage: () => {
+        throw new RangeError('Maximum call stack size exceeded');
+      }
+    });
+  } catch (error) {
+    partialCallbackError = error;
+  }
+  assert(partialCallbackError, 'preview callback RangeError must be classified separately from transport failure');
+  assert.strictEqual(partialCallbackError.code, 'IMAGE_STREAM_PARTIAL_CALLBACK_FAILED');
+  assert.strictEqual(partialCallbackError.stage, 'partial-callback');
+  assert.match(partialCallbackError.message, /流式预览回调失败/);
+
   const cleanCloseResponse = streamResponse([
     sseEvent({
       type: 'image_generation.partial_image',
@@ -135,6 +175,38 @@ function streamResponse(chunks, options = {}) {
   assert.strictEqual(resultObject.completionReason, 'result-object');
   assert.strictEqual(resultObject.data.length, 1);
   assert.strictEqual(resultObject.data[0].b64_json, 'cmVzdWx0LW9iamVjdA==');
+
+  const cookSleepPartials = [];
+  const cookSleepResult = await runtime.consumeImageStream(streamResponse([
+    sseEvent({
+      object: 'image.generation.chunk',
+      created: 1779551054,
+      model: 'gpt-image-2',
+      data: [{
+        b64_json: 'cHJldmlldy1jaHVuaw==',
+        output_format: 'jpeg'
+      }]
+    }),
+    sseEvent({
+      object: 'image.generation.result',
+      created: 1779551140,
+      model: 'gpt-image-2',
+      data: [{
+        b64_json: 'ZmluYWwtY29va3NsZWVw',
+        revised_prompt: 'rewritten',
+        output_format: 'jpeg'
+      }],
+      size: '1024x1536',
+      quality: 'medium',
+      output_format: 'jpeg'
+    })
+  ], { keepOpen: true }), {
+    onPartialImage: (partial) => cookSleepPartials.push(partial)
+  });
+  assert.strictEqual(cookSleepPartials.length, 1, 'image.generation.chunk with image data should be exposed as a preview');
+  assert.strictEqual(cookSleepResult.completionReason, 'result-object');
+  assert.strictEqual(cookSleepResult.data[0].b64_json, 'ZmluYWwtY29va3NsZWVw');
+  assert.strictEqual(cookSleepResult.data[0].mime_type, 'image/jpeg');
 
   const stringContainerResult = await runtime.consumeImageStream(streamResponse([
     sseEvent({

@@ -165,6 +165,8 @@ ok(typeof hooks.normalizeRestoredTask === 'function', 'normalizeRestoredTask hoo
 ok(typeof hooks.collectImageCandidates === 'function', 'collectImageCandidates hook missing');
 ok(typeof hooks.collectGenerationResult === 'function', 'collectGenerationResult hook missing');
 ok(typeof hooks.postProcessTransparentImages === 'function', 'postProcessTransparentImages hook missing');
+ok(typeof hooks.normalizeError === 'function', 'normalizeError hook missing');
+ok(typeof hooks.collectObjectsDeep === 'function', 'collectObjectsDeep hook missing');
 ok(typeof hooks.compactAgentThreadMessages === 'function', 'compactAgentThreadMessages hook missing');
 ok(typeof hooks.compactAgentMessagesByThreadForStorage === 'function', 'compactAgentMessagesByThreadForStorage hook missing');
 ok(typeof hooks.persistAgentHistorySnapshots === 'function', 'persistAgentHistorySnapshots hook missing');
@@ -469,6 +471,27 @@ ok(
     && stringImageCandidates.some((item) => item.image === 'object-image-value'),
   'image candidate collector should support string images in containers and image/base64 compatibility fields'
 );
+
+const cyclicErrorPayload = { error: {} };
+cyclicErrorPayload.error.self = cyclicErrorPayload;
+const normalizedCyclicError = hooks.normalizeError(cyclicErrorPayload, 'fallback');
+ok(normalizedCyclicError.summary === 'fallback', 'cyclic error payload should normalize without overflowing the call stack');
+ok(normalizedCyclicError.detail.includes('[circular]'), 'cyclic error detail should identify circular data safely');
+let deepErrorPayload = {};
+let deepErrorCursor = deepErrorPayload;
+for (let index = 0; index < 12000; index += 1) {
+  deepErrorCursor.next = {};
+  deepErrorCursor = deepErrorCursor.next;
+}
+deepErrorCursor.message = 'deep error';
+const normalizedDeepError = hooks.normalizeError(deepErrorPayload, 'fallback');
+ok(normalizedDeepError.summary === 'fallback', 'deep error payload should be bounded instead of recursively overflowing');
+const deepObject = hooks.collectObjectsDeep(deepErrorPayload, { maxDepth: 20, maxNodes: 128 });
+ok(deepObject.length <= 128, 'deep object collection should respect its node budget');
+const cyclicSummaryPayload = { response: {} };
+cyclicSummaryPayload.response.self = cyclicSummaryPayload;
+const cyclicSummary = hooks.summarizeResponse(cyclicSummaryPayload);
+ok(JSON.stringify(cyclicSummary).includes('[circular]'), 'response summary should render cyclic payloads safely');
 
 const largeImagePayload = 'a'.repeat(12000);
 const summarized = hooks.summarizeResponse({
@@ -1074,6 +1097,7 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(hooks.openAiTransparentBackgroundSupported({ provider: 'xai', model: 'grok-imagine-image-pro' }) === false, 'Xai/Grok profiles should not claim OpenAI transparent-background support');
   ok(hooks.outputCompressionFromQuality(100) === 0 && hooks.outputCompressionFromQuality(70) === 30, 'output quality 100 must map to minimum API compression and 70 to compression 30');
   ok(hooks.outputQualityFromCompression(0) === 100 && hooks.outputQualityFromCompression(30) === 70, 'API compression must map back to the matching user-facing output quality');
+  ok(hooks.outputQualityPercent(null, 90) === 90, 'empty persisted output quality should fall back to the default quality');
   ok(hooks.imageOutputParams({ format: 'webp', compression: 100 }, { provider: 'openai' }).output_compression === 0, 'WebP output quality 100 should send API compression 0');
   for (const quality of ['auto', 'low', 'medium', 'high']) {
     ok(hooks.imageOutputParams({ format: 'webp', quality }, { provider: 'openai' }).quality === quality, `OpenAI ${quality} quality should be preserved in image output params`);
@@ -1154,6 +1178,11 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(openAiEditForm.getAll('image').length === 0, 'OpenAI/gpt-image2 edits should not use the legacy image field by default');
   ok(openAiEditForm.get('negative_prompt') === '不要边框，不要裁切' && openAiEditForm.get('negativePrompt') === '不要边框，不要裁切', 'FormData edit request should include extracted negative prompt aliases');
   ok(openAiEditForm.get('response_format') === null || openAiEditForm.get('response_format') === 'b64_json', 'OpenAI/gpt-image2 edits should only include supported response_format values');
+  ok(openAiEditForm.get('n') === null, 'OpenAI/gpt-image2 edits should omit the default n=1 field');
+  const openAiEditFields = openAiEditForm.fields.map((item) => item[0]);
+  ok(openAiEditFields.slice(0, 6).join(',') === 'model,prompt,size,output_format,moderation,quality', 'OpenAI/gpt-image2 multipart fields should follow the CookSleep-compatible order');
+  const openAiCompressionIndex = openAiEditFields.indexOf('output_compression');
+  ok(openAiCompressionIndex < 0 || openAiCompressionIndex === 6, 'OpenAI/gpt-image2 compression should follow quality and precede response options');
 
   await hooks.sendGenerationRequest('xai portrait', {
     resolution: '2k',
@@ -1343,6 +1372,14 @@ if (typeof hooks.openAiSizePayload === 'function') {
   const fakeJpegInfo = await hooks.imageInfoFromBlob(new Blob([fakeJpegBytes], { type: 'image/png' }));
   ok(fakeJpegInfo.type === 'image/jpeg', 'imageInfoFromBlob should detect JPEG bytes even when the declared MIME type says PNG');
   ok(fakeJpegInfo.hasAlpha === undefined, 'JPEG byte payload should not be treated as transparent PNG');
+  const persistedJpeg = await hooks.persistResponseImages({
+    data: [{
+      b64_json: Buffer.from(fakeJpegBytes).toString('base64'),
+      output_format: 'jpeg'
+    }]
+  });
+  ok(persistedJpeg.length === 1 && fakeIndexedDbStore.get(persistedJpeg[0].blobId)?.type === 'image/jpeg',
+    'JPEG response format should persist as an image/jpeg Blob instead of defaulting to PNG');
 
   const localStorageWrites = [];
   sandbox.localStorage.setItem = (key, value) => localStorageWrites.push([key, value]);

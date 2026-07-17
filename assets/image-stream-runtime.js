@@ -13,6 +13,15 @@
     return values.find((value) => value !== undefined && value !== null && value !== '');
   }
 
+  function normalizeMimeType(value) {
+    const raw = String(value || '').trim().toLowerCase().split(';')[0];
+    if (raw === 'png' || raw === 'image/png') return 'image/png';
+    if (raw === 'jpg' || raw === 'jpeg' || raw === 'image/jpg' || raw === 'image/jpeg') return 'image/jpeg';
+    if (raw === 'webp' || raw === 'image/webp') return 'image/webp';
+    if (raw === 'gif' || raw === 'image/gif') return 'image/gif';
+    return /^image\/[a-z0-9.+-]+$/.test(raw) ? raw : '';
+  }
+
   function classifyImageResponse(contentType, prefix = '') {
     const type = String(contentType || '').toLowerCase();
     const head = String(prefix || '').slice(0, 8192);
@@ -89,6 +98,24 @@
       payload?.partial_image_index,
       payload?.partialImageIndex
     );
+    const outputFormat = firstValue(
+      object?.output_format,
+      object?.outputFormat,
+      object?.format,
+      payload?.output_format,
+      payload?.outputFormat,
+      payload?.format
+    );
+    const mimeType = normalizeMimeType(firstValue(
+      object?.mime_type,
+      object?.mimeType,
+      object?.content_type,
+      object?.contentType,
+      payload?.mime_type,
+      payload?.mimeType,
+      payload?.content_type,
+      payload?.contentType
+    )) || normalizeMimeType(outputFormat);
     return {
       b64_json: b64 ? String(b64).replace(/^data:image\/[^;]+;base64,/i, '') : undefined,
       data_url: dataUrl ? String(dataUrl) : undefined,
@@ -100,7 +127,8 @@
       receivedAt: Date.now(),
       quality: firstValue(object?.quality, payload?.quality),
       size: firstValue(object?.size, payload?.size),
-      output_format: firstValue(object?.output_format, payload?.output_format),
+      output_format: outputFormat,
+      mime_type: mimeType || undefined,
       revised_prompt: firstValue(object?.revised_prompt, payload?.revised_prompt)
     };
   }
@@ -222,13 +250,22 @@
 
     const acceptCandidates = (payload, candidates) => {
       const type = eventType(payload);
-      const isPartial = /partial_image$/.test(type);
+      const isPartial = /partial_image$/.test(type) || (type === 'image.generation.chunk' && candidates.length > 0);
       for (const candidate of candidates) {
         if (candidatesByOutput.size >= outputLimit && !candidatesByOutput.has(candidate.outputIndex)) continue;
         candidatesByOutput.set(candidate.outputIndex, candidate);
         if (isPartial) {
           partialCount += 1;
-          options.onPartialImage?.(candidate);
+          try {
+            options.onPartialImage?.(candidate);
+          } catch (error) {
+            throw createStreamError(
+              `流式预览回调失败：${error?.message || '未知错误'}`,
+              'IMAGE_STREAM_PARTIAL_CALLBACK_FAILED',
+              'partial-callback',
+              context()
+            );
+          }
         }
       }
     };
@@ -266,7 +303,7 @@
       if (resultObject && candidates.length) {
         terminalSuccess = true;
         completionReason = 'result-object';
-      } else if (/(?:image_edit|image_generation|response)\.(?:completed|done)$/.test(type) || status === 'completed' || status === 'succeeded') {
+      } else if (/(?:image[._](?:edit|generation)|response)\.(?:completed|done)$/.test(type) || status === 'completed' || status === 'succeeded') {
         terminalSuccess = true;
         completionReason = candidates.length ? 'completed-event' : candidatesByOutput.size ? 'last-partial-fallback' : 'completed-empty';
       }
