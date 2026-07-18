@@ -102,9 +102,15 @@ function contentType(file) {
   }[ext] || 'application/octet-stream';
 }
 function safeFile(urlPath) {
-  const cleanPath = decodeURIComponent(urlPath.split('?')[0]).replace(/^\/+/, '') || 'index.html';
+  let cleanPath = '';
+  try {
+    cleanPath = decodeURIComponent(String(urlPath || '').split('?')[0]).replace(/^\/+/, '') || 'index.html';
+  } catch {
+    return null;
+  }
   const target = path.resolve(root, cleanPath);
-  if (!target.startsWith(root)) return null;
+  const relative = path.relative(root, target);
+  if (relative.startsWith(`..${path.sep}`) || relative === '..' || path.isAbsolute(relative)) return null;
   return target;
 }
 function clone(value) {
@@ -276,7 +282,7 @@ function localRuntimeConfig(user) {
   return maskSecrets(config, '', 'cloudflare-proxy');
 }
 function clientIp(req) {
-  return String(req.headers['x-forwarded-for'] || req.headers['cf-connecting-ip'] || '').trim();
+  return String(req.headers['x-forwarded-for'] || req.headers['cf-connecting-ip'] || '').split(',')[0].trim() || 'unknown';
 }
 function userRecord(user) {
   return {

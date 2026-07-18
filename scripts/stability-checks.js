@@ -124,7 +124,7 @@ ok(promptRepoHtml.includes('hydratePromptItem') && promptRepoHtml.includes('load
 ok(homeJs.includes('prompt-categories') && homeJs.includes('prompt-category'), 'homepage prompt repo must expose category filtering');
 ok(homeJs.includes('compositionstart') && homeJs.includes('compositionend'), 'homepage prompt repo search must protect Chinese IME composition');
 ok(homeJs.includes('captureFocusState') && homeJs.includes('restoreFocusState') && homeJs.includes('promptRepoSearch'), 'prompt repo search must preserve focus across rerenders');
-ok(homeJs.includes('captureGalleryScrollState') && homeJs.includes('restoreGalleryScrollState') && homeJs.includes('const galleryScrollState = captureGalleryScrollState()'), 'gallery rerenders must preserve the inner gallery scroll position');
+ok(homeJs.includes('captureGalleryScrollState') && homeJs.includes('restoreGalleryScrollState') && (homeJs.includes('const galleryScrollState = captureGalleryScrollState(document, { positionOnly: galleryWasScrolling })') || homeJs.includes('const galleryScrollState = captureGalleryScrollState()')), 'gallery rerenders must preserve the inner gallery scroll position');
 ok(homeJs.includes('galleryVirtualWindow') && homeJs.includes('GALLERY_VIRTUAL_THRESHOLD') && homeCss.includes('.gallery-grid.is-virtual'), 'gallery must use virtualized card rendering for large histories');
 ok(homeJs.includes('referenceSnapshots') && homeJs.includes('open-task-reference-viewer') && homeJs.includes('taskReferenceOriginalBlobId') && homeCss.includes('.task-reference-badge') && homeCss.includes('.detail-reference-strip'), 'image-to-image tasks must persist and render reference thumbnails that open the original image');
 ok(homeJs.includes('maskBaseCanvas') && homeJs.includes('maskCanvasHasPaint') && homeJs.includes('composeReferenceWithMask') && homeCss.includes('.mask-cursor'), 'mask editor must use separate base/mask canvases with brush cursor and compositing');
@@ -168,6 +168,8 @@ ok(adminHtml.includes("timeout:parseInt(val('peTimeout'))") && adminHtml.include
 ok(loginHtml.includes("p.length<6") && loginHtml.includes("密码至少6个字符"), 'login registration UI must enforce the 6-character password policy');
 ok(adminHtml.includes("密码至少6个字符") && adminHtml.includes("body.password.length<6"), 'admin user editor must enforce the 6-character password policy');
 ok(localPreviewLauncher.includes("`$env:ALLOW_PUBLIC_REGISTRATION = 'true'"), 'local preview launcher must enable registration by default');
+ok(localPreviewServer.includes('path.relative(root, target)') && localPreviewServer.includes('path.isAbsolute(relative)'), 'local preview static file resolution must enforce real root containment');
+ok(localPreviewServer.includes("|| 'unknown'") && localPreviewServer.includes("split(',')[0]"), 'local preview client IP fallback must use a stable non-empty rate-limit key');
 ok(homeJs.includes('function normalizeImageQuality(') && homeJs.includes('nextSettings.quality = normalizeImageQuality(runtime.quality)'), 'homepage runtime quality must normalize legacy hd/standard values');
 ok(localPreviewServer.includes('quality: normalizeImageQuality(settings.quality)'), 'local runtime config must normalize legacy image quality values');
 ok(runtimeConfigFunction.includes('quality: normalizeImageQuality(settings.quality'), 'Pages runtime config must normalize legacy image quality values');

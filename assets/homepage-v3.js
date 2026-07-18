@@ -11,14 +11,17 @@ const BLOB_RESERVATION_PREFIX = `${BLOB_RESERVATION_KEY}.`;
 const BLOB_RESERVATION_TTL_MS = 90 * 1000;
 const PROMPT_PAGE_SIZE = 36;
 const PROMPT_VIRTUAL_THRESHOLD = 108;
-const PROMPT_VIRTUAL_BUFFER_ROWS = 3;
+const PROMPT_VIRTUAL_BUFFER_ROWS = 5;
 const PROMPT_REPO_CACHE_LIMIT = 24;
-const PROMPT_FAST_VERSION = 'home-v3-20260717-image-proxy-parity-r103';
+const PROMPT_FAST_VERSION = 'home-v3-20260718-scroll-smooth-r112';
 const PROMPT_FAST_BOOTSTRAP_URL = `/prompts_fast/bootstrap.json?v=${PROMPT_FAST_VERSION}`;
 const PROMPT_FAST_PREVIEWS_URL = `/prompts_fast/category_previews.json?v=${PROMPT_FAST_VERSION}`;
 const PROMPT_FAST_SEARCH_URL = `/prompts_fast/search_index.json?v=${PROMPT_FAST_VERSION}`;
-const GALLERY_VIRTUAL_BUFFER_ROWS = 4;
+const GALLERY_VIRTUAL_BUFFER_ROWS = 6;
 const GALLERY_VIRTUAL_THRESHOLD = 42;
+const GALLERY_VIRTUAL_WINDOW_STEP_ROWS = 8;
+const PROMPT_VIRTUAL_WINDOW_STEP_ROWS = 5;
+const VIRTUAL_SCROLL_IDLE_DELAY = 120;
 const IMAGE_OBJECT_URL_CACHE_LIMIT = 72;
 const REFERENCE_OBJECT_URL_CACHE_LIMIT = 48;
 const STREAM_IMAGE_LIMIT = 8;
@@ -185,6 +188,26 @@ let agentHistoryWriteTimer = 0;
 let agentHistoryPersistChain = Promise.resolve();
 let promptRepoResizeObserver = null;
 let galleryResizeObserver = null;
+let galleryScrollIdleTimer = 0;
+let promptRepoScrollIdleTimer = 0;
+let galleryVirtualRenderTimer = 0;
+let promptRepoVirtualRenderTimer = 0;
+let galleryVirtualRenderFrame = 0;
+let promptRepoVirtualRenderFrame = 0;
+let galleryVirtualRenderToken = 0;
+let promptRepoVirtualRenderToken = 0;
+let galleryVirtualHydratePending = false;
+let agentScrollIdleTimer = 0;
+let agentScrollCaptureFrame = 0;
+let agentScrollCaptureToken = 0;
+let agentScrollRestoreToken = 0;
+let galleryScrollRestoreToken = 0;
+let agentScrollActivity = false;
+let promptRepoScrollActivity = false;
+let promptRepoEdgeCheckFrame = 0;
+let promptRepoEdgeCheckToken = 0;
+let agentTaskCardSyncFrame = 0;
+const agentTaskCardSyncQueue = new Map();
 
 function makeAgentThread(projectId, overrides = {}) {
   const createdAt = overrides.createdAt || Date.now();
@@ -2555,14 +2578,19 @@ function extractResponseText(data, fallback = '') {
 function render() {
   const app = $('#app');
   if (!app) return;
+  const galleryWasScrolling = $('.gallery-scroll')?.classList?.contains('is-scrolling') === true;
+  const promptRepoWasScrolling = $('#promptList')?.classList?.contains('is-scrolling') === true;
+  cancelGalleryVirtualRender({ preserveActivity: galleryWasScrolling });
+  cancelPromptRepoVirtualRender({ preserveActivity: promptRepoWasScrolling });
   const previousModalKeys = visibleModalKeys();
   const nextModalKeys = stateModalKeys();
   const focusState = captureFocusState();
   const openingKey = nextModalKeys.find((key) => !previousModalKeys.includes(key));
   const closingKey = [...previousModalKeys].reverse().find((key) => !nextModalKeys.includes(key));
   if (openingKey && focusState) modalOpenerSnapshots.set(openingKey, focusState);
-  const galleryScrollState = captureGalleryScrollState();
-  captureAgentScrollState();
+  const galleryScrollState = captureGalleryScrollState(document, { positionOnly: galleryWasScrolling });
+  if (agentScrollActivity) captureAgentScrollState({ positionOnly: true });
+  else captureAgentScrollState();
   const workspaceMode = state.mode === 'agent' ? 'is-agent' : state.mode === 'pro' ? 'is-pro' : state.mode === 'workflow' ? 'is-workflow' : 'is-gallery';
   app.innerHTML = `
     <div class="workspace ${workspaceMode}">
@@ -2600,8 +2628,16 @@ function render() {
   } else {
     restoreFocusState(focusState);
   }
-  restoreGalleryScrollState(galleryScrollState);
+  restoreGalleryScrollState(galleryScrollState, document, { exact: galleryWasScrolling });
   restoreAgentScrollState();
+  if (galleryWasScrolling && state.mode === 'gallery' && $('.gallery-scroll')) {
+    setGalleryScrollActivity(true);
+    scheduleGalleryScrollRender();
+  }
+  if (promptRepoWasScrolling && state.promptRepo.open && $('#promptList')) {
+    setPromptRepoScrollActivity(true);
+    schedulePromptRepoScrollRender();
+  }
 }
 function nextRenderFrame(fn) {
   const raf = typeof requestAnimationFrame === 'function'
@@ -2610,6 +2646,25 @@ function nextRenderFrame(fn) {
       ? window.requestAnimationFrame.bind(window)
       : (callback) => setTimeout(callback, 0);
   raf(fn);
+}
+function requestRenderFrame(fn) {
+  if (typeof requestAnimationFrame === 'function') return requestAnimationFrame(fn);
+  if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+    return window.requestAnimationFrame(fn);
+  }
+  return setTimeout(() => fn(Date.now()), 16);
+}
+function cancelRenderFrame(frameId) {
+  if (!frameId) return;
+  if (typeof cancelAnimationFrame === 'function') {
+    cancelAnimationFrame(frameId);
+    return;
+  }
+  if (typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function') {
+    window.cancelAnimationFrame(frameId);
+    return;
+  }
+  clearTimeout(frameId);
 }
 function captureFocusState() {
   const active = document.activeElement;
@@ -2790,9 +2845,16 @@ function renderThemeToggleButton(className = '') {
   const mode = currentThemeMode();
   return `<button class="theme-toggle-button${className ? ` ${className}` : ''}" data-action="theme" data-theme-toggle-button="1" data-theme-mode="${esc(mode)}" title="${esc(themeButtonLabel(mode))}" aria-label="${esc(themeButtonLabel(mode))}"><span class="theme-toggle-icon" aria-hidden="true">${themeButtonIconHtml(mode)}</span></button>`;
 }
-function captureAgentScrollState() {
+function captureAgentScrollState(options = {}) {
   const log = $('.agent-log');
   if (!log) return;
+  if (options.positionOnly === true || agentScrollActivity) {
+    state.agentScrollState = {
+      ...(state.agentScrollState || {}),
+      scrollTop: Number(log.scrollTop) || 0
+    };
+    return;
+  }
   if (state.agentScrollLock?.anchor) {
     state.agentScrollState = {
       nearBottom: false,
@@ -2810,13 +2872,32 @@ function captureAgentScrollState() {
     anchor: captureAgentScrollAnchor(log)
   };
 }
+function scheduleAgentScrollStateCapture() {
+  clearTimeout(agentScrollIdleTimer);
+  cancelRenderFrame(agentScrollCaptureFrame);
+  agentScrollCaptureFrame = 0;
+  const token = ++agentScrollCaptureToken;
+  agentScrollIdleTimer = setTimeout(() => {
+    agentScrollIdleTimer = 0;
+      agentScrollCaptureFrame = requestRenderFrame(() => {
+        agentScrollCaptureFrame = 0;
+        if (token !== agentScrollCaptureToken) return;
+        agentScrollActivity = false;
+        captureAgentScrollState();
+      });
+  }, VIRTUAL_SCROLL_IDLE_DELAY);
+}
 function restoreAgentScrollState() {
   const log = $('.agent-log');
   if (!log) return;
   const snapshot = state.agentScrollState || { nearBottom: true, offsetFromBottom: 0 };
   const intent = state.agentScrollIntent || '';
+  const restoreToken = ++agentScrollRestoreToken;
+  const wasScrolling = agentScrollActivity;
   nextRenderFrame(() => {
-    if (intent === 'force-bottom' || snapshot.nearBottom) log.scrollTop = log.scrollHeight;
+    if (restoreToken !== agentScrollRestoreToken) return;
+    if (wasScrolling) log.scrollTop = Math.max(0, Number(snapshot.scrollTop) || 0);
+    else if (intent === 'force-bottom' || snapshot.nearBottom) log.scrollTop = log.scrollHeight;
     else if (!restoreAgentScrollAnchor(log, snapshot.anchor)) log.scrollTop = Math.max(0, log.scrollHeight - log.clientHeight - snapshot.offsetFromBottom);
     state.agentScrollIntent = '';
     if (state.agentScrollLock && !state.agentScrollLock.keep) state.agentScrollLock = null;
@@ -2889,9 +2970,15 @@ function restoreAgentScrollAnchor(log = $('.agent-log'), anchor = null) {
   log.scrollTop = Math.max(0, (Number(log.scrollTop) || 0) + delta);
   return true;
 }
-function captureGalleryScrollState(root = document) {
+function captureGalleryScrollState(root = document, options = {}) {
   const scroll = $('.gallery-scroll', root);
   if (!scroll) return null;
+  if (options.positionOnly === true) {
+    return {
+      scrollTop: Number(scroll.scrollTop) || 0,
+      scrollLeft: Number(scroll.scrollLeft) || 0
+    };
+  }
   return {
     scrollTop: Number(scroll.scrollTop) || 0,
     scrollLeft: Number(scroll.scrollLeft) || 0,
@@ -2901,11 +2988,18 @@ function captureGalleryScrollState(root = document) {
     clientWidth: Number(scroll.clientWidth) || 0
   };
 }
-function restoreGalleryScrollState(snapshot, root = document) {
+function restoreGalleryScrollState(snapshot, root = document, options = {}) {
   if (!snapshot) return;
+  const restoreToken = ++galleryScrollRestoreToken;
   nextRenderFrame(() => {
+    if (restoreToken !== galleryScrollRestoreToken) return;
     const scroll = $('.gallery-scroll', root);
     if (!scroll) return;
+    if (options.exact === true) {
+      scroll.scrollTop = Math.max(0, Number(snapshot.scrollTop) || 0);
+      scroll.scrollLeft = Math.max(0, Number(snapshot.scrollLeft) || 0);
+      return;
+    }
     const maxTop = Math.max(0, (Number(scroll.scrollHeight) || 0) - (Number(scroll.clientHeight) || 0));
     const maxLeft = Math.max(0, (Number(scroll.scrollWidth) || 0) - (Number(scroll.clientWidth) || 0));
     scroll.scrollTop = Math.min(Number(snapshot.scrollTop) || 0, maxTop);
@@ -3087,7 +3181,7 @@ function syncGalleryLayoutMetrics(options = {}) {
     gap: next.gap
   };
   if (changed && options.render !== false && scroll.dataset.virtual === '1') {
-    renderGalleryListOnly({ layoutChanged: true });
+    renderGalleryListOnly({ virtualScroll: true, layoutChanged: true, forceHydrate: true });
   }
   return changed;
 }
@@ -3109,9 +3203,10 @@ function galleryVirtualWindow(totalItems) {
   if (!shouldVirtualize) {
     return { ...metrics, shouldVirtualize, startIndex: 0, endIndex: totalItems, topPad: 0, bottomPad: 0, totalRows };
   }
-  const startRow = Math.max(0, Math.floor(scrollTop / pitch) - GALLERY_VIRTUAL_BUFFER_ROWS);
+  const bufferedRow = Math.max(0, Math.floor(scrollTop / pitch) - GALLERY_VIRTUAL_BUFFER_ROWS);
+  const startRow = Math.floor(bufferedRow / GALLERY_VIRTUAL_WINDOW_STEP_ROWS) * GALLERY_VIRTUAL_WINDOW_STEP_ROWS;
   const visibleRows = Math.ceil(viewportHeight / pitch) + GALLERY_VIRTUAL_BUFFER_ROWS * 2;
-  const endRow = Math.min(totalRows, startRow + visibleRows);
+  const endRow = Math.min(totalRows, startRow + visibleRows + GALLERY_VIRTUAL_WINDOW_STEP_ROWS);
   return {
     ...metrics,
     shouldVirtualize,
@@ -3125,6 +3220,30 @@ function galleryVirtualWindow(totalItems) {
 function galleryVirtualRangeChanged(windowState, virtualState = state.galleryVirtual) {
   return virtualState?.renderedStartIndex !== windowState.startIndex
     || virtualState?.renderedEndIndex !== windowState.endIndex;
+}
+function galleryVirtualWindowRefreshMode(totalItems = filteredTasks().length) {
+  const virtualState = state.galleryVirtual || {};
+  if (totalItems <= GALLERY_VIRTUAL_THRESHOLD) return { needed: false, immediate: false };
+  const metrics = galleryMetrics();
+  const pitch = Math.max(1, metrics.cardHeight + metrics.gap);
+  const columns = Math.max(1, metrics.columns);
+  const totalRows = Math.ceil(totalItems / columns);
+  const startRow = Math.max(0, Math.floor(Number(virtualState.renderedStartIndex || 0) / columns));
+  const endRow = Math.min(totalRows, Math.ceil(Number(virtualState.renderedEndIndex || 0) / columns));
+  const scrollTop = Math.max(0, Number(virtualState.scrollTop) || 0);
+  const viewportHeight = Math.max(320, Number(virtualState.viewportHeight) || 720);
+  const safetyRows = Math.max(2, Math.floor(GALLERY_VIRTUAL_BUFFER_ROWS / 2));
+  const outside = scrollTop < startRow * pitch
+    || scrollTop + viewportHeight > endRow * pitch;
+  const nearStart = startRow > 0 && scrollTop < (startRow + safetyRows) * pitch;
+  const nearEnd = endRow < totalRows && scrollTop + viewportHeight > Math.max(0, endRow - safetyRows) * pitch;
+  return { needed: outside || nearStart || nearEnd, immediate: outside };
+}
+function galleryVirtualWindowNeedsRefresh(totalItems = filteredTasks().length) {
+  return galleryVirtualWindowRefreshMode(totalItems).needed;
+}
+function galleryVirtualWindowNeedsImmediateRefresh(totalItems = filteredTasks().length) {
+  return galleryVirtualWindowRefreshMode(totalItems).immediate;
 }
 function renderWorkflowSidebar(project) {
   const workflows = currentProjectWorkflows(project?.id);
@@ -3204,16 +3323,28 @@ function updateBatchActionsDom() {
 function renderGalleryListOnly(options = {}) {
   const scroll = $('.gallery-scroll');
   if (!scroll) return render();
-  const galleryScrollState = captureGalleryScrollState();
+  const isScrolling = scroll.classList.contains('is-scrolling');
+  const galleryScrollState = isScrolling || options.virtualScroll
+    ? { scrollTop: Number(scroll.scrollTop) || 0, scrollLeft: Number(scroll.scrollLeft) || 0 }
+    : captureGalleryScrollState();
   state.galleryVirtual = {
     ...(state.galleryVirtual || {}),
-    scrollTop: galleryScrollState?.scrollTop || 0,
+    scrollTop: galleryScrollState?.scrollTop ?? state.galleryVirtual?.scrollTop ?? 0,
     viewportHeight: scroll.clientHeight || state.galleryVirtual?.viewportHeight || 720,
     viewportWidth: scroll.clientWidth || state.galleryVirtual?.viewportWidth || 0
   };
   const tasks = filteredTasks();
+  if (options.virtualScroll === true && isScrolling && !galleryVirtualWindowNeedsRefresh(tasks.length)) {
+    return false;
+  }
   const windowState = galleryVirtualWindow(tasks.length);
-  if (options.virtualScroll && !galleryVirtualRangeChanged(windowState)) return false;
+  const isVirtualUpdate = options.virtualScroll === true
+    || options.layoutChanged === true
+    || (scroll.dataset.virtual === '1' && windowState.shouldVirtualize);
+  if ((options.virtualScroll === true || options.layoutChanged === true) && !galleryVirtualRangeChanged(windowState)) {
+    if (options.forceHydrate) void hydrateImages({ galleryOnly: true });
+    return false;
+  }
   const visibleTasks = tasks.slice(windowState.startIndex, windowState.endIndex);
   state.galleryVirtual = {
     ...(state.galleryVirtual || {}),
@@ -3221,21 +3352,141 @@ function renderGalleryListOnly(options = {}) {
     renderedEndIndex: windowState.endIndex
   };
   scroll.dataset.virtual = windowState.shouldVirtualize ? '1' : '0';
-  if (galleryImageObserver) galleryImageObserver.disconnect();
-  scroll.innerHTML = tasks.length
-    ? `<div class="gallery-spacer" style="height:${esc(windowState.topPad)}px"></div><div class="gallery-grid ${windowState.shouldVirtualize ? 'is-virtual' : ''}" style="--gallery-card-height:${esc(windowState.cardHeight)}px">${visibleTasks.map(renderAssetCard).join('')}</div><div class="gallery-spacer" style="height:${esc(windowState.bottomPad)}px"></div>`
-    : `<div class="empty-state"><div><strong>没有匹配的任务</strong><span>换一个关键词，或清空搜索查看全部画廊资产。</span></div></div>`;
-  hydrateImages();
-  restoreGalleryScrollState(galleryScrollState);
+  const patched = windowState.shouldVirtualize
+    && isVirtualUpdate
+    ? patchGalleryVirtualDom(scroll, visibleTasks, windowState)
+    : false;
+  if (!patched) {
+    if (galleryImageObserver) galleryImageObserver.disconnect();
+    scroll.innerHTML = tasks.length
+      ? `<div class="gallery-spacer" style="height:${esc(windowState.topPad)}px"></div><div class="gallery-grid ${windowState.shouldVirtualize ? 'is-virtual' : ''}" style="--gallery-card-height:${esc(windowState.cardHeight)}px">${visibleTasks.map(renderAssetCard).join('')}</div><div class="gallery-spacer" style="height:${esc(windowState.bottomPad)}px"></div>`
+      : `<div class="empty-state"><div><strong>没有匹配的任务</strong><span>换一个关键词，或清空搜索查看全部画廊资产。</span></div></div>`;
+  }
+  void hydrateImages({
+    galleryOnly: true,
+    skipReferenceImages: (options.virtualScroll === true || options.layoutChanged === true || scroll.classList.contains('is-scrolling'))
+      && options.forceHydrate !== true
+  });
+  if (!isVirtualUpdate) {
+    restoreGalleryScrollState(galleryScrollState);
+  }
   return true;
 }
-function scheduleGalleryVirtualRender() {
-  if (state.galleryVirtual?.scheduled) return;
-  state.galleryVirtual = { ...(state.galleryVirtual || {}), scheduled: true };
-  nextRenderFrame(() => {
+function createElementFromHtml(html) {
+  if (typeof document === 'undefined') return null;
+  const template = document.createElement('template');
+  template.innerHTML = String(html || '').trim();
+  return template.content.firstElementChild;
+}
+function patchGalleryVirtualDom(scroll, visibleTasks, windowState) {
+  const grid = $('.gallery-grid', scroll);
+  const spacers = $$('.gallery-spacer', scroll);
+  if (!grid || spacers.length < 2) return false;
+  const currentCards = new Map($$('.asset-card', grid).map((card) => [String(card.dataset.taskId || ''), card]));
+  const desiredIds = new Set(visibleTasks.map((task) => String(task.id)));
+  for (const card of currentCards.values()) {
+    if (!desiredIds.has(String(card.dataset.taskId || ''))) {
+      $$('.asset-media img', card).forEach((img) => galleryImageObserver?.unobserve?.(img));
+      card.remove();
+    }
+  }
+  let desiredNodesIndex = 0;
+  for (const task of visibleTasks) {
+    const id = String(task.id);
+    let card = currentCards.get(id);
+    const signature = assetCardSignature(task);
+    if (card && card.dataset.cardSignature !== signature) {
+      const nextCard = createElementFromHtml(renderAssetCard(task));
+      if (nextCard) {
+        $$('.asset-media img', card).forEach((img) => galleryImageObserver?.unobserve?.(img));
+        card.replaceWith(nextCard);
+        card = nextCard;
+      }
+    }
+    if (!card) card = createElementFromHtml(renderAssetCard(task));
+    if (!card) continue;
+    card.classList.toggle('selected', state.selectedTaskIds.includes(task.id));
+    if (grid.children[desiredNodesIndex] !== card) {
+      grid.insertBefore(card, grid.children[desiredNodesIndex] || null);
+    }
+    desiredNodesIndex += 1;
+  }
+  spacers[0].style.height = `${windowState.topPad}px`;
+  spacers[1].style.height = `${windowState.bottomPad}px`;
+  grid.className = `gallery-grid ${windowState.shouldVirtualize ? 'is-virtual' : ''}`;
+  grid.style.setProperty('--gallery-card-height', `${windowState.cardHeight}px`);
+  return true;
+}
+function cancelGalleryVirtualRender(options = {}) {
+  const preserveActivity = options.preserveActivity === true;
+  galleryVirtualRenderToken += 1;
+  clearTimeout(galleryVirtualRenderTimer);
+  cancelRenderFrame(galleryVirtualRenderFrame);
+  clearTimeout(galleryScrollIdleTimer);
+  galleryVirtualRenderTimer = 0;
+  galleryVirtualRenderFrame = 0;
+  galleryScrollIdleTimer = 0;
+  if (!preserveActivity) galleryVirtualHydratePending = false;
+  const scroll = $('.gallery-scroll');
+  const stage = scroll?.closest?.('.gallery-stage');
+  if (!preserveActivity) {
+    scroll?.classList?.remove('is-scrolling');
+    stage?.classList?.remove('is-scrolling');
+  }
+  state.galleryVirtual = { ...(state.galleryVirtual || {}), scheduled: false };
+}
+function scheduleGalleryVirtualRender(options = {}) {
+  if (options.forceHydrate === true) galleryVirtualHydratePending = true;
+  const delay = Math.max(0, Number(options.delay) || 0);
+  if (state.galleryVirtual?.scheduled) {
+    if (delay > 0 || !galleryVirtualRenderTimer) return;
+    clearTimeout(galleryVirtualRenderTimer);
+    galleryVirtualRenderTimer = 0;
+    galleryVirtualRenderToken += 1;
     state.galleryVirtual = { ...(state.galleryVirtual || {}), scheduled: false };
-    renderGalleryListOnly({ virtualScroll: true });
-  });
+  }
+  state.galleryVirtual = { ...(state.galleryVirtual || {}), scheduled: true };
+  const token = ++galleryVirtualRenderToken;
+  const run = () => {
+    if (token !== galleryVirtualRenderToken) return;
+    galleryVirtualRenderTimer = 0;
+    galleryVirtualRenderFrame = 0;
+    state.galleryVirtual = { ...(state.galleryVirtual || {}), scheduled: false };
+    const forceHydrate = galleryVirtualHydratePending || options.forceHydrate === true;
+    galleryVirtualHydratePending = false;
+    renderGalleryListOnly({
+      virtualScroll: true,
+      forceHydrate
+    });
+  };
+  const enqueue = () => {
+    if (token !== galleryVirtualRenderToken) return;
+    galleryVirtualRenderFrame = requestRenderFrame(run);
+  };
+  if (delay > 0) {
+    galleryVirtualRenderTimer = setTimeout(() => {
+      galleryVirtualRenderTimer = 0;
+      enqueue();
+    }, delay);
+  } else {
+    enqueue();
+  }
+}
+function setGalleryScrollActivity(active) {
+  const scroll = $('.gallery-scroll');
+  const stage = scroll?.closest?.('.gallery-stage');
+  scroll?.classList?.toggle('is-scrolling', !!active);
+  stage?.classList?.toggle('is-scrolling', !!active);
+}
+function scheduleGalleryScrollRender() {
+  if (galleryVirtualWindowNeedsImmediateRefresh()) scheduleGalleryVirtualRender();
+  else if (galleryVirtualWindowNeedsRefresh()) scheduleGalleryVirtualRender({ delay: 48 });
+  clearTimeout(galleryScrollIdleTimer);
+  galleryScrollIdleTimer = setTimeout(() => {
+    galleryScrollIdleTimer = 0;
+    setGalleryScrollActivity(false);
+    scheduleGalleryVirtualRender({ forceHydrate: true });
+  }, VIRTUAL_SCROLL_IDLE_DELAY);
 }
 
 function renderProWorkbench() {
@@ -3426,7 +3677,7 @@ function renderAssetCard(task) {
     ? `<div class="asset-placeholder asset-failed"><strong>${task.status === 'interrupted' ? '已中断' : '生成失败'}</strong><span>${esc(taskErrorSummary(task))}</span><button data-action="retry-task" data-id="${esc(task.id)}">重试</button></div>`
     : `<div class="asset-placeholder"><div class="progress-ring"></div></div>`;
   return `
-    <article class="asset-card ${selected ? 'selected' : ''}" data-task-id="${esc(task.id)}">
+    <article class="asset-card ${selected ? 'selected' : ''}" data-task-id="${esc(task.id)}" data-card-signature="${esc(assetCardSignature(task))}">
       <button class="asset-check" title="选择" data-action="toggle-select" data-id="${esc(task.id)}"></button>
       <div class="asset-media" data-action="open-detail" data-id="${esc(task.id)}">
         ${image ? `<img data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="0" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(image.url || image.remoteUrl || '')}" alt="">` : streamPreviewHtml || placeholder}
@@ -3456,6 +3707,32 @@ function renderAssetCard(task) {
       </div>
     </article>
   `;
+}
+function assetCardSignature(task) {
+  const images = (task?.images || [])
+    .map((image) => `${image?.blobId || ''}:${image?.url || image?.remoteUrl || ''}`)
+    .join(',');
+  const preview = taskStreamPreviewRecord(task, 0);
+  const countInfo = taskCountInfo(task);
+  return [
+    task?.prompt || '',
+    task?.status || '',
+    task?.error || '',
+    task?.finishedAt || '',
+    task?.actualCount || '',
+    task?.expectedCount || '',
+    task?.failedCount || '',
+    task?.streamState || '',
+    task?.lastStreamEventType || '',
+    preview?.blobId || '',
+    preview?.url || '',
+    preview?.partialIndex || '',
+    images,
+    countInfo.label,
+    cardParamSummary(task).join('|'),
+    cardInsightSummary(task, countInfo).join('|'),
+    state.favorites[task?.id] ? 'favorite' : ''
+  ].join('|');
 }
 function taskErrorSummary(task) {
   const text = errorSummary(task.error || task.errorDetail || (task.status === 'interrupted' ? '刷新或离开页面导致任务中断。' : '上游没有返回可用结果。')).trim();
@@ -4400,6 +4677,32 @@ function renderAgentTaskCard(task) {
       <span class="agent-task-progress" aria-hidden="true"><i style="width:${esc(percent)}%"></i></span>
     </div>
   </button>`;
+}
+function syncAgentTaskCardDom(task) {
+  if (!task?.id) return false;
+  const selector = `.agent-task-card[data-id="${cssEscape(task.id)}"]`;
+  const cards = $$(selector);
+  if (!cards.length) return false;
+  for (const card of cards) {
+    const nextCard = createElementFromHtml(renderAgentTaskCard(task));
+    if (!nextCard) continue;
+    card.replaceWith(nextCard);
+    const image = nextCard.querySelector('img[data-blob-id]');
+    if (image) void hydrateBlobImage(image, image.dataset.blobId, image.dataset.remoteUrl);
+  }
+  return true;
+}
+function scheduleAgentTaskCardSync(task) {
+  if (!task?.id || !$$(`.agent-task-card[data-id="${cssEscape(task.id)}"]`).length) return false;
+  agentTaskCardSyncQueue.set(String(task.id), task);
+  if (agentTaskCardSyncFrame) return true;
+  agentTaskCardSyncFrame = requestRenderFrame(() => {
+    agentTaskCardSyncFrame = 0;
+    const pending = [...agentTaskCardSyncQueue.values()];
+    agentTaskCardSyncQueue.clear();
+    pending.forEach(syncAgentTaskCardDom);
+  });
+  return true;
 }
 
 function renderWorkflowEditorModal(workflow) {
@@ -5534,9 +5837,10 @@ function promptRepoVirtualWindow(totalItems) {
   const shouldVirtualize = totalItems > PROMPT_VIRTUAL_THRESHOLD;
   if (!shouldVirtualize) return { shouldVirtualize, startIndex: 0, endIndex: totalItems, topPad: 0, bottomPad: 0 };
   const totalRows = Math.ceil(totalItems / columns);
-  const startRow = Math.max(0, Math.floor(scrollTop / rowHeight) - PROMPT_VIRTUAL_BUFFER_ROWS);
+  const bufferedRow = Math.max(0, Math.floor(scrollTop / rowHeight) - PROMPT_VIRTUAL_BUFFER_ROWS);
+  const startRow = Math.floor(bufferedRow / PROMPT_VIRTUAL_WINDOW_STEP_ROWS) * PROMPT_VIRTUAL_WINDOW_STEP_ROWS;
   const visibleRows = Math.ceil(viewportHeight / rowHeight) + PROMPT_VIRTUAL_BUFFER_ROWS * 2;
-  const endRow = Math.min(totalRows, startRow + visibleRows);
+  const endRow = Math.min(totalRows, startRow + visibleRows + PROMPT_VIRTUAL_WINDOW_STEP_ROWS);
   return {
     shouldVirtualize,
     startIndex: startRow * columns,
@@ -5555,16 +5859,23 @@ function syncPromptRepoListOnly(options = {}) {
   const promptWindow = promptRepoVirtualWindow(state.promptRepo.items.length);
   if (options.virtualScroll && !promptRepoVirtualRangeChanged(promptWindow)) return false;
   const scrollTop = promptList.scrollTop;
+  if (options.virtualScroll && !promptRepoVirtualWindowNeedsRefresh(state.promptRepo.items.length)) return false;
   const focusedCardId = document.activeElement?.closest?.('.prompt-card')?.dataset?.id || '';
   const promptItems = state.promptRepo.items.slice(promptWindow.startIndex, promptWindow.endIndex);
   promptList.dataset.virtual = promptWindow.shouldVirtualize ? '1' : '0';
   promptList.classList.toggle('is-virtual', promptWindow.shouldVirtualize);
-  promptList.innerHTML = renderPromptRepoListContents(promptWindow, promptItems, {
-    isInitialLoading: !!state.promptRepo.loading && !state.promptRepo.items.length,
-    isAppending: !!state.promptRepo.loading && !!state.promptRepo.items.length,
-    loadingLabel: state.promptRepo.loadingLabel || (state.promptRepo.query ? '搜索提示词中...' : '加载提示词中...')
-  });
-  promptList.scrollTop = scrollTop;
+  const patched = options.virtualScroll
+    && promptWindow.shouldVirtualize
+    && !state.promptRepo.loading
+    && patchPromptRepoVirtualDom(promptList, promptWindow, promptItems);
+  if (!patched) {
+    promptList.innerHTML = renderPromptRepoListContents(promptWindow, promptItems, {
+      isInitialLoading: !!state.promptRepo.loading && !state.promptRepo.items.length,
+      isAppending: !!state.promptRepo.loading && !!state.promptRepo.items.length,
+      loadingLabel: state.promptRepo.loadingLabel || (state.promptRepo.query ? '搜索提示词中...' : '加载提示词中...')
+    });
+  }
+  if (promptList.scrollTop !== scrollTop) promptList.scrollTop = scrollTop;
   if (focusedCardId) {
     const restoredCard = promptList.querySelector(`.prompt-card[data-id="${cssEscape(focusedCardId)}"]`);
     if (restoredCard) {
@@ -5573,12 +5884,144 @@ function syncPromptRepoListOnly(options = {}) {
   }
   return true;
 }
-function schedulePromptRepoVirtualRender() {
-  if (state.promptRepo.virtualRenderScheduled) return;
+function patchPromptRepoVirtualDom(promptList, promptWindow, promptItems) {
+  const currentCards = new Map($$('.prompt-card', promptList).map((card) => [String(card.dataset.id || ''), card]));
+  const existingSpacers = $$('.prompt-spacer', promptList);
+  let topSpacer = promptList.querySelector('[data-prompt-spacer="top"]') || existingSpacers[0];
+  let bottomSpacer = promptList.querySelector('[data-prompt-spacer="bottom"]') || existingSpacers[existingSpacers.length - 1];
+  if (!topSpacer) topSpacer = createElementFromHtml('<div class="prompt-spacer" data-prompt-spacer="top"></div>');
+  if (!bottomSpacer || bottomSpacer === topSpacer) bottomSpacer = createElementFromHtml('<div class="prompt-spacer" data-prompt-spacer="bottom"></div>');
+  if (!topSpacer || !bottomSpacer) return false;
+  topSpacer.dataset.promptSpacer = 'top';
+  bottomSpacer.dataset.promptSpacer = 'bottom';
+  const desiredNodes = [];
+  const topHeight = Number(promptWindow.topPad) || 0;
+  const bottomHeight = Number(promptWindow.bottomPad) || 0;
+  topSpacer.style.height = `${topHeight}px`;
+  bottomSpacer.style.height = `${bottomHeight}px`;
+  topSpacer.style.display = topHeight > 0 ? '' : 'none';
+  bottomSpacer.style.display = bottomHeight > 0 ? '' : 'none';
+  desiredNodes.push(topSpacer);
+  for (const [index, item] of promptItems.entries()) {
+    const id = String(item.id || '');
+    let card = currentCards.get(id);
+    if (!card) card = createElementFromHtml(renderPromptCard(item, promptWindow.startIndex + index));
+    if (!card) continue;
+    card.dataset.index = String(promptWindow.startIndex + index);
+    desiredNodes.push(card);
+  }
+  desiredNodes.push(bottomSpacer);
+  const desiredSet = new Set(desiredNodes);
+  for (const child of [...promptList.children]) {
+    if (!desiredSet.has(child)) child.remove();
+  }
+  desiredNodes.forEach((node, index) => {
+    if (promptList.children[index] !== node) promptList.insertBefore(node, promptList.children[index] || null);
+  });
+  state.promptRepo.renderedStartIndex = promptWindow.startIndex;
+  state.promptRepo.renderedEndIndex = promptWindow.endIndex;
+  return true;
+}
+function promptRepoVirtualWindowRefreshMode(totalItems = state.promptRepo.items.length) {
+  const virtualState = state.promptRepo || {};
+  const layout = virtualState.virtualLayout;
+  if (totalItems <= PROMPT_VIRTUAL_THRESHOLD || !layout) return { needed: false, immediate: false };
+  const columns = Math.max(1, Number(layout.columns) || 1);
+  const rowPitch = Math.max(1, Number(layout.rowPitch) || 370);
+  const totalRows = Math.ceil(totalItems / columns);
+  const startRow = Math.max(0, Math.floor(Number(virtualState.renderedStartIndex || 0) / columns));
+  const endRow = Math.min(totalRows, Math.ceil(Number(virtualState.renderedEndIndex || 0) / columns));
+  const scrollTop = Math.max(0, Number(virtualState.scrollTop) || 0);
+  const viewportHeight = Math.max(320, Number(virtualState.viewportHeight) || 620);
+  const safetyRows = Math.max(2, Math.floor(PROMPT_VIRTUAL_BUFFER_ROWS / 2));
+  const outside = scrollTop < startRow * rowPitch
+    || scrollTop + viewportHeight > endRow * rowPitch;
+  const nearStart = startRow > 0 && scrollTop < (startRow + safetyRows) * rowPitch;
+  const nearEnd = endRow < totalRows && scrollTop + viewportHeight > Math.max(0, endRow - safetyRows) * rowPitch;
+  return { needed: outside || nearStart || nearEnd, immediate: outside };
+}
+function promptRepoVirtualWindowNeedsRefresh(totalItems = state.promptRepo.items.length) {
+  return promptRepoVirtualWindowRefreshMode(totalItems).needed;
+}
+function promptRepoVirtualWindowNeedsImmediateRefresh(totalItems = state.promptRepo.items.length) {
+  return promptRepoVirtualWindowRefreshMode(totalItems).immediate;
+}
+function cancelPromptRepoVirtualRender(options = {}) {
+  const preserveActivity = options.preserveActivity === true;
+  promptRepoVirtualRenderToken += 1;
+  promptRepoEdgeCheckToken += 1;
+  clearTimeout(promptRepoVirtualRenderTimer);
+  cancelRenderFrame(promptRepoVirtualRenderFrame);
+  cancelRenderFrame(promptRepoEdgeCheckFrame);
+  clearTimeout(promptRepoScrollIdleTimer);
+  promptRepoVirtualRenderTimer = 0;
+  promptRepoVirtualRenderFrame = 0;
+  promptRepoEdgeCheckFrame = 0;
+  promptRepoScrollIdleTimer = 0;
+  if (!preserveActivity) {
+    promptRepoScrollActivity = false;
+    $('#promptList')?.classList?.remove('is-scrolling');
+    $('#promptList')?.closest?.('.prompt-repo-layer')?.classList?.remove('is-scrolling');
+  }
+  state.promptRepo.virtualRenderScheduled = false;
+}
+function schedulePromptRepoVirtualRender(options = {}) {
+  const delay = Math.max(0, Number(options.delay) || 0);
+  if (state.promptRepo.virtualRenderScheduled) {
+    if (delay > 0 || !promptRepoVirtualRenderTimer) return;
+    clearTimeout(promptRepoVirtualRenderTimer);
+    promptRepoVirtualRenderTimer = 0;
+    promptRepoVirtualRenderToken += 1;
+    state.promptRepo.virtualRenderScheduled = false;
+  }
   state.promptRepo.virtualRenderScheduled = true;
-  nextRenderFrame(() => {
+  const token = ++promptRepoVirtualRenderToken;
+  const run = () => {
+    if (token !== promptRepoVirtualRenderToken) return;
+    promptRepoVirtualRenderTimer = 0;
+    promptRepoVirtualRenderFrame = 0;
     state.promptRepo.virtualRenderScheduled = false;
     syncPromptRepoListOnly({ virtualScroll: true });
+  };
+  const enqueue = () => {
+    if (token !== promptRepoVirtualRenderToken) return;
+    promptRepoVirtualRenderFrame = requestRenderFrame(run);
+  };
+  if (delay > 0) {
+    promptRepoVirtualRenderTimer = setTimeout(() => {
+      promptRepoVirtualRenderTimer = 0;
+      enqueue();
+    }, delay);
+  } else {
+    enqueue();
+  }
+}
+function setPromptRepoScrollActivity(active) {
+  promptRepoScrollActivity = !!active;
+  const list = $('#promptList');
+  const layer = list?.closest?.('.prompt-repo-layer');
+  list?.classList?.toggle('is-scrolling', !!active);
+  layer?.classList?.toggle('is-scrolling', !!active);
+}
+function schedulePromptRepoScrollRender() {
+  if (promptRepoVirtualWindowNeedsImmediateRefresh()) schedulePromptRepoVirtualRender();
+  else if (promptRepoVirtualWindowNeedsRefresh()) schedulePromptRepoVirtualRender({ delay: 48 });
+  clearTimeout(promptRepoScrollIdleTimer);
+  promptRepoScrollIdleTimer = setTimeout(() => {
+    promptRepoScrollIdleTimer = 0;
+    setPromptRepoScrollActivity(false);
+    schedulePromptRepoVirtualRender();
+  }, VIRTUAL_SCROLL_IDLE_DELAY);
+}
+function schedulePromptRepoEdgeCheck(promptList) {
+  if (!promptList || promptRepoEdgeCheckFrame) return;
+  const token = ++promptRepoEdgeCheckToken;
+  promptRepoEdgeCheckFrame = requestRenderFrame(() => {
+    promptRepoEdgeCheckFrame = 0;
+    if (token !== promptRepoEdgeCheckToken || !promptList.isConnected) return;
+    if (Date.now() < (state.promptRepo.scrollLockUntil || 0)) return;
+    const bottom = Number(promptList.scrollTop) + Number(promptList.clientHeight);
+    if (bottom > Number(promptList.scrollHeight) - 320) void loadPromptPage();
   });
 }
 function measurePromptRepoVirtualLayout(promptList = $('#promptList')) {
@@ -5832,13 +6275,17 @@ function bindTransientEvents() {
       if (state.imageContextMenu) {
         closeImageContextMenu();
       }
+      galleryScrollRestoreToken += 1;
       state.galleryVirtual = {
         ...(state.galleryVirtual || {}),
-        scrollTop: galleryScroll.scrollTop || 0,
-        viewportHeight: galleryScroll.clientHeight || 720,
-        viewportWidth: galleryScroll.clientWidth || state.galleryVirtual?.viewportWidth || 0
+        scrollTop: Number(galleryScroll.scrollTop) || 0
       };
-      if (galleryScroll.dataset.virtual === '1') scheduleGalleryVirtualRender();
+      if (galleryScroll.dataset.virtual === '1') {
+        setGalleryScrollActivity(true);
+        scheduleGalleryScrollRender();
+      } else {
+        setGalleryScrollActivity(false);
+      }
     }, { passive: true });
   }
   if (state.maskEditor) setupMaskCanvas();
@@ -5879,7 +6326,15 @@ function bindTransientEvents() {
     });
   }
   const agentLog = $('.agent-log');
-  if (agentLog) agentLog.addEventListener('scroll', captureAgentScrollState, { passive: true });
+  if (agentLog) {
+    agentLog.addEventListener('scroll', () => {
+      agentScrollActivity = true;
+      agentScrollRestoreToken += 1;
+      state.agentScrollIntent = '';
+      captureAgentScrollState({ positionOnly: true });
+      scheduleAgentScrollStateCapture();
+    }, { passive: true });
+  }
 }
 function bindPromptRepoTransientEvents() {
   const promptList = $('#promptList');
@@ -5912,9 +6367,9 @@ function bindPromptRepoTransientEvents() {
     promptList.addEventListener('scroll', () => {
       state.promptRepo.scrollTop = promptList.scrollTop;
       state.promptRepo.viewportHeight = promptList.clientHeight || state.promptRepo.viewportHeight || 620;
-      schedulePromptRepoVirtualRender();
-      if (Date.now() < (state.promptRepo.scrollLockUntil || 0)) return;
-      if (promptList.scrollTop + promptList.clientHeight > promptList.scrollHeight - 320) loadPromptPage();
+      setPromptRepoScrollActivity(true);
+      schedulePromptRepoScrollRender();
+      schedulePromptRepoEdgeCheck(promptList);
     }, { passive: true });
   }
   const promptCategories = $('#promptCategories');
@@ -7185,11 +7640,31 @@ function observeGalleryImage(img) {
   galleryImageObserver.observe(img);
   return true;
 }
-async function hydrateImages() {
+async function hydrateImages(options = {}) {
+  const galleryOnly = options.galleryOnly === true;
+  const skipReferenceImages = options.skipReferenceImages === true;
   for (const img of $$('img[data-blob-id]')) {
+    if (galleryOnly && !img.closest('.gallery-scroll')) continue;
     const blobId = img.dataset.blobId;
     if (observeGalleryImage(img)) continue;
     await hydrateBlobImage(img, blobId, img.dataset.remoteUrl);
+  }
+  if (galleryOnly && skipReferenceImages) return;
+  if (galleryOnly) {
+    for (const img of $$('img[data-task-ref-task-id]')) {
+      const task = state.tasks.find((item) => item.id === img.dataset.taskRefTaskId);
+      const refs = task ? taskReferenceSnapshots(task) : [];
+      const ref = refs[Number(img.dataset.taskRefIndex) || 0];
+      if (!ref) continue;
+      const displayBlobId = taskReferenceDisplayBlobId(ref);
+      const key = `taskref:${task.id}:${ref.id}:${displayBlobId}`;
+      if (!state.refUrls.has(key)) {
+        const blob = await getBlob(displayBlobId).catch(() => null);
+        if (blob) rememberObjectUrl(state.refUrls, key, URL.createObjectURL(blob), REFERENCE_OBJECT_URL_CACHE_LIMIT);
+      }
+      if (state.refUrls.has(key)) img.src = touchObjectUrl(state.refUrls, key);
+    }
+    return;
   }
   for (const img of $$('img[data-ref-id]')) {
     const ref = state.references.find((r) => r.id === img.dataset.refId);
@@ -7461,7 +7936,7 @@ async function generateImageTask(seedTask = null) {
         };
         if (outputIndex === 0) task.streamPreviewUrl = resolved.url;
         queueTaskStreamPartialPersist(task, candidate);
-        renderGalleryListOnly();
+        if (!scheduleAgentTaskCardSync(task) && state.mode !== 'agent') renderGalleryListOnly();
       },
       onPersistedImages: (batch, snapshot) => {
         task.images = snapshot.images;
@@ -7469,7 +7944,7 @@ async function generateImageTask(seedTask = null) {
         task.actualCount = snapshot.actualCount;
         task.failedCount = snapshot.failedCount;
         writeStore();
-        renderGalleryListOnly();
+        if (!scheduleAgentTaskCardSync(task) && state.mode !== 'agent') renderGalleryListOnly();
       }
     });
     const apiFinishedAt = Date.now();
@@ -7570,8 +8045,11 @@ async function generateImageTask(seedTask = null) {
     notifyTaskComplete(task);
   }
   writeStore();
-  if (preserveAgentScroll) renderPreservingAgentScroll();
-  else render();
+  if (preserveAgentScroll) {
+    if (!syncAgentTaskCardDom(task)) renderPreservingAgentScroll();
+  } else {
+    render();
+  }
   return task;
 }
 async function collectGenerationResult(prompt, params, options = {}) {
@@ -8651,6 +9129,8 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     measureGalleryMetrics,
     estimateGalleryCardHeight,
     galleryVirtualRangeChanged,
+    galleryVirtualWindowNeedsRefresh,
+    promptRepoVirtualWindowNeedsRefresh,
     renderGalleryListOnly,
     promptRepoVirtualWindow,
     measurePromptRepoVirtualLayout,

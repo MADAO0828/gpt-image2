@@ -944,8 +944,10 @@ button { cursor: pointer; }
   box-shadow: 0 9px 24px rgba(40, 55, 80, .09);
   transition: transform .2s var(--ease), box-shadow .2s var(--ease), border-color .2s var(--ease);
   contain: layout paint style;
+}
+.gallery-grid.is-virtual .asset-card {
   content-visibility: auto;
-  contain-intrinsic-size: 306px;
+  contain-intrinsic-size: var(--gallery-card-height, 306px);
 }
 :root[data-theme="dark"] .asset-card { background: rgba(255, 255, 255, .07); }
 .asset-card:hover {
@@ -5059,6 +5061,34 @@ button { cursor: pointer; }
   .workflow-card:hover {
     transform: none;
   }
+}
+
+/* Chrome 在虚拟列表滚动期间对阴影和滤镜重绘更敏感，空闲后恢复完整视觉效果。 */
+.gallery-stage.is-scrolling {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.gallery-stage.is-scrolling .asset-card,
+.gallery-stage.is-scrolling .asset-card:hover,
+.gallery-scroll.is-scrolling .asset-card,
+.gallery-scroll.is-scrolling .asset-card:hover {
+  transform: none;
+  box-shadow: none;
+  transition: none;
+}
+.gallery-stage.is-scrolling .asset-card .badge,
+.gallery-stage.is-scrolling .asset-card .stream-preview-badge,
+.gallery-scroll.is-scrolling .asset-card .badge,
+.gallery-scroll.is-scrolling .asset-card .stream-preview-badge {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.prompt-list.is-scrolling .prompt-card {
+  transition: none;
+}
+.prompt-repo-layer.is-scrolling {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 .prompt-detail-image-button {
