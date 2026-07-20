@@ -137,6 +137,7 @@ export async function onRequest(context) {
     || /^\/(?:\.git|\.wrangler|\.codegraph|\.codex|\.vscode|functions)(?:\/|$)/i.test(path)
     || /\.sql$/i.test(path)
     || /^\/(?:README\.md|wrangler\.(?:toml|jsonc?)|\.dev\.vars|\.env(?:\..*)?|\.tmp-[^/]+)$/i.test(path)
+    || path === '/api/settings'
   ) {
     return notFoundResponse();
   }
