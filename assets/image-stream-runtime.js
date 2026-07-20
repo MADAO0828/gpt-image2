@@ -32,11 +32,34 @@
   }
 
   function parseSseDataBlock(block) {
-    const dataLines = String(block || '')
+    return parseSseDataLines(block).join('\n').trim();
+  }
+
+  function parseSseDataLines(block) {
+    return String(block || '')
       .split(/\r?\n/)
       .filter((line) => /^\s*data\s*:/i.test(line))
-      .map((line) => line.replace(/^\s*data\s*:\s?/i, ''));
-    return dataLines.join('\n').trim();
+      .map((line) => line.replace(/^\s*data\s*:/i, '').replace(/^ /, ''));
+  }
+
+  function parseSseEventName(block) {
+    const line = String(block || '')
+      .split(/\r?\n/)
+      .find((item) => /^\s*event\s*:/i.test(item));
+    return line ? line.replace(/^\s*event\s*:/i, '').trim().slice(0, 160) : '';
+  }
+
+  function isImageTerminalEventType(type) {
+    return /^(?:image[._](?:edit|generation))\.(?:result|completed|done)$/i.test(String(type || ''))
+      || /^response\.(?:completed|done)$/i.test(String(type || ''));
+  }
+
+  function isImageResultEventType(type) {
+    return /^(?:image[._](?:edit|generation))\.result$/i.test(String(type || ''));
+  }
+
+  function isImagePartialEventType(type) {
+    return /^(?:image[._](?:edit|generation))\.(?:partial_image|chunk)$/i.test(String(type || ''));
   }
 
   function eventType(payload) {
@@ -71,6 +94,40 @@
     ));
   }
 
+  const IMAGE_CANDIDATE_KEY = /^(?:b64_json|b64json|base64|base64_image|base64image|image_base64|imagebase64|image_data|imagedata|image_bytes|imagebytes|image|images|data_url|dataurl|image_data_url|imagedataurl|url|image_url|imageurl|uri|src|href|download_url|downloadurl)$/i;
+
+  function isImageCandidateKey(value) {
+    return IMAGE_CANDIDATE_KEY.test(String(value || ''));
+  }
+
+  function mimeFromDataUrl(value) {
+    const match = String(value || '').match(/^data:(image\/[a-z0-9.+-]+)(?:;[^,]*)?,/i);
+    return normalizeMimeType(match?.[1]);
+  }
+
+  function mimeFromBase64(value) {
+    const raw = String(value || '').trim().replace(/^data:[^,]+,/i, '').replace(/\s+/g, '').replace(/-/g, '+').replace(/_/g, '/');
+    if (raw.length < 8 || !/^[A-Za-z0-9+/=]+$/.test(raw)) return '';
+    try {
+      const encoded = raw.slice(0, 64).padEnd(Math.ceil(raw.slice(0, 64).length / 4) * 4, '=');
+      const decoded = typeof atob === 'function' ? atob(encoded) : '';
+      const bytes = Uint8Array.from(decoded, (char) => char.charCodeAt(0));
+      if (bytes.length >= 4 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'image/png';
+      if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
+      if (bytes.length >= 12 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return 'image/webp';
+      if (bytes.length >= 6 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38 && (bytes[4] === 0x37 || bytes[4] === 0x39) && bytes[5] === 0x61) return 'image/gif';
+    } catch {
+      return '';
+    }
+    return '';
+  }
+
+  function isLikelyRawImageBase64(value) {
+    const raw = String(value || '').trim().replace(/\s+/g, '');
+    if (raw.length < 16 || raw.length % 4 !== 0 || !/^[A-Za-z0-9+/_=-]+$/.test(raw)) return false;
+    return raw.includes('=') || !!mimeFromBase64(raw);
+  }
+
   function candidateFromObject(payload, object, fallbackIndex = 0) {
     const rawImage = firstValue(object?.image, object?.image_data, object?.imageData, object?.image_bytes, object?.imageBytes);
     let b64 = firstValue(object?.b64_json, object?.b64Json, object?.base64, object?.base64_image, object?.base64Image, object?.image_base64, object?.imageBase64);
@@ -80,7 +137,7 @@
       if (/^data:image\//i.test(rawImage) || /^https?:\/\//i.test(rawImage)) {
         return candidateFromString(payload, rawImage, 'image', fallbackIndex);
       }
-      b64 = rawImage;
+      if (isLikelyRawImageBase64(rawImage)) b64 = rawImage;
     }
     if (!b64 && !dataUrl && !url) return null;
     const outputIndex = Number(firstValue(
@@ -112,7 +169,7 @@
       payload?.outputFormat,
       payload?.format
     );
-    const mimeType = normalizeMimeType(firstValue(
+    const explicitMimeType = normalizeMimeType(firstValue(
       object?.mime_type,
       object?.mimeType,
       object?.content_type,
@@ -121,7 +178,12 @@
       payload?.mimeType,
       payload?.content_type,
       payload?.contentType
-    )) || normalizeMimeType(outputFormat);
+    ));
+    const mimeType = explicitMimeType
+      || mimeFromDataUrl(dataUrl)
+      || mimeFromDataUrl(b64)
+      || mimeFromBase64(b64)
+      || normalizeMimeType(outputFormat);
     return {
       b64_json: b64 ? String(b64).replace(/^data:image\/[^;]+;base64,/i, '') : undefined,
       data_url: dataUrl ? String(dataUrl) : undefined,
@@ -145,26 +207,28 @@
     const normalizedKey = String(key || '').replace(/[-\s]/g, '_').toLowerCase();
     const dataUrl = /^data:image\//i.test(text);
     const url = /^https?:\/\//i.test(text);
-    const imageKey = /^(?:b64_json|b64json|base64|base64_image|base64image|image_base64|imagebase64|image_data|imagedata|image_bytes|imagebytes|image|images|data_url|dataurl|image_data_url|imagedataurl|url|image_url|imageurl|uri|src|href)$/.test(normalizedKey);
+    const imageKey = isImageCandidateKey(normalizedKey);
     const b64 = !dataUrl && !url && imageKey && /^[A-Za-z0-9+/_=-]{16,}$/.test(text) ? text : '';
     if (!dataUrl && !url && !b64) return null;
     return candidateFromObject(payload, dataUrl ? { data_url: text } : url ? { url: text } : { b64_json: text }, fallbackIndex);
   }
 
-  function collectEventCandidates(payload) {
+  function collectEventCandidates(payload, scanOptions = {}) {
     const candidates = [];
     const seen = new Set();
     const seenObjects = new Set();
     const stack = [{ value: payload, key: '', depth: 0 }];
+    const scanDepth = Math.max(1, Math.min(32, Number(scanOptions.scanDepth) || DEFAULT_SCAN_DEPTH));
+    const scanNodes = Math.max(100, Math.min(100000, Number(scanOptions.scanNodes) || DEFAULT_SCAN_NODES));
     let scannedNodes = 0;
     while (stack.length) {
       const entry = stack.pop();
       const value = entry?.value;
       const key = entry?.key || '';
       const depth = Number(entry?.depth) || 0;
-      if (value === null || value === undefined || depth > DEFAULT_SCAN_DEPTH) continue;
+      if (value === null || value === undefined || depth > scanDepth) continue;
       scannedNodes += 1;
-      if (scannedNodes > DEFAULT_SCAN_NODES) break;
+      if (scannedNodes > scanNodes) break;
       if (typeof value === 'string') {
         const candidate = candidateFromString(payload, value, key, candidates.length);
         if (candidate) {
@@ -197,7 +261,7 @@
       const entries = Object.entries(value);
       for (let index = entries.length - 1; index >= 0; index -= 1) {
         const [childKey, child] = entries[index];
-        if (candidate && /^(?:b64_json|b64json|base64|base64_image|base64image|image_base64|imagebase64|image_data|imagedata|image_bytes|imagebytes|image|images|data_url|dataurl|image_data_url|imagedataurl|url|image_url|imageurl|uri|src|href|download_url|downloadurl)$/i.test(childKey)) continue;
+        if (candidate && isImageCandidateKey(childKey)) continue;
         stack.push({ value: child, key: childKey, depth: depth + 1 });
       }
     }
@@ -250,16 +314,15 @@
       streamEvents: [...streamEvents],
       streamEventCount: eventCount,
       partialCount,
-      lastStreamEventType: streamEvents.at(-1)?.type || ''
+      lastStreamEventType: streamEvents.at(-1)?.type || '',
+      completionReason
     });
 
     const acceptCandidates = (payload, candidates) => {
       const type = eventType(payload);
-      const isTerminal = type === 'image.edit.result'
-        || type === 'image.generation.result'
-        || /(?:image[._](?:edit|generation)|response)\.(?:completed|done)$/.test(type)
+      const isTerminal = isImageTerminalEventType(type)
         || ['completed', 'succeeded'].includes(String(payload?.status || payload?.response?.status || '').toLowerCase());
-      const isPartial = !isTerminal && (/partial_image$/.test(type) || (type === 'image.generation.chunk' && candidates.length > 0));
+      const isPartial = !isTerminal && (isImagePartialEventType(type) && candidates.length > 0);
       for (const candidate of candidates) {
         const target = isTerminal ? terminalCandidatesByOutput : candidatesByOutput;
         if (target.size >= outputLimit && !target.has(candidate.outputIndex)) continue;
@@ -280,30 +343,9 @@
       }
     };
 
-    const handleBlock = (block) => {
-      const doneSignal = String(block || '').split(/\r?\n/).some((line) => /^\s*data:\s*\[DONE\]\s*$/i.test(line));
-      if (doneSignal) {
-        terminalSuccess = true;
-        completionReason = terminalCandidatesByOutput.size
-          ? 'done-after-result'
-          : candidatesByOutput.size
-            ? 'last-partial-fallback'
-            : 'done-empty';
-        return;
-      }
-      const data = parseSseDataBlock(block);
-      if (!data) return;
-      let payload;
-      try {
-        payload = JSON.parse(data);
-      } catch {
-        throw createStreamError('图片流包含无法解析的 SSE 数据', 'IMAGE_STREAM_INVALID_EVENT', 'stream-parse', {
-          detail: data.slice(0, 1000),
-          ...context()
-        });
-      }
+    const handlePayload = (payload) => {
       eventCount += 1;
-      const candidates = collectEventCandidates(payload);
+      const candidates = collectEventCandidates(payload, options);
       streamEvents.push(compactMetadata(payload, candidates.length));
       if (streamEvents.length > metadataLimit) streamEvents.shift();
       acceptCandidates(payload, candidates);
@@ -313,13 +355,53 @@
       }
       const type = eventType(payload);
       const status = String(payload?.status || payload?.response?.status || '').toLowerCase();
-      const resultObject = type === 'image.edit.result' || type === 'image.generation.result';
-      if (resultObject && candidates.length) {
+      const resultObject = isImageResultEventType(type);
+      if (resultObject) {
         terminalSuccess = true;
-        completionReason = 'result-object';
-      } else if (/(?:image[._](?:edit|generation)|response)\.(?:completed|done)$/.test(type) || status === 'completed' || status === 'succeeded') {
+        completionReason = candidates.length
+          ? 'result-object'
+          : candidatesByOutput.size
+            ? 'last-partial-fallback'
+            : 'result-empty';
+      } else if (isImageTerminalEventType(type) || status === 'completed' || status === 'succeeded') {
         terminalSuccess = true;
         completionReason = candidates.length ? 'completed-event' : candidatesByOutput.size ? 'last-partial-fallback' : 'completed-empty';
+      }
+    };
+
+    const handleBlock = (block) => {
+      const dataLines = parseSseDataLines(block);
+      const eventName = parseSseEventName(block);
+      const doneSignal = dataLines.some((line) => /^\s*\[DONE\]\s*$/i.test(line));
+      const jsonLines = dataLines.filter((line) => line.trim() && !/^\s*\[DONE\]\s*$/i.test(line));
+      if (jsonLines.length) {
+        const data = jsonLines.join('\n').trim();
+        let payload;
+        try {
+          payload = JSON.parse(data);
+        } catch {
+          throw createStreamError('图片流包含无法解析的 SSE 数据', 'IMAGE_STREAM_INVALID_EVENT', 'stream-parse', {
+            detail: data.slice(0, 1000),
+            ...context()
+          });
+        }
+        if (eventName && payload && typeof payload === 'object' && !Array.isArray(payload)) {
+          payload = {
+            ...payload,
+            ...(payload.upstream_event_type || payload.upstreamEventType || payload.type || payload.event
+              ? { upstream_event_type: payload.upstream_event_type || payload.upstreamEventType || eventName }
+              : { type: eventName })
+          };
+        }
+        handlePayload(payload);
+      }
+      if (doneSignal && !terminalSuccess) {
+        terminalSuccess = true;
+        completionReason = terminalCandidatesByOutput.size
+          ? 'done-after-result'
+          : candidatesByOutput.size
+            ? 'last-partial-fallback'
+            : 'done-empty';
       }
     };
 
@@ -366,8 +448,11 @@
       }
     } catch (error) {
       await reader.cancel?.().catch?.(() => {});
-      if (!error.partialCandidates) Object.assign(error, context());
-      throw error;
+      const normalizedError = error instanceof Error
+        ? error
+        : createStreamError(String(error || '图片流处理失败'), 'IMAGE_STREAM_FAILED', 'stream-transport');
+      Object.assign(normalizedError, context());
+      throw normalizedError;
     }
 
     const data = terminalCandidates().length ? terminalCandidates() : partialCandidates();

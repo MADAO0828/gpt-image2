@@ -24,6 +24,31 @@ function withSecurityHeaders(response) {
   return next;
 }
 
+function normalizeRequestPath(rawPath) {
+  const decoded = decodeURIComponent(String(rawPath || '')).replace(/\\/g, '/');
+  const segments = [];
+  for (const segment of decoded.split('/')) {
+    if (!segment || segment === '.') continue;
+    if (segment === '..') {
+      segments.pop();
+      continue;
+    }
+    segments.push(segment);
+  }
+  return '/' + segments.join('/');
+}
+
+function notFoundResponse() {
+  return withSecurityHeaders(new Response('Not found', {
+    status: 404,
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+      'X-Robots-Tag': 'noindex, nofollow'
+    }
+  }));
+}
+
 function wechatCompatPage(request) {
   const url = new URL(request.url);
   const target = url.origin + url.pathname;
@@ -101,20 +126,19 @@ function wechatCompatPage(request) {
 
 export async function onRequest(context) {
   const url = new URL(context.request.url);
-  const path = url.pathname.replace(/\/+$/, '') || '/';
+  let path;
+  try {
+    path = normalizeRequestPath(url.pathname).replace(/\/+$/, '') || '/';
+  } catch (error) {
+    return notFoundResponse();
+  }
   if (
     /^\/(?:scripts|tests|docs|migrations|\.tmp-[^/]+)(?:\/|$)/i.test(path)
+    || /^\/(?:\.git|\.wrangler|\.codegraph|\.codex|\.vscode|functions)(?:\/|$)/i.test(path)
     || /\.sql$/i.test(path)
     || /^\/(?:README\.md|wrangler\.(?:toml|jsonc?)|\.dev\.vars|\.env(?:\..*)?|\.tmp-[^/]+)$/i.test(path)
   ) {
-    return withSecurityHeaders(new Response('Not found', {
-      status: 404,
-      headers: {
-        'Content-Type': 'text/plain; charset=utf-8',
-        'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
-        'X-Robots-Tag': 'noindex, nofollow'
-      }
-    }));
+    return notFoundResponse();
   }
   if (path === '/user' || path === '/user.html') {
     return withSecurityHeaders(Response.redirect(`${url.origin}/admin`, 302));

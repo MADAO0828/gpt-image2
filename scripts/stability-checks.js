@@ -33,10 +33,11 @@ ok(homeJs.includes('crossedMobileBreakpoint') && homeJs.includes('(viewportWidth
 ok(homeJs.includes('focusedCardId') && homeJs.includes('restoredCard.focus({ preventScroll: true })'), 'prompt virtualization must restore focus when the focused card remains visible');
 ok(homeJs.includes('data-modal-key="gallery-viewer"') && homeJs.includes('aria-label="关闭大图"'), 'gallery viewer must participate in modal focus management');
 ok(homeJs.includes('class="image-context-menu" role="menu"') && !homeJs.includes('data-modal-key="image-context-menu"') && homeJs.includes('class="viewer-stage"'), 'image context menu must not enter the modal inert stack');
-ok(homeJs.includes("if (action === 'close-viewer') { state.viewer = null; state.imageContextMenu = null;"), 'closing the gallery viewer must also clear any open image context menu');
+ok(homeJs.includes("if (action === 'close-viewer') { closeImageContextMenu(); state.viewer = null;"), 'closing the gallery viewer must also clear any open image context menu');
 ok(homeCss.includes('.image-menu-layer') && homeCss.includes('pointer-events: none;') && homeCss.includes('.image-context-menu') && homeCss.includes('pointer-events: auto;'), 'image context menu overlay must not block viewer close and backdrop actions');
 ok(homeJs.includes("new ClipboardItem({ 'image/png': pngPromise })") && homeJs.includes('clipboardPngBlob(blob)'), 'image copy must preserve user activation with a promised PNG clipboard payload');
 ok(homeJs.includes('async function detectImageBlobType(blob)') && homeJs.includes('const detectedType = await detectImageBlobType(blob);'), 'image copy must sniff actual image bytes before trusting a stored MIME type');
+ok(homeJs.includes('if (options?.confirm !== true) return { deleted: 0, skipped: true') && !/async function init\([\s\S]*?cleanupOrphanBlobs\s*\(/.test(homeJs), 'orphan Blob cleanup must require explicit confirmation and never run during homepage startup');
 ok(homeJs.includes('async function prepareImageContextMenuCopy(menu)') && homeJs.includes("new ClipboardItem({ 'image/png': preparedBlob })"), 'image context menu must provide Firefox with a resolved PNG Blob instead of only a promised ClipboardItem payload');
 ok(homeJs.includes("if (event.target.closest?.('.image-context-menu')) return;") && homeJs.includes("state.imageContextMenu ? $('.image-context-menu') : topVisibleModal()"), 'image context menu must have an independent keyboard focus scope without locking the viewer');
 ok(homeJs.includes('id="imageMenuMount"') && homeJs.includes('function syncImageContextMenu()') && homeJs.includes("state.imageContextMenu = { ...menu, copyRequestId: uid('copy'), copyState: 'loading' };") && homeJs.includes('prepareImageContextMenuCopy(state.imageContextMenu);'), 'opening the image context menu must update only its dedicated mount and preload the clipboard image');
@@ -192,7 +193,9 @@ const proRender = fs.readFileSync(path.join(root, 'functions', 'api', 'pro-workb
 ok(proAnalyze.includes('multipart/form-data') && proAnalyze.includes('formData()') && proAnalyze.includes('input_image') && proAnalyze.includes('base[]') && proAnalyze.includes('ref[]'), 'professional analyze API must accept multipart images and forward them as visual input');
 ok(proAnalyze.includes('未完成视觉读图') && proAnalyze.includes('fallbackAnalysis'), 'professional analyze fallback must not pretend it read images');
 ok(proRender.includes("form.get('profileId')") && proRender.includes('selectedProfile(settings, String(form.get'), 'professional render must honor the selected Composer image profile');
-ok(proRender.includes("fetch(safeUpstreamEndpoint(baseUrl, upstreamPath)") && proRender.includes("upstreamPath = files.length ? 'images/edits' : 'images/generations'"), 'professional render must pass Google reference image tasks through the configured compatible gateway');
+const usesSafeRenderGateway = proRender.includes('fetchPinnedUpstream(')
+  || proRender.includes("fetch(safeUpstreamEndpoint(baseUrl, upstreamPath)");
+ok(usesSafeRenderGateway && proRender.includes("upstreamPath = files.length ? 'images/edits' : 'images/generations'"), 'professional render must pass Google reference image tasks through the configured compatible gateway');
 ok(proRender.includes("redirect: 'manual'") && proAnalyze.includes("safeUpstreamEndpoint(baseUrl, 'responses')"), 'professional workbench upstream requests must use safe endpoints and block automatic redirects');
 ok(!/renderGoogleWithReferences|:generateContent|inlineData|generativelanguage\.googleapis\.com/.test(proRender), 'professional render must not route Google reference image tasks through native Gemini generateContent');
 

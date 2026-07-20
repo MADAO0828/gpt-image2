@@ -1,5 +1,6 @@
 const assert = require('assert');
 const fs = require('fs');
+const vm = require('vm');
 const path = require('path');
 
 const root = path.resolve(__dirname, '..');
@@ -8,6 +9,7 @@ const homepagePath = path.join(root, 'assets', 'homepage-v3.js');
 
 const runtime = require(runtimePath);
 const homepageSource = fs.readFileSync(homepagePath, 'utf8');
+const proxySource = fs.readFileSync(path.join(root, 'functions', 'api-proxy', '[[path]].js'), 'utf8');
 
 assert.strictEqual(runtime.defaultEditImageField('openai'), 'image[]');
 assert.strictEqual(runtime.defaultEditImageField('google'), 'image[]');
@@ -39,5 +41,54 @@ assert(
   /shouldRetryEditImageField/.test(homepageSource),
   'reference image requests must guard compatibility retries'
 );
+assert(
+  /async function inspectMultipartModel/.test(proxySource) && /const \[probeBody, replayBody\] = body\.tee\(\)/.test(proxySource),
+  'OpenAI multipart model validation should tee a bounded probe instead of cloning the full request'
+);
+assert(
+  !/const input = await request\.clone\(\)\.formData\(\);\s*const requestedModel/.test(proxySource),
+  'OpenAI multipart validation must not eagerly parse a full cloned request body'
+);
+assert.strictEqual(
+  (proxySource.match(/sniffImageBody\(responseBody/g) || []).length,
+  1,
+  'the proxy response path should perform at most one first-chunk probe'
+);
+assert(
+  /streamBodyWithTimeout\(responseBody, controller, clearProxyTimeout, IMAGE_RESPONSE_LIMIT(?:, resetProxyTimeout)?\)/.test(proxySource),
+  'raw image responses must retain the bounded proxy stream wrapper'
+);
+assert(
+  /X-GPT-Image-Proxy-Probed/.test(proxySource) && /proxyProbed && responseMode === 'undetermined'/.test(homepageSource),
+  'the frontend must trust the proxy probe marker and avoid a second first-chunk probe'
+);
+assert(
+  /function isPotentialSsePrefix\(value\)/.test(proxySource)
+    && /stopAfterFirstChunk && !isPotentialSsePrefix\(prefix\)/.test(proxySource),
+  'the proxy must continue probing incomplete SSE field prefixes across chunks'
+);
+const proxyProbeContext = {
+  TextDecoder,
+  Uint8Array,
+  ArrayBuffer,
+  ReadableStream,
+  Headers,
+  Request,
+  Response,
+  URL,
+  URLSearchParams,
+  FormData,
+  TextEncoder,
+  setTimeout,
+  clearTimeout
+};
+proxyProbeContext.globalThis = proxyProbeContext;
+vm.runInNewContext(
+  `${proxySource.replace(/^import[^\n]*\r?\n/gm, '').replace(/^export\s+/gm, '')}\nthis.__isPotentialSsePrefix = isPotentialSsePrefix;`,
+  proxyProbeContext
+);
+assert.strictEqual(proxyProbeContext.__isPotentialSsePrefix('d'), true, 'a split data field must remain probeable');
+assert.strictEqual(proxyProbeContext.__isPotentialSsePrefix('ev'), true, 'a split event field must remain probeable');
+assert.strictEqual(proxyProbeContext.__isPotentialSsePrefix('ordinary text'), false, 'ordinary text must not keep the probe open indefinitely');
 
 console.log('[image-edit-request-regression] multipart compatibility rules passed');

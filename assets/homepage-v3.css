@@ -901,6 +901,10 @@ button { cursor: pointer; }
   overflow: auto;
   padding: 8px;
   scrollbar-width: thin;
+  contain: layout paint;
+  overscroll-behavior: contain;
+  overflow-anchor: none;
+  scroll-behavior: auto;
 }
 .gallery-grid {
   display: grid;
@@ -944,10 +948,6 @@ button { cursor: pointer; }
   box-shadow: 0 9px 24px rgba(40, 55, 80, .09);
   transition: transform .2s var(--ease), box-shadow .2s var(--ease), border-color .2s var(--ease);
   contain: layout paint style;
-}
-.gallery-grid.is-virtual .asset-card {
-  content-visibility: auto;
-  contain-intrinsic-size: var(--gallery-card-height, 306px);
 }
 :root[data-theme="dark"] .asset-card { background: rgba(255, 255, 255, .07); }
 .asset-card:hover {
@@ -1030,6 +1030,32 @@ button { cursor: pointer; }
   background: linear-gradient(145deg, #f04452, #c0182d);
   font-size: 11px;
   font-weight: 820;
+}
+.asset-media img[data-image-missing="1"],
+.detail-media-stage img[data-image-missing="1"],
+.viewer-stage img[data-image-missing="1"],
+.agent-task-preview img[data-image-missing="1"] { display: none; }
+.asset-media:has(img[data-image-missing="1"])::after,
+.detail-media-stage:has(img[data-image-missing="1"])::after,
+.viewer-stage:has(img[data-image-missing="1"])::after,
+.agent-task-preview:has(img[data-image-missing="1"])::after {
+  content: '本地图片缓存已丢失，请重新生成';
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  color: var(--muted);
+  text-align: center;
+  font-size: 12px;
+  font-weight: 760;
+  pointer-events: none;
+}
+.asset-media:has(img[data-image-missing-reason="load"])::after,
+.detail-media-stage:has(img[data-image-missing-reason="load"])::after,
+.viewer-stage:has(img[data-image-missing-reason="load"])::after,
+.agent-task-preview:has(img[data-image-missing-reason="load"])::after {
+  content: '图片加载失败，请重试或重新生成';
 }
 .asset-failed { background: rgba(240, 68, 82, .08); }
 .progress-ring {
@@ -1944,6 +1970,8 @@ button { cursor: pointer; }
   max-width: 100%;
   overflow: auto;
   overflow-x: hidden;
+  overscroll-behavior: contain;
+  scroll-behavior: auto;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -2458,6 +2486,8 @@ button { cursor: pointer; }
 :root[data-theme="dark"] .agent-message.user .agent-message-head,
 .agent-message.user .agent-message-menu-button { color: rgba(255,255,255,.84); }
 .workflow-stage-scroll {
+  overscroll-behavior: contain;
+  scroll-behavior: auto;
   padding-right: 4px;
 }
 .workflow-editor,
@@ -2941,6 +2971,8 @@ button { cursor: pointer; }
 .workflow-manager-scroll {
   min-height: 0;
   overflow: auto;
+  overscroll-behavior: contain;
+  scroll-behavior: auto;
   display: grid;
   gap: 12px;
   padding-right: 4px;
@@ -3260,6 +3292,7 @@ button { cursor: pointer; }
   font-size: 21px;
   line-height: 1;
 }
+.viewer-close { z-index: 3; }
 .detail-section-label {
   margin: 10px 0 6px;
   color: var(--subtle);
@@ -3498,6 +3531,9 @@ button { cursor: pointer; }
 .prompt-list {
   overflow: auto;
   padding: 12px;
+  overscroll-behavior: contain;
+  overflow-anchor: none;
+  scroll-behavior: auto;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
@@ -4512,7 +4548,7 @@ button { cursor: pointer; }
 }
 .image-context-menu {
   position: fixed;
-  z-index: 1;
+  z-index: 1001;
   width: 168px;
   padding: 8px;
   border: 1px solid rgba(255,255,255,.72);
@@ -5044,6 +5080,14 @@ button { cursor: pointer; }
 }
 
 @media (hover: none), (pointer: coarse) {
+  .gallery-scroll,
+  .agent-log,
+  .workflow-stage-scroll,
+  .workflow-manager-scroll,
+  .prompt-list {
+    -webkit-overflow-scrolling: touch;
+  }
+
   .asset-card,
   .workflow-card,
   .composer-param-zone,
@@ -5064,31 +5108,94 @@ button { cursor: pointer; }
 }
 
 /* Chrome 在虚拟列表滚动期间对阴影和滤镜重绘更敏感，空闲后恢复完整视觉效果。 */
-.gallery-stage.is-scrolling {
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-}
-.gallery-stage.is-scrolling .asset-card,
-.gallery-stage.is-scrolling .asset-card:hover,
-.gallery-scroll.is-scrolling .asset-card,
-.gallery-scroll.is-scrolling .asset-card:hover {
+.gallery-scroll.is-scrolling > .gallery-grid > .asset-card,
+.gallery-scroll.is-scrolling > .gallery-grid > .asset-card:hover {
   transform: none;
   box-shadow: none;
   transition: none;
 }
-.gallery-stage.is-scrolling .asset-card .badge,
-.gallery-stage.is-scrolling .asset-card .stream-preview-badge,
-.gallery-scroll.is-scrolling .asset-card .badge,
-.gallery-scroll.is-scrolling .asset-card .stream-preview-badge {
+.gallery-scroll.is-scrolling > .gallery-grid > .asset-card .badge,
+.gallery-scroll.is-scrolling > .gallery-grid > .asset-card .stream-preview-badge {
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
-.prompt-list.is-scrolling .prompt-card {
+.gallery-scroll,
+.agent-log,
+.workflow-stage-scroll,
+.workflow-manager-scroll,
+.prompt-list {
+  contain: layout paint;
+}
+.gallery-scroll.is-scrolling > .gallery-grid > .asset-card .asset-actions.icon-only,
+.gallery-scroll.is-scrolling > .gallery-grid > .asset-card .asset-check,
+.gallery-scroll.is-scrolling > .gallery-grid > .asset-card .task-reference-badge {
+  box-shadow: none;
+}
+.gallery-scroll.is-scrolling > .gallery-grid > .asset-card .asset-icon-action {
+  transform: none;
+  box-shadow: none;
   transition: none;
 }
-.prompt-repo-layer.is-scrolling {
-  backdrop-filter: none;
+.gallery-scroll.is-scrolling > .gallery-grid > .asset-card .asset-icon-action span,
+.gallery-scroll.is-scrolling > .gallery-grid > .asset-card .asset-icon-action svg {
+  filter: none;
+}
+.gallery-scroll.is-scrolling > .gallery-grid > .asset-card .progress-ring {
+  animation-play-state: paused;
+}
+.gallery-scroll.is-scrolling > .gallery-grid > .asset-card {
+  transition: none;
+  animation-play-state: paused;
+}
+.agent-log.is-scrolling .agent-task-card,
+.agent-log.is-scrolling .agent-task-card:hover {
+  transform: none;
+  box-shadow: none;
+  transition: none;
+}
+.agent-log.is-scrolling .agent-task-card .stream-preview-badge,
+.agent-log.is-scrolling .agent-task-card .badge {
   -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.workflow-manager-scroll.is-scrolling > .workflow-card-grid > .workflow-card,
+.workflow-manager-scroll.is-scrolling > .workflow-card-grid > .workflow-card:hover,
+.prompt-list.is-scrolling > .prompt-card {
+  transition: none;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  animation: none;
+  transform: none;
+}
+.prompt-list.is-scrolling > .prompt-card .prompt-skeleton-media::after,
+.prompt-list.is-scrolling > .prompt-card .prompt-skeleton-line::after {
+  animation-play-state: paused;
+}
+/* 主滚动区不依赖背景模糊，避免 Chromium 在滚动合成时重复重绘整块工作区。 */
+.gallery-stage,
+.agent-stage,
+.workflow-workspace,
+.prompt-repo-layer {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* 桌面端滚动保持布局隔离，避免 Chromium 因 paint containment 退回主线程滚动。 */
+@media (hover: hover), (pointer: fine) {
+  .gallery-scroll,
+  .agent-log,
+  .workflow-stage-scroll,
+  .workflow-manager-scroll,
+  .prompt-list {
+    contain: layout;
+  }
+
+  .gallery-grid:not(.is-virtual) > .asset-card,
+  .workflow-manager-scroll .workflow-card,
+  .prompt-list:not(.is-virtual) > .prompt-card {
+    contain: layout style;
+  }
 }
 
 .prompt-detail-image-button {

@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,12 +38,31 @@ const d1File = fs.readdirSync(d1Dir).find((name) => /^(?!metadata).*\.sqlite$/i.
 if (!d1File) throw new Error(`No local D1 sqlite file found in ${d1Dir}`);
 const db = new DatabaseSync(path.join(d1Dir, d1File));
 const sessions = new Map();
+const LOCAL_SESSION_TTL_MS = 86400000;
+const LOCAL_SESSION_MAX = 2048;
+const MAX_SETTINGS_BODY_BYTES = 512 * 1024;
+const MAX_SETTINGS_KEYS = 64;
+const MAX_SETTING_KEY_LENGTH = 96;
+const MAX_SETTING_VALUE_BYTES = 128 * 1024;
+const SETTING_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_.-]{0,95}$/;
 const pageRoutes = new Map([
   ['/', 'index.html'],
   ['/login', 'login.html'],
   ['/admin', 'admin.html'],
   ['/prompts', 'prompts.html']
 ]);
+const publicStaticFiles = new Set([
+  'admin.html',
+  'index.html',
+  'login.html',
+  'manifest.webmanifest',
+  'prompts.html',
+  'prompts_categories.json',
+  'prompts_data.json',
+  'pwa-icon.svg',
+  'sw.js'
+]);
+const publicStaticDirectories = new Set(['assets', 'prompts_fast', 'prompts_pages']);
 
 function send(res, status, body, headers = {}) {
   const buffer = Buffer.isBuffer(body) ? body : Buffer.from(String(body || ''));
@@ -58,26 +78,49 @@ function readBodyBuffer(req) {
 async function readBody(req) {
   return (await readBodyBuffer(req)).toString('utf8');
 }
+async function readSettingsBody(req) {
+  try {
+    return (await readRequestBody(req, MAX_SETTINGS_BODY_BYTES)).toString('utf8');
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) throw new Error('Settings request body is too large');
+    throw error;
+  }
+}
 function parseCookies(req) {
   const out = {};
   String(req.headers.cookie || '').split(';').forEach((part) => {
     const index = part.indexOf('=');
-    if (index > -1) out[part.slice(0, index).trim()] = decodeURIComponent(part.slice(index + 1).trim());
+    if (index > -1) {
+      try {
+        out[part.slice(0, index).trim()] = decodeURIComponent(part.slice(index + 1).trim());
+      } catch {
+        out[part.slice(0, index).trim()] = '';
+      }
+    }
   });
   return out;
 }
 function tokenFor(user) {
-  const token = `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  while (sessions.size >= LOCAL_SESSION_MAX) sessions.delete(sessions.keys().next().value);
+  const token = `local-${randomBytes(32).toString('base64url')}`;
   sessions.set(token, {
     id: user.id,
-    sessionVersion: Number(user.session_version || 1)
+    sessionVersion: Number(user.session_version || 1),
+    expiresAt: Date.now() + LOCAL_SESSION_TTL_MS
   });
   return token;
 }
 function currentUser(req) {
-  const token = req.headers['x-gpt-image-session'] || parseCookies(req).session;
+  const cookieToken = parseCookies(req).session;
+  const allowHeader = String(process.env.ALLOW_SESSION_HEADER_AUTH || '').toLowerCase() === 'true';
+  const headerToken = String(req.headers['x-gpt-image-session'] || '').trim();
+  const token = cookieToken || (allowHeader ? headerToken : '');
   const session = sessions.get(String(token || '')) || null;
   if (!session) return null;
+  if (session.expiresAt && session.expiresAt <= Date.now()) {
+    sessions.delete(String(token || ''));
+    return null;
+  }
   const user = loadUserById(session.id);
   if (!user || Number(user.session_version || 1) !== session.sessionVersion) {
     sessions.delete(String(token || ''));
@@ -112,6 +155,14 @@ function safeFile(urlPath) {
   const relative = path.relative(root, target);
   if (relative.startsWith(`..${path.sep}`) || relative === '..' || path.isAbsolute(relative)) return null;
   return target;
+}
+function publicStaticFile(urlPath) {
+  const target = safeFile(urlPath);
+  if (!target) return null;
+  const relative = path.relative(root, target).split(path.sep).join('/');
+  if (publicStaticFiles.has(relative)) return target;
+  const [directory] = relative.split('/');
+  return publicStaticDirectories.has(directory) ? target : null;
 }
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -205,7 +256,8 @@ function sanitizeIncomingSetting(item, existingSettings) {
   };
 }
 function activeLocalProfile(settings) {
-  const profiles = Array.isArray(settings?.profiles) && settings.profiles.length ? settings.profiles : [{
+  const configuredProfiles = Array.isArray(settings?.profiles) ? settings.profiles.filter(Boolean) : [];
+  const profiles = configuredProfiles.length ? configuredProfiles : [{
     id: 'default-openai',
     name: 'OpenAI',
     provider: 'openai',
@@ -219,8 +271,21 @@ function activeLocalProfile(settings) {
     streamImages: !!settings?.streamImages,
     streamPartialImages: settings?.streamPartialImages ?? 1
   }];
-  const activeId = settings?.activeImageProfileId || settings?.activeProfileId || profiles[0]?.id || 'default-openai';
-  return profiles.find((profile) => profile && (profile.id === activeId || profile.name === activeId)) || profiles[0];
+  const imageProfiles = configuredProfiles.length
+    ? profiles.filter((profile) => (profile.apiMode || 'images') === 'images')
+    : profiles;
+  const activeImageId = settings?.activeImageProfileId || '';
+  const activeId = settings?.activeProfileId || '';
+  return imageProfiles.find((profile) => profile.id === activeImageId || profile.name === activeImageId)
+    || imageProfiles.find((profile) => profile.id === activeId || profile.name === activeId)
+    || imageProfiles[0]
+    || profiles[0];
+}
+function normalizeAgentMode(value) {
+  const mode = String(value || 'off').toLowerCase();
+  if (mode === 'same') return 'native';
+  if (mode === 'custom') return 'hybrid';
+  return mode === 'native' || mode === 'hybrid' ? mode : 'off';
 }
 function localRuntimeConfig(user) {
   const settings = loadSettingsForUser(user.id);
@@ -270,19 +335,19 @@ function localRuntimeConfig(user) {
     agentMaxToolRounds: Number(settings.agentMaxToolRounds) || Number(settings.agentMaxRounds) || 15,
     agentScrollAfterSubmit: settings.agentScrollAfterSubmit !== false,
     agentScrollToBottomAfterSubmit: settings.agentScrollToBottomAfterSubmit ?? settings.agentScrollAfterSubmit ?? true,
-    agentApiConfigMode: settings.agentApiConfigMode || 'off',
+    agentApiConfigMode: normalizeAgentMode(settings.agentApiConfigMode),
     agentTextProfileId: settings.agentTextProfileId || null,
     agentImageProfileId: settings.agentImageProfileId || null,
     themeMode: settings.themeMode || 'dark',
     customProviders: Array.isArray(settings.customProviders) ? settings.customProviders : [],
     profiles: Array.isArray(settings.profiles) && settings.profiles.length ? settings.profiles : [active],
     activeProfileId: settings.activeProfileId || active?.id || 'default-openai',
-    activeImageProfileId: settings.activeImageProfileId || settings.activeProfileId || active?.id || 'default-openai'
+    activeImageProfileId: settings.activeImageProfileId || active?.id || 'default-openai'
   };
   return maskSecrets(config, '', 'cloudflare-proxy');
 }
 function clientIp(req) {
-  return String(req.headers['x-forwarded-for'] || req.headers['cf-connecting-ip'] || '').split(',')[0].trim() || 'unknown';
+  return String(req.socket?.remoteAddress || '').split(',')[0].trim() || 'unknown';
 }
 function userRecord(user) {
   return {
@@ -306,6 +371,34 @@ function parseJsonBody(bodyText) {
     return {};
   }
 }
+function parseSettingsBody(bodyText) {
+  if (new TextEncoder().encode(String(bodyText || '')).byteLength > MAX_SETTINGS_BODY_BYTES) {
+    throw new Error('Settings request body is too large');
+  }
+  try {
+    return JSON.parse(bodyText || '{}');
+  } catch {
+    throw new Error('Invalid JSON body');
+  }
+}
+function validateSettingsItems(items) {
+  if (items.length > MAX_SETTINGS_KEYS) throw new Error('Too many settings keys');
+  let totalBytes = 0;
+  for (const item of items) {
+    const key = String(item?.key || '');
+    if (!SETTING_KEY_PATTERN.test(key) || key.length > MAX_SETTING_KEY_LENGTH) throw new Error('Invalid settings key');
+    let serialized;
+    try {
+      serialized = JSON.stringify(item.value);
+    } catch {
+      throw new Error('Invalid settings value');
+    }
+    const bytes = new TextEncoder().encode(String(serialized || '')).byteLength;
+    if (bytes > MAX_SETTING_VALUE_BYTES) throw new Error('A settings value is too large');
+    totalBytes += bytes;
+  }
+  if (totalBytes > MAX_SETTINGS_BODY_BYTES) throw new Error('Settings values are too large');
+}
 function decodeUsername(body) {
   if (body && body.usernameB64) {
     try {
@@ -319,7 +412,7 @@ function createAssetsBinding(baseUrl) {
     async fetch(input) {
       const raw = input instanceof URL ? input.href : (typeof input === 'string' ? input : input.url);
       const assetUrl = new URL(raw, baseUrl);
-      const file = safeFile(assetUrl.pathname);
+      const file = publicStaticFile(assetUrl.pathname);
       if (!file || !fs.existsSync(file)) return new Response('not found', { status: 404 });
       try {
         return await staticAssetResponse(file, contentType(file));
@@ -396,6 +489,8 @@ async function dispatchFunction(req, res, url, moduleRelativePath) {
       JWT_SECRET: LOCAL_JWT_SECRET,
       ALLOW_INSECURE_JWT_FALLBACK: 'true',
       ALLOW_PUBLIC_REGISTRATION: LOCAL_PUBLIC_REGISTRATION ? 'true' : 'false',
+      UPSTREAM_ALLOWED_HOSTS: process.env.UPSTREAM_ALLOWED_HOSTS || '',
+      UPSTREAM_ALLOWLIST_REQUIRED: process.env.UPSTREAM_ALLOWLIST_REQUIRED || 'false',
       gpt_image2_db: createD1Binding(),
       ASSETS: createAssetsBinding(url.toString())
     },
@@ -418,6 +513,7 @@ async function handleApi(req, res, url) {
     if (blockedLimit) return json(res, 429, { error: 'Too many login attempts. Try again later.' }, rateLimitHeaders(blockedLimit));
     const user = loadUserByUsername(username);
     const password = String(body.password || '').trim();
+    if (username.length > 128 || password.length > 256) return json(res, 400, { error: 'Username or password is too long' });
     const verification = user ? await verifyPassword(password, user.password_hash) : { valid: false, needsRehash: false };
     if (!verification.valid) {
       const failures = await Promise.all(rateIdentifiers.map((identifier) => recordLoginFailure(createD1Binding(), identifier)));
@@ -443,6 +539,7 @@ async function handleApi(req, res, url) {
     const body = parseJsonBody(await readBody(req));
     const username = decodeUsername(body);
     const password = String(body.password || '').trim();
+    if (username.length > 128 || password.length > 256) return json(res, 400, { error: 'Username or password is too long' });
     if (username.length < 2) return json(res, 400, { error: 'Username must be at least 2 characters' });
     const passwordError = validateNewPassword(password);
     if (passwordError) return json(res, 400, { error: passwordError });
@@ -458,7 +555,7 @@ async function handleApi(req, res, url) {
     if (!user) return json(res, 401, { error: 'Unauthorized' });
     return json(res, 200, userRecord(user));
   }
-  if (url.pathname === '/api/auth/logout') {
+  if (url.pathname === '/api/auth/logout' && req.method === 'POST') {
     const user = currentUser(req);
     if (user) {
       db.prepare("UPDATE users SET session_version = COALESCE(session_version, 1) + 1, updated_at = datetime('now') WHERE id = ?").run(user.id);
@@ -482,6 +579,8 @@ async function handleApi(req, res, url) {
     const password = String(body.password || '').trim();
     const role = body.role === 'admin' ? 'admin' : 'user';
     if (username.length < 2) return json(res, 400, { error: 'Username must be at least 2 characters' });
+    if (username.length > 128) return json(res, 400, { error: 'Username is too long' });
+    if (password.length > 256) return json(res, 400, { error: 'Password is too long' });
     const passwordError = validateNewPassword(password);
     if (passwordError) return json(res, 400, { error: passwordError });
     if (loadUserByUsername(username)) return json(res, 409, { error: 'Username already exists' });
@@ -500,6 +599,7 @@ async function handleApi(req, res, url) {
     const username = body.username !== undefined || body.usernameB64 !== undefined ? decodeUsername(body) : target.username;
     const password = String(body.password || '').trim();
     if (username.length < 2) return json(res, 400, { error: 'Username must be at least 2 characters' });
+    if (username.length > 128) return json(res, 400, { error: 'Username is too long' });
     const duplicate = loadUserByUsername(username);
     if (duplicate && duplicate.id !== targetId) return json(res, 409, { error: 'Username already exists' });
     const updates = [];
@@ -509,6 +609,7 @@ async function handleApi(req, res, url) {
       params.push(username);
     }
     if (password) {
+      if (password.length > 256) return json(res, 400, { error: 'Password is too long' });
       const passwordError = validateNewPassword(password);
       if (passwordError) return json(res, 400, { error: passwordError });
       if (user.role !== 'admin') {
@@ -562,17 +663,26 @@ async function handleApi(req, res, url) {
   if (url.pathname === '/api/settings/save') {
     const user = currentUser(req);
     if (!user) return json(res, 401, { error: 'Unauthorized' });
-    if (req.method === 'GET') return json(res, 200, { success: true, settings: maskSecrets(loadSettingsForUser(user.id)) });
+    if (req.method === 'GET') return json(res, 200, {
+      settings: maskSecrets(loadSettingsForUser(user.id)),
+      user: { id: user.id, username: user.username, role: user.role }
+    });
     if (req.method === 'POST') {
-      const body = parseJsonBody(await readBody(req));
-      const existing = loadSettingsForUser(user.id);
-      const items = normalizeIncomingSettings(body).map((item) => sanitizeIncomingSetting(item, existing));
-      if (!items.length) return json(res, 400, { error: 'No settings provided' });
-      for (const item of items) {
-        if (!item.key || item.value === undefined) continue;
-        writeSetting(user.id, item.key, item.value);
+      try {
+        const body = parseSettingsBody(await readSettingsBody(req));
+        const rawItems = normalizeIncomingSettings(body);
+        if (!rawItems.length) return json(res, 400, { error: 'No settings provided' });
+        validateSettingsItems(rawItems);
+        const existing = loadSettingsForUser(user.id);
+        const items = rawItems.map((item) => sanitizeIncomingSetting(item, existing));
+        for (const item of items) {
+          if (item.value === undefined) continue;
+          writeSetting(user.id, item.key, item.value);
+        }
+        return json(res, 200, { success: true, message: 'settings saved', userId: user.id });
+      } catch (error) {
+        return json(res, 400, { error: `Save failed: ${error?.message || 'unknown error'}` });
       }
-      return json(res, 200, { success: true });
     }
     if (req.method === 'DELETE') {
       clearSettingsForUser(user.id);
@@ -608,7 +718,11 @@ const server = http.createServer(async (req, res) => {
       if (!user) return json(res, 401, { error: 'Unauthorized' });
       return json(res, 200, localRuntimeConfig(user));
     }
-    let file = safeFile(pageRoutes.get(url.pathname) ? `/${pageRoutes.get(url.pathname)}` : url.pathname);
+    if (url.pathname === '/user' || url.pathname === '/user.html') {
+      res.writeHead(302, { Location: '/admin', 'Cache-Control': 'no-store' });
+      return res.end();
+    }
+    let file = publicStaticFile(pageRoutes.get(url.pathname) ? `/${pageRoutes.get(url.pathname)}` : url.pathname);
     if (!file || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
       const routeFile = pageRoutes.get(url.pathname);
       if (routeFile) file = path.join(root, routeFile);

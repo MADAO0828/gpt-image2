@@ -59,6 +59,9 @@ function streamResponse(chunks, options = {}) {
   assert.strictEqual(disconnectError.stage, 'stream-transport');
   assert.strictEqual(disconnectError.partialCandidates.length, 1);
   assert.strictEqual(disconnectError.partialCandidates[0].outputIndex, 0);
+  assert.strictEqual(disconnectError.partialCount, 1);
+  assert.strictEqual(disconnectError.streamEvents.length, 1);
+  assert.strictEqual(disconnectError.lastStreamEventType, 'image_edit.partial_image');
   assert.strictEqual(partials.length, 1);
 
   const stackTransportChunks = Array.from({ length: 25 }, (_, index) => sseEvent({
@@ -176,6 +179,32 @@ function streamResponse(chunks, options = {}) {
   assert.strictEqual(resultObject.data.length, 1);
   assert.strictEqual(resultObject.data[0].b64_json, 'cmVzdWx0LW9iamVjdA==');
 
+  const underscoreResult = await runtime.consumeImageStream(streamResponse([
+    sseEvent({
+      type: 'image_generation.result',
+      data: [{ b64_json: 'dW5kZXJzY29yZS1yZXN1bHQ=' }]
+    })
+  ], { keepOpen: true }));
+  assert.strictEqual(underscoreResult.completionReason, 'result-object', 'underscore image result events should stop without waiting for connection close');
+  assert.strictEqual(underscoreResult.data[0].b64_json, 'dW5kZXJzY29yZS1yZXN1bHQ=');
+
+  const sameBlockResult = await runtime.consumeImageStream(streamResponse([
+    `data: ${JSON.stringify({
+      object: 'image.generation.result',
+      data: [{ b64_json: 'c2FtZS1ibG9jay1maW5hbA==' }]
+    })}\ndata: [DONE]\n\n`
+  ], { keepOpen: true }));
+  assert.strictEqual(sameBlockResult.completionReason, 'result-object', 'a terminal result in the same SSE block must win over DONE');
+  assert.strictEqual(sameBlockResult.data[0].b64_json, 'c2FtZS1ibG9jay1maW5hbA==');
+
+  const eventLineResult = await runtime.consumeImageStream(streamResponse([
+    `event: image.generation.result\ndata: ${JSON.stringify({
+      data: [{ b64_json: 'ZXZlbnQtbGluZS1maW5hbA==' }]
+    })}\ndata: [DONE]\n\n`
+  ], { keepOpen: true }));
+  assert.strictEqual(eventLineResult.completionReason, 'result-object', 'SSE event lines must provide the image result type when data JSON is untyped');
+  assert.strictEqual(eventLineResult.data[0].b64_json, 'ZXZlbnQtbGluZS1maW5hbA==');
+
   const cookSleepPartials = [];
   const cookSleepResult = await runtime.consumeImageStream(streamResponse([
     sseEvent({
@@ -228,6 +257,34 @@ function streamResponse(chunks, options = {}) {
   assert.strictEqual(stringContainerResult.completionReason, 'completed-event');
   assert.strictEqual(stringContainerResult.data.length, 1);
   assert.strictEqual(stringContainerResult.data[0].data_url, 'data:image/png;base64,AAAA');
+  assert.strictEqual(stringContainerResult.data[0].mime_type, 'image/png');
+
+  const jpegDataUrlResult = await runtime.consumeImageStream(streamResponse([
+    sseEvent({
+      type: 'image_generation.completed',
+      data_url: 'data:image/jpeg;base64,AAAA'
+    })
+  ], { keepOpen: true }));
+  assert.strictEqual(jpegDataUrlResult.data[0].mime_type, 'image/jpeg', 'partial/final data URLs must preserve their declared MIME');
+
+  const webpB64DataUrlResult = await runtime.consumeImageStream(streamResponse([
+    sseEvent({
+      type: 'image_generation.completed',
+      b64_json: 'data:image/webp;base64,AAAA'
+    })
+  ], { keepOpen: true }));
+  assert.strictEqual(webpB64DataUrlResult.data[0].mime_type, 'image/webp', 'data URL prefixes embedded in b64_json must infer WebP');
+
+  const webpMagic = Buffer.from([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]).toString('base64');
+  const jpegMagic = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0]).toString('base64');
+  const pngMagic = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString('base64');
+  for (const [mime, b64] of [['image/webp', webpMagic], ['image/jpeg', jpegMagic], ['image/png', pngMagic]]) {
+    const partialMimeResult = await runtime.consumeImageStream(streamResponse([
+      sseEvent({ type: 'image_generation.partial_image', b64_json: b64 }),
+      'data: [DONE]\n\n'
+    ]));
+    assert.strictEqual(partialMimeResult.data[0].mime_type, mime, `raw partial Base64 magic should infer ${mime}`);
+  }
 
   const compatibilityFieldResult = await runtime.consumeImageStream(streamResponse([
     sseEvent({
@@ -254,6 +311,20 @@ function streamResponse(chunks, options = {}) {
   assert(deepProgressError, 'deep progress payload without an image should finish with a controlled stream error');
   assert.strictEqual(deepProgressError.code, 'IMAGE_STREAM_NO_IMAGE');
   assert.notStrictEqual(deepProgressError.message, 'Maximum call stack size exceeded');
+
+  const deepImageEvent = { type: 'image.generation.chunk' };
+  let deepImageCursor = deepImageEvent;
+  for (let index = 0; index < 10; index += 1) {
+    deepImageCursor.data = {};
+    deepImageCursor = deepImageCursor.data;
+  }
+  deepImageCursor.b64_json = 'ZGVlcC1wYXJ0aWFsLWltYWdl';
+  const deepImageResult = await runtime.consumeImageStream(streamResponse([
+    sseEvent(deepImageEvent),
+    'data: [DONE]\n\n'
+  ]));
+  assert.strictEqual(deepImageResult.data.length, 1, 'iterative scanning must find bounded deep image candidates');
+  assert.strictEqual(deepImageResult.data[0].mime_type, undefined);
 
   const completedResponse = streamResponse([
     sseEvent({

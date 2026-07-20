@@ -1,4 +1,4 @@
-import { currentUser, decodeUsername, json, signToken } from '../../_lib/auth.js';
+import { currentUser, decodeUsername, json, readJsonBody, signToken } from '../../_lib/auth.js';
 import { hashPassword, validateNewPassword, verifyPassword } from '../../_lib/password.js';
 
 export async function onRequestGet(ctx) {
@@ -11,7 +11,7 @@ export async function onRequestPatch(ctx) {
   const user = await currentUser(ctx.request, ctx.env);
   if (!user) return json({ error: 'Unauthorized' }, 401);
   try {
-    const body = await ctx.request.json();
+    const body = await readJsonBody(ctx.request, 16 * 1024);
     const username = body.username === undefined && body.usernameB64 === undefined
       ? undefined
       : decodeUsername(body);
@@ -22,6 +22,7 @@ export async function onRequestPatch(ctx) {
 
     if (username !== undefined) {
       if (username.length < 2) return json({ error: 'Username must be at least 2 characters' }, 400);
+      if (username.length > 128) return json({ error: 'Username is too long' }, 400);
       const exists = await ctx.env.gpt_image2_db
         .prepare('SELECT id FROM users WHERE username = ? AND id != ?')
         .bind(username, user.id)
@@ -31,9 +32,11 @@ export async function onRequestPatch(ctx) {
       params.push(username);
     }
     if (password !== undefined && password) {
+      if (password.length > 256) return json({ error: 'Password is too long' }, 400);
       const passwordError = validateNewPassword(password);
       if (passwordError) return json({ error: passwordError }, 400);
       const currentPassword = String(body.currentPassword || '').trim();
+      if (currentPassword.length > 256) return json({ error: 'Current password is too long' }, 400);
       if (!currentPassword) return json({ error: 'Current password is required' }, 400);
       const credentials = await ctx.env.gpt_image2_db
         .prepare('SELECT password_hash FROM users WHERE id = ?')
@@ -72,6 +75,6 @@ export async function onRequestPatch(ctx) {
       { 'Set-Cookie': 'session=' + encodeURIComponent(token) + '; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=86400' }
     );
   } catch (error) {
-    return json({ error: 'Update failed' }, 400);
+    return json({ error: error?.message || 'Update failed' }, error?.status === 413 ? 413 : 400);
   }
 }

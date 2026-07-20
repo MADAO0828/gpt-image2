@@ -184,14 +184,6 @@ function Get-WranglerCommand {
     }
   }
 
-  $npx = Get-Command npx.cmd -ErrorAction SilentlyContinue
-  if ($npx) {
-    return @{
-      FilePath = $npx.Source
-      Arguments = @('--yes', 'wrangler', 'pages', 'dev', './', '--ip', $HostName, '--port', [string]$Port)
-    }
-  }
-
   $wrangler = Get-Command wrangler -ErrorAction SilentlyContinue
   if ($wrangler) {
     if ($wrangler.CommandType -eq 'ExternalScript' -and $wrangler.Source -like '*.ps1') {

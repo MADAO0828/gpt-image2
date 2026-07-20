@@ -6,6 +6,32 @@ import {
   preserveSecretPlaceholders
 } from '../../_lib/settings-secrets.js';
 
+const MAX_BACKUP_BODY_BYTES = 512 * 1024;
+const MAX_BACKUP_KEYS = 64;
+const MAX_BACKUP_VALUE_BYTES = 128 * 1024;
+const BACKUP_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_.-]{0,95}$/;
+
+async function readJsonBody(request) {
+  const declared = Number(request.headers.get('Content-Length') || 0);
+  if (declared > MAX_BACKUP_BODY_BYTES) throw new Error('Backup request body is too large');
+  const text = await request.text();
+  if (new TextEncoder().encode(text).byteLength > MAX_BACKUP_BODY_BYTES) throw new Error('Backup request body is too large');
+  try { return JSON.parse(text || '{}'); } catch { throw new Error('Invalid JSON body'); }
+}
+
+function validateImportItems(items) {
+  if (items.length > MAX_BACKUP_KEYS) throw new Error('Too many backup settings keys');
+  let totalBytes = 0;
+  for (const item of items) {
+    if (!BACKUP_KEY_PATTERN.test(String(item.key || ''))) throw new Error('Invalid backup settings key');
+    const serialized = JSON.stringify(item.value);
+    const bytes = new TextEncoder().encode(String(serialized || '')).byteLength;
+    if (bytes > MAX_BACKUP_VALUE_BYTES) throw new Error('A backup setting value is too large');
+    totalBytes += bytes;
+  }
+  if (totalBytes > MAX_BACKUP_BODY_BYTES) throw new Error('Backup settings values are too large');
+}
+
 async function loadSettings(db, userId) {
   const result = await db.prepare('SELECT key, value, updated_at FROM user_settings WHERE user_id = ? ORDER BY key').bind(userId).all();
   const settings = {};
@@ -75,10 +101,11 @@ export async function onRequestPost(ctx) {
   const user = await currentUser(ctx.request, ctx.env);
   if (!user) return json({ error: 'Unauthorized' }, 401);
   try {
-    const body = await ctx.request.json();
+    const body = await readJsonBody(ctx.request);
     const existing = await loadSettings(ctx.env.gpt_image2_db, user.id);
     const items = normalizeImportItems(body, existing.settings);
     if (!items.length) return json({ error: 'No importable settings provided' }, 400);
+    validateImportItems(items);
     let saved = 0;
     for (const item of items) {
       if (!item.key || item.value === undefined) continue;

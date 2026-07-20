@@ -6,6 +6,18 @@ function publicRegistrationEnabled(env) {
   return String(env?.ALLOW_PUBLIC_REGISTRATION || '').toLowerCase() === 'true';
 }
 
+const MAX_REGISTER_BODY_BYTES = 8 * 1024;
+const MAX_USERNAME_LENGTH = 128;
+const MAX_PASSWORD_LENGTH = 256;
+
+async function readRegistrationBody(request) {
+  const declared = Number(request.headers.get('Content-Length') || 0);
+  if (declared > MAX_REGISTER_BODY_BYTES) throw Object.assign(new Error('Registration request body is too large'), { status: 400 });
+  const text = await request.text();
+  if (new TextEncoder().encode(text).byteLength > MAX_REGISTER_BODY_BYTES) throw Object.assign(new Error('Registration request body is too large'), { status: 400 });
+  try { return JSON.parse(text || '{}'); } catch { throw Object.assign(new Error('Invalid registration JSON'), { status: 400 }); }
+}
+
 export async function onRequestPost(ctx) {
   try {
     if (!publicRegistrationEnabled(ctx.env)) {
@@ -22,10 +34,12 @@ export async function onRequestPost(ctx) {
         rateLimitHeaders(registrationLimit)
       );
     }
-    const body = await ctx.request.json();
+    const body = await readRegistrationBody(ctx.request);
     const username = decodeUsername(body);
     const password = String(body.password || '').trim();
     if (!username || username.length < 2) return json({ error: 'Username must be at least 2 characters' }, 400);
+    if (username.length > MAX_USERNAME_LENGTH) return json({ error: 'Username is too long' }, 400);
+    if (password.length > MAX_PASSWORD_LENGTH) return json({ error: 'Password is too long' }, 400);
     const passwordError = validateNewPassword(password);
     if (passwordError) return json({ error: passwordError }, 400);
 
@@ -61,6 +75,7 @@ export async function onRequestPost(ctx) {
       { 'Set-Cookie': 'session=' + encodeURIComponent(token) + '; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=86400' }
     );
   } catch (error) {
+    if (error?.status === 400) return json({ error: error.message }, 400);
     return json({ error: 'Registration unavailable until security migrations are applied' }, 503);
   }
 }

@@ -4,7 +4,8 @@
   "compatibility_flags": ["nodejs_compat_v2"],
   "pages_build_output_dir": ".",
   "vars": {
-    "ALLOW_PUBLIC_REGISTRATION": "true"
+    "ALLOW_PUBLIC_REGISTRATION": "true",
+    "UPSTREAM_ALLOWLIST_REQUIRED": "true"
   },
   "d1_databases": [
     {

@@ -1,8 +1,70 @@
 import { currentUser, json } from '../../_lib/auth.js';
-import { normalizeSafeBaseUrl, safeUpstreamEndpoint } from '../../_lib/upstream-url.js';
+import { bindClientAbort, fetchPinnedUpstream, isUpstreamTimeoutStatus, normalizeSafeBaseUrl, normalizeUpstreamTimeoutSeconds, safeUpstreamEndpoint } from '../../_lib/upstream-url.js';
+const MAX_WORKBENCH_REQUEST_BYTES = 64 * 1024 * 1024;
+const MAX_WORKBENCH_FILE_BYTES = 20 * 1024 * 1024;
+const MAX_WORKBENCH_TOTAL_FILE_BYTES = 48 * 1024 * 1024;
+const MAX_WORKBENCH_FILE_COUNT = 14;
+function requiresRequestDuplex(body) {
+  if (!body || typeof body !== 'object') return false;
+  if (typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams) return false;
+  if (typeof FormData !== 'undefined' && body instanceof FormData) return false;
+  if (typeof Blob !== 'undefined' && body instanceof Blob) return false;
+  if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) return false;
+  return typeof body.getReader === 'function' || typeof body.pipe === 'function' || typeof body[Symbol.asyncIterator] === 'function';
+}
+async function requestWithBodyLimit(request, maxBytes) {
+  const declared = Number(request?.headers?.get?.('Content-Length') || 0);
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    throw Object.assign(new Error('专业工作台请求体超过安全上限'), { code: 'PRO_WORKBENCH_REQUEST_TOO_LARGE', status: 413 });
+  }
+  const body = request?.body;
+  if (!body?.tee || typeof ReadableStream === 'undefined') return request;
+  const [probeBody, replayBody] = body.tee();
+  const reader = probeBody.getReader();
+  let total = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      total += Number(value?.byteLength || 0);
+      if (total > maxBytes) {
+        const error = Object.assign(new Error('专业工作台请求体超过安全上限'), { code: 'PRO_WORKBENCH_REQUEST_TOO_LARGE', status: 413 });
+        await replayBody.cancel(error).catch(() => {});
+        throw error;
+      }
+    }
+  } finally {
+    reader.releaseLock?.();
+  }
+  const init = { body: replayBody };
+  if (requiresRequestDuplex(replayBody)) init.duplex = 'half';
+  return new Request(request, init);
+}
+function validateWorkbenchUpload(request, files = null) {
+  const declared = Number(request?.headers?.get?.('Content-Length') || 0);
+  if (Number.isFinite(declared) && declared > MAX_WORKBENCH_REQUEST_BYTES) {
+    throw Object.assign(new Error('专业工作台请求体超过安全上限'), { code: 'PRO_WORKBENCH_REQUEST_TOO_LARGE', status: 413 });
+  }
+  if (!Array.isArray(files)) return;
+  if (files.length > MAX_WORKBENCH_FILE_COUNT) {
+    throw Object.assign(new Error('专业工作台上传图片数量超过安全上限'), { code: 'PRO_WORKBENCH_FILE_COUNT_TOO_LARGE', status: 413 });
+  }
+  let totalBytes = 0;
+  for (const file of files) {
+    const size = Number(file?.size);
+    if (!Number.isFinite(size) || size < 0 || size > MAX_WORKBENCH_FILE_BYTES) {
+      throw Object.assign(new Error('专业工作台单张图片超过 20MB 安全上限'), { code: 'PRO_WORKBENCH_FILE_TOO_LARGE', status: 413 });
+    }
+    totalBytes += size;
+  }
+  if (totalBytes > MAX_WORKBENCH_TOTAL_FILE_BYTES) {
+    throw Object.assign(new Error('专业工作台图片总大小超过 48MB 安全上限'), { code: 'PRO_WORKBENCH_TOTAL_TOO_LARGE', status: 413 });
+  }
+}
 async function loadSettings(db, userId) { const rows = await db.prepare('SELECT key, value FROM user_settings WHERE user_id = ?').bind(userId).all(); const settings = {}; (rows.results || []).forEach(row => { try { settings[row.key] = JSON.parse(row.value); } catch { settings[row.key] = row.value; } }); return settings; }
 function firstString() { for (let i = 0; i < arguments.length; i++) { const v = arguments[i]; if (typeof v === 'string' && v.trim()) return v.trim(); } return ''; }
 function asNum(value, fallback) { const n = Number(value); return Number.isFinite(n) ? n : fallback; }
+function safeUpstreamDetail(value, secret) { const text = String(value || ''); return (secret ? text.split(secret).join('[redacted]') : text).slice(0, 500); }
 function normalizeBaseUrl(raw) { return normalizeSafeBaseUrl(raw, true); }
 function selectedProfile(settings, explicitProfileId = '') {
   const profiles = Array.isArray(settings.profiles) ? settings.profiles : [];
@@ -35,11 +97,6 @@ function selectedProfile(settings, explicitProfileId = '') {
     model: firstString(base.model, legacySettings ? settings.model : '') || 'gpt-5-mini',
     timeout: asNum(base.timeout, asNum(legacySettings ? settings.timeout : undefined, 600))
   };
-}
-function upstreamTimeoutSeconds(request, profile) {
-  const headerValue = Number(request.headers.get('X-GPT-Image-Timeout-Seconds'));
-  const requested = Number.isFinite(headerValue) && headerValue > 0 ? headerValue : asNum(profile.timeout, 600);
-  return Math.max(1, Math.min(requested, 6000));
 }
 function parseJson(value, fallback) { try { return JSON.parse(String(value || '')); } catch { return fallback; } }
 function fallbackAnalysis(body) {
@@ -96,6 +153,11 @@ function contentText(body, fileCount) {
 export async function onRequestPost(ctx) {
   const user = await currentUser(ctx.request, ctx.env);
   if (!user) return json({ error: 'Unauthorized' }, 401);
+  try {
+    validateWorkbenchUpload(ctx.request);
+  } catch (error) {
+    return json({ error: error.message, code: error.code }, error.status || 413);
+  }
   const settings = await loadSettings(ctx.env.gpt_image2_db, user.id);
   const profile = selectedProfile(settings, ctx.request.headers.get('X-GPT-Image-Profile-Id') || '');
   let baseUrl = '';
@@ -109,8 +171,9 @@ export async function onRequestPost(ctx) {
   let files = [];
   try {
     const contentType = String(ctx.request.headers.get('Content-Type') || '').toLowerCase();
+    const boundedRequest = await requestWithBodyLimit(ctx.request, MAX_WORKBENCH_REQUEST_BYTES);
     if (contentType.includes('multipart/form-data')) {
-      const form = await ctx.request.formData();
+      const form = await boundedRequest.formData();
       body = {
         mode: String(form.get('mode') || 'ai'),
         prompt: String(form.get('prompt') || ''),
@@ -119,20 +182,27 @@ export async function onRequestPost(ctx) {
         structureLock: String(form.get('structureLock') || '') === 'true'
       };
       files = [...form.getAll('base[]'), ...form.getAll('ref[]')].filter((item) => item && typeof item.arrayBuffer === 'function');
+      validateWorkbenchUpload(ctx.request, files);
     } else {
-      body = await ctx.request.json().catch(() => ({}));
+      body = await boundedRequest.json().catch(() => ({}));
     }
   } catch (e) {
-    return json({ analysis: fallbackAnalysis(body), warning: `分析请求解析失败：${e.message || String(e)}` }, 400);
+    return json({ analysis: fallbackAnalysis(body), warning: `分析请求解析失败：${e.message || String(e)}`, code: e?.code }, e?.status || 400);
   }
   if (!baseUrl || !apiKey) return json({ analysis: fallbackAnalysis(body), warning: 'API 配置不完整，已返回本地建议。' });
   if (!files.length) return json({ analysis: fallbackAnalysis(body), warning: '未收到可读图片，已返回本地建议。' });
-  const timeoutSeconds = upstreamTimeoutSeconds(ctx.request, profile);
+  const headerValue = Number(ctx.request.headers.get('X-GPT-Image-Timeout-Seconds'));
+  const requestedTimeout = Number.isFinite(headerValue) && headerValue > 0 ? headerValue : asNum(profile.timeout, 600);
+  const timeoutSeconds = normalizeUpstreamTimeoutSeconds(requestedTimeout);
   const controller = new AbortController();
+  const clientAbort = bindClientAbort(ctx.request, controller);
   const timeoutId = setTimeout(() => controller.abort(), timeoutSeconds * 1000);
+  let upstream = null;
   try {
+    if (clientAbort.wasAborted()) return json({ error: 'Professional analysis request cancelled', code: 'CLIENT_ABORTED' }, 499);
     const imageContent = [];
     for (const file of files.slice(0, 4)) {
+      if (clientAbort.wasAborted()) return json({ error: 'Professional analysis request cancelled', code: 'CLIENT_ABORTED' }, 499);
       imageContent.push({ type: 'input_image', image_url: await fileToDataUrl(file) });
     }
     const input = [{
@@ -142,21 +212,42 @@ export async function onRequestPost(ctx) {
         ...imageContent
       ]
     }];
-    const res = await fetch(safeUpstreamEndpoint(baseUrl, 'responses'), {
+    const endpoint = safeUpstreamEndpoint(baseUrl, 'responses');
+    const pinned = await fetchPinnedUpstream(endpoint, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: profile.model, input }),
       signal: controller.signal,
       redirect: 'manual'
+    }, {
+      allowedHosts: ctx.env?.UPSTREAM_ALLOWED_HOSTS,
+      requireAllowlist: String(ctx.env?.UPSTREAM_ALLOWLIST_REQUIRED || '').toLowerCase() === 'true'
     });
-    const text = await res.text();
-    if (!res.ok) throw new Error(text.slice(0, 500));
+    upstream = pinned.response;
+    const text = await upstream.text();
+    if (upstream.status >= 300 && upstream.status < 400) {
+      return json({ error: '专业分析上游重定向已阻止', code: 'UPSTREAM_REDIRECT_BLOCKED', stage: 'upstream-redirect', analysis: fallbackAnalysis(body) }, 502);
+    }
+    if (!upstream.ok) {
+      const detail = safeUpstreamDetail(text, apiKey);
+      if (isUpstreamTimeoutStatus(upstream.status, text)) {
+        return json({ error: '专业分析上游响应超时', code: 'UPSTREAM_CLOUDFLARE_TIMEOUT', stage: 'upstream-response', upstreamStatus: upstream.status, timeoutSeconds, detail, analysis: fallbackAnalysis(body) }, 504);
+      }
+      const error = new Error('Professional analysis upstream request failed');
+      error.code = 'PRO_WORKBENCH_UPSTREAM_ERROR';
+      error.status = 502;
+      error.detail = detail;
+      throw error;
+    }
     const data = JSON.parse(text);
     const content = data.output_text || data.text || data.output?.[0]?.content?.[0]?.text || data.output?.[0]?.content?.map?.((item) => item.text).filter(Boolean).join('\n') || '';
     const analysis = jsonFromModelText(content, fallbackAnalysis(body));
     return json({ analysis, raw: data, imageCount: files.length });
   } catch (e) {
-    if (e.name === 'AbortError') {
+    if (clientAbort.wasAborted()) {
+      return json({ error: 'Professional analysis request cancelled', code: 'CLIENT_ABORTED' }, 499);
+    }
+    if (controller.signal.aborted || e.name === 'AbortError' || e.code === 'UPSTREAM_DNS_TIMEOUT') {
       return json({
         error: '专业分析等待上游响应超时',
         code: 'PRO_WORKBENCH_ANALYZE_TIMEOUT',
@@ -164,8 +255,13 @@ export async function onRequestPost(ctx) {
         analysis: fallbackAnalysis(body)
       }, 504);
     }
-    return json({ analysis: fallbackAnalysis(body), warning: e.message || String(e) });
+    if (e.code === 'UPSTREAM_DNS_REJECTED') return json({ error: e.message, code: e.code }, 400);
+    if (e.code === 'UPSTREAM_HOST_ALLOWLIST_MISSING' || e.code === 'UPSTREAM_HOST_ALLOWLIST_INVALID' || e.code === 'UPSTREAM_HOST_NOT_ALLOWED') return json({ error: e.message, code: e.code, stage: 'upstream-host-policy', analysis: fallbackAnalysis(body) }, 400);
+    if (e.code === 'UPSTREAM_DNS_REBOUND' || e.code === 'UPSTREAM_DNS_FAILED') return json({ error: e.message, code: e.code }, 502);
+    const status = Number.isInteger(e?.status) && e.status >= 400 && e.status <= 599 ? e.status : 502;
+    return json({ error: e?.message || 'Professional analysis upstream request failed', code: e?.code || 'PRO_WORKBENCH_ANALYZE_FAILED', stage: 'upstream-request', detail: e?.detail || safeUpstreamDetail(e?.message || String(e), apiKey), analysis: fallbackAnalysis(body) }, status);
   } finally {
     clearTimeout(timeoutId);
+    clientAbort.cleanup();
   }
 }

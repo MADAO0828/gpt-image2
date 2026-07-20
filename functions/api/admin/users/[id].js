@@ -1,4 +1,4 @@
-import { currentUser, decodeUsername, json, signToken } from '../../../_lib/auth.js';
+import { currentUser, decodeUsername, json, readJsonBody, signToken } from '../../../_lib/auth.js';
 import { hashPassword, validateNewPassword, verifyPassword } from '../../../_lib/password.js';
 
 function parseId(ctx) {
@@ -18,7 +18,7 @@ export async function onRequestPut(ctx) {
       .bind(targetId)
       .first();
     if (!exists) return json({ error: 'User not found' }, 404);
-    const body = await ctx.request.json();
+    const body = await readJsonBody(ctx.request, 16 * 1024);
     const updates = [];
     const params = [];
     let invalidateSessions = false;
@@ -26,6 +26,7 @@ export async function onRequestPut(ctx) {
     if (body.username !== undefined || body.usernameB64 !== undefined) {
       const username = decodeUsername(body);
       if (username.length < 2) return json({ error: 'Username must be at least 2 characters' }, 400);
+      if (username.length > 128) return json({ error: 'Username is too long' }, 400);
       const duplicate = await ctx.env.gpt_image2_db
         .prepare('SELECT id FROM users WHERE username = ? AND id != ?')
         .bind(username, targetId)
@@ -36,10 +37,12 @@ export async function onRequestPut(ctx) {
     }
     if (body.password !== undefined && String(body.password || '').trim()) {
       const password = String(body.password || '').trim();
+      if (password.length > 256) return json({ error: 'Password is too long' }, 400);
       const passwordError = validateNewPassword(password);
       if (passwordError) return json({ error: passwordError }, 400);
       if (!isAdmin) {
         const currentPassword = String(body.currentPassword || '').trim();
+        if (currentPassword.length > 256) return json({ error: 'Current password is too long' }, 400);
         if (!currentPassword) return json({ error: 'Current password is required' }, 400);
         const credentials = await ctx.env.gpt_image2_db
           .prepare('SELECT password_hash FROM users WHERE id = ?')
@@ -85,7 +88,7 @@ export async function onRequestPut(ctx) {
       { 'Set-Cookie': 'session=' + encodeURIComponent(token) + '; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=86400' }
     );
   } catch (error) {
-    return json({ error: 'Update failed: ' + (error.message || '') }, 400);
+    return json({ error: error.message || 'Update failed' }, error?.status === 413 ? 413 : 400);
   }
 }
 

@@ -1,4 +1,4 @@
-import { clientIp, decodeUsername, json, signToken } from '../../_lib/auth.js';
+import { clientIp, decodeUsername, json, readJsonBody, signToken } from '../../_lib/auth.js';
 import { hashPassword, verifyPassword } from '../../_lib/password.js';
 import {
   checkLoginLimit,
@@ -9,9 +9,10 @@ import {
 
 export async function onRequestPost(ctx) {
   try {
-    const body = await ctx.request.json();
+    const body = await readJsonBody(ctx.request, 16 * 1024);
     const username = decodeUsername(body);
     const password = String(body.password || '').trim();
+    if (username.length > 128 || password.length > 256) return json({ error: 'Username or password is too long' }, 400);
     const ip = clientIp(ctx.request);
     const rateIdentifiers = [`ip:${ip}`, `account:${username.toLowerCase()}`];
     const currentLimits = await Promise.all(rateIdentifiers.map(identifier => checkLoginLimit(ctx.env.gpt_image2_db, identifier)));
@@ -71,6 +72,7 @@ export async function onRequestPost(ctx) {
       { 'Set-Cookie': 'session=' + encodeURIComponent(token) + '; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=86400' }
     );
   } catch (error) {
+    if (error?.status === 400 || error?.status === 413) return json({ error: error.message }, error.status);
     return json({ error: 'Login unavailable until security migrations are applied' }, 503);
   }
 }

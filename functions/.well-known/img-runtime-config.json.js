@@ -8,7 +8,7 @@ function firstDefined() { for (let i = 0; i < arguments.length; i++) { if (argum
 function normalizeImageQuality(value, fallback = 'high') { const normalized = String(value || '').trim().toLowerCase(); if (['auto', 'low', 'medium', 'high'].includes(normalized)) return normalized; if (normalized === 'hd') return 'high'; if (normalized === 'standard') return 'medium'; return ['auto', 'low', 'medium', 'high'].includes(fallback) ? fallback : 'high'; }
 function normalizeAgentMode(value) { value = String(value || 'off'); if (value === 'same') return 'native'; if (value === 'custom') return 'hybrid'; return value === 'native' || value === 'hybrid' ? value : 'off'; }
 function normalizeBaseUrl(raw) { let value = String(raw || '').trim().replace(/\/+$/, ''); if (!value) return ''; if (!/^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(value)) value = 'https://' + value; try { const url = new URL(value); const parts = url.pathname.split('/').filter(Boolean); if (!parts.includes('v1')) parts.push('v1'); url.pathname = '/' + parts.join('/'); url.search = ''; url.hash = ''; return url.toString().replace(/\/+$/, ''); } catch (e) { return value.replace(/\/+$/, '') + '/v1'; } }
-function selectedProfile(settings) { const profiles = Array.isArray(settings.profiles) ? settings.profiles : []; const activeId = settings.activeImageProfileId || settings.activeProfileId || (profiles[0] && profiles[0].id) || 'default-openai'; const found = profiles.find(p => p && p.id === activeId) || profiles.find(p => p && (p.apiMode || 'images') === 'images') || profiles[0] || null; const base = found || {}; return {
+function selectedProfile(settings) { const profiles = Array.isArray(settings.profiles) ? settings.profiles : []; const imageProfiles = profiles.filter(p => p && (p.apiMode || 'images') === 'images'); const activeImageId = settings.activeImageProfileId || ''; const activeId = settings.activeProfileId || ''; const found = imageProfiles.find(p => p.id === activeImageId || p.name === activeImageId) || imageProfiles.find(p => p.id === activeId || p.name === activeId) || imageProfiles[0] || null; const base = found || {}; return {
   id: base.id || activeId || 'default-openai',
   name: base.name || '云端配置',
   provider: base.provider || 'openai',
@@ -21,10 +21,12 @@ function selectedProfile(settings) { const profiles = Array.isArray(settings.pro
   apiProxy: asBool(base.apiProxy, asBool(settings.apiProxy, true)),
   responseFormatB64Json: asBool(base.responseFormatB64Json, asBool(settings.responseFormatB64Json, false)),
   streamImages: asBool(base.streamImages, asBool(settings.streamImages, false)),
-  streamPartialImages: asNum(base.streamPartialImages, asNum(settings.streamPartialImages, 1))
+  streamPartialImages: asNum(base.streamPartialImages, asNum(settings.streamPartialImages, 1)),
+  streamResponses: asBool(base.streamResponses, asBool(settings.streamResponses, false)),
+  responsesStream: asBool(base.responsesStream, asBool(settings.responsesStream, false))
 }; }
-function clientProfile(profile) { const useProxy = !!profile.apiKey || profile.apiProxy !== false; return { ...profile, baseUrl: profile.baseUrl || '', apiKey: useProxy ? (profile.apiKey ? 'cloudflare-proxy' : '') : '', apiProxy: useProxy } }
-function sanitizeProfiles(settings) { const profiles = Array.isArray(settings.profiles) ? settings.profiles : []; if (!profiles.length) return []; return profiles.map((p, index) => clientProfile({
+function clientProfile(profile, env) { const browserKeysAllowed = String(env?.ALLOW_BROWSER_API_KEYS || '').toLowerCase() === 'true'; const useProxy = !browserKeysAllowed || !!profile.apiKey || profile.apiProxy !== false; return { ...profile, baseUrl: profile.baseUrl || '', apiKey: useProxy ? (profile.apiKey ? 'cloudflare-proxy' : '') : profile.apiKey, apiProxy: useProxy } }
+function sanitizeProfiles(settings, env) { const profiles = Array.isArray(settings.profiles) ? settings.profiles : []; if (!profiles.length) return []; return profiles.map((p, index) => clientProfile({
   id: p.id || ('profile-' + index),
   name: p.name || p.id || ('配置 ' + (index + 1)),
   provider: p.provider || 'openai',
@@ -37,16 +39,18 @@ function sanitizeProfiles(settings) { const profiles = Array.isArray(settings.pr
   apiProxy: asBool(p.apiProxy, asBool(settings.apiProxy, true)),
   responseFormatB64Json: asBool(p.responseFormatB64Json, asBool(settings.responseFormatB64Json, false)),
   streamImages: asBool(p.streamImages, asBool(settings.streamImages, false)),
-  streamPartialImages: asNum(p.streamPartialImages, asNum(settings.streamPartialImages, 1))
-})); }
+  streamPartialImages: asNum(p.streamPartialImages, asNum(settings.streamPartialImages, 1)),
+  streamResponses: asBool(p.streamResponses, asBool(settings.streamResponses, false)),
+  responsesStream: asBool(p.responsesStream, asBool(settings.responsesStream, false))
+}, env)); }
 
 export async function onRequest(ctx) {
   const user = await currentUser(ctx.request, ctx.env);
   if (!user) return json({ error: 'Unauthorized' }, 401);
   const settings = await loadSettings(ctx.env.gpt_image2_db, user.id);
   const active = selectedProfile(settings);
-  let profiles = sanitizeProfiles(settings);
-  const clientActive = clientProfile(active);
+  let profiles = sanitizeProfiles(settings, ctx.env);
+  const clientActive = clientProfile(active, ctx.env);
   const useProxy = clientActive.apiProxy !== false;
   const activeProfileIndex = profiles.findIndex(p => p && p.id === clientActive.id);
   if (activeProfileIndex >= 0) profiles[activeProfileIndex] = clientActive;
@@ -102,7 +106,7 @@ export async function onRequest(ctx) {
     customProviders: Array.isArray(settings.customProviders) ? settings.customProviders : [],
     profiles: profiles.length ? profiles : [clientActive],
     activeProfileId: settings.activeProfileId || clientActive.id || 'default-openai',
-    activeImageProfileId: settings.activeImageProfileId || settings.activeProfileId || profiles.find(profile => (profile?.apiMode || 'images') === 'images')?.id || clientActive.id || 'default-openai'
+    activeImageProfileId: settings.activeImageProfileId || clientActive.id || profiles.find(profile => (profile?.apiMode || 'images') === 'images')?.id || 'default-openai'
   };
   return json(maskSecrets(config, '', 'cloudflare-proxy'));
 }

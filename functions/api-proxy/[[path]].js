@@ -1,5 +1,5 @@
 import { currentUser, json } from '../_lib/auth.js';
-import { normalizeSafeBaseUrl, safeUpstreamEndpoint } from '../_lib/upstream-url.js';
+import { assertUpstreamHostAllowed, bindClientAbort, fetchPinnedUpstream, fetchWithPinnedAddress, isPrivateIpAddress as isSharedPrivateIpAddress, normalizeSafeBaseUrl, normalizeUpstreamTimeoutSeconds, safeUpstreamEndpoint } from '../_lib/upstream-url.js';
 async function loadSettings(db, userId) { const rows = await db.prepare('SELECT key, value FROM user_settings WHERE user_id = ?').bind(userId).all(); const settings = {}; (rows.results || []).forEach(row => { try { settings[row.key] = JSON.parse(row.value); } catch (e) { settings[row.key] = row.value; } }); return settings; }
 function asBool(value, fallback = false) { return value === undefined || value === null ? fallback : !!value; }
 function asNum(value, fallback) { const n = Number(value); return Number.isFinite(n) ? n : fallback; }
@@ -23,6 +23,8 @@ function selectedProfile(settings, apiPath = '', explicitProfileId = '') { const
   responseFormatB64Json: asBool(base.responseFormatB64Json, asBool(settings.responseFormatB64Json, false)),
   streamImages: asBool(base.streamImages, asBool(settings.streamImages, false)),
   streamPartialImages: asNum(base.streamPartialImages, asNum(settings.streamPartialImages, 1)),
+  streamResponses: asBool(base.streamResponses, asBool(settings.streamResponses, false)),
+  responsesStream: asBool(base.responsesStream, asBool(settings.responsesStream, false)),
   agentReasoningEffort: settings.agentReasoningEffort || 'medium'
 }; }
 function clientProfile(profile) { const useProxy = profile.apiProxy !== false; return { ...profile, baseUrl: profile.baseUrl || '', apiKey: useProxy ? (profile.apiKey ? 'cloudflare-proxy' : '') : profile.apiKey, apiProxy: useProxy } }
@@ -41,7 +43,9 @@ function sanitizeProfiles(settings) { const profiles = Array.isArray(settings.pr
   apiProxy: asBool(p.apiProxy, asBool(settings.apiProxy, true)),
   responseFormatB64Json: asBool(p.responseFormatB64Json, asBool(settings.responseFormatB64Json, false)),
   streamImages: asBool(p.streamImages, asBool(settings.streamImages, false)),
-  streamPartialImages: asNum(p.streamPartialImages, asNum(settings.streamPartialImages, 1))
+  streamPartialImages: asNum(p.streamPartialImages, asNum(settings.streamPartialImages, 1)),
+  streamResponses: asBool(p.streamResponses, asBool(settings.streamResponses, false)),
+  responsesStream: asBool(p.responsesStream, asBool(settings.responsesStream, false))
 })); }
 
 function isSameOriginRequest(request) {
@@ -53,7 +57,7 @@ function corsHeaders(request, headers = {}) {
   const result = {
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, X-GPT-Image-Profile-Id, X-GPT-Image-Timeout-Seconds, X-GPT-Image-Entry, X-GPT-Image-Response-B64, X-GPT-Image-Stream, X-GPT-Image-Partial-Images',
-    'Access-Control-Expose-Headers': 'Retry-After, X-GPT-Image-Upstream-Ms, X-GPT-Image-Proxy-Ms, X-GPT-Image-Profile-Id, X-GPT-Image-Profile-Name, X-GPT-Image-Proxy-Streamed',
+    'Access-Control-Expose-Headers': 'Retry-After, X-GPT-Image-Upstream-Ms, X-GPT-Image-Proxy-Ms, X-GPT-Image-Profile-Id, X-GPT-Image-Profile-Name, X-GPT-Image-Proxy-Streamed, X-GPT-Image-Proxy-Probed',
     'Cache-Control': 'no-store',
     'Vary': 'Origin',
     ...headers
@@ -131,6 +135,7 @@ function isMultipart(headers) {
   return String(headers.get('Content-Type') || '').toLowerCase().includes('multipart/form-data');
 }
 const IMAGE_RESPONSE_LIMIT = 128 * 1024 * 1024;
+const PROXY_REQUEST_BODY_LIMIT = 64 * 1024 * 1024;
 function normalizeImageMime(value) {
   const raw = String(value || '').trim().toLowerCase().split(';')[0];
   if (raw === 'png' || raw === 'image/png') return 'image/png';
@@ -156,37 +161,7 @@ function joinByteChunks(chunks, total) {
   }
   return bytes;
 }
-async function readReaderBytes(reader, firstChunk = null, maxBytes = IMAGE_RESPONSE_LIMIT) {
-  const chunks = [];
-  let total = 0;
-  const append = (value) => {
-    const chunk = value instanceof Uint8Array ? value : new Uint8Array(value || []);
-    total += chunk.byteLength;
-    if (total > maxBytes) {
-      const error = new Error('上游图片响应超过代理安全上限');
-      error.code = 'UPSTREAM_RESPONSE_TOO_LARGE';
-      error.status = 502;
-      throw error;
-    }
-    if (chunk.byteLength) chunks.push(chunk);
-  };
-  if (firstChunk) append(firstChunk);
-  try {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      append(value);
-    }
-  } catch (error) {
-    const wrapped = new Error(error?.message || '上游图片响应读取中断');
-    wrapped.code = 'UPSTREAM_BODY_READ_FAILED';
-    wrapped.status = 502;
-    wrapped.cause = error;
-    throw wrapped;
-  }
-  return joinByteChunks(chunks, total);
-}
-async function sniffImageBody(body, maxBytes = 64) {
+async function sniffImageBody(body, maxBytes = 8192, options = {}) {
   if (!body?.tee) return { body, mime: '' };
   const [probeBody, replayBody] = body.tee();
   const reader = probeBody.getReader();
@@ -194,6 +169,8 @@ async function sniffImageBody(body, maxBytes = 64) {
   let total = 0;
   let prefix = '';
   const decoder = new TextDecoder();
+  const stopAfterFirstChunk = options.stopAfterFirstChunk === true;
+  const onChunk = typeof options.onChunk === 'function' ? options.onChunk : null;
   try {
     while (total < maxBytes) {
       const { value, done } = await reader.read();
@@ -201,20 +178,42 @@ async function sniffImageBody(body, maxBytes = 64) {
       const chunk = value instanceof Uint8Array ? value : new Uint8Array(value || []);
       const clipped = chunk.subarray(0, Math.max(0, maxBytes - total));
       if (clipped.byteLength) {
+        onChunk?.(clipped);
         chunks.push(clipped);
         total += clipped.byteLength;
         prefix += decoder.decode(clipped, { stream: true });
-        if (detectImageMimeFromBytes(joinByteChunks(chunks, total)) || looksLikeSsePrefix(prefix) || looksLikeJsonPrefix(prefix)) break;
+        const identifiedMime = detectImageMimeFromBytes(joinByteChunks(chunks, total));
+        const identifiedSse = looksLikeSsePrefix(prefix);
+        const identifiedJson = looksLikeJsonPrefix(prefix);
+        if (identifiedMime || identifiedSse || identifiedJson) break;
+        if (stopAfterFirstChunk && !isPotentialSsePrefix(prefix)) break;
       }
     }
     prefix += decoder.decode();
   } finally {
     reader.cancel?.().catch?.(() => {});
+    reader.releaseLock?.();
   }
   return { body: replayBody, mime: detectImageMimeFromBytes(joinByteChunks(chunks, total)), prefix };
 }
-function imageMimeFromResponse(bytes, contentType) {
-  return detectImageMimeFromBytes(bytes) || normalizeImageMime(contentType);
+async function inspectMultipartModel(request) {
+  const body = request.body;
+  if (!body?.tee) {
+    const input = await request.clone().formData();
+    return {
+      body,
+      requestedModel: String(input.get('model') || '').trim()
+    };
+  }
+  const [probeBody, replayBody] = body.tee();
+  const probeInit = { body: probeBody };
+  if (requiresNodeDuplex(probeBody)) probeInit.duplex = 'half';
+  const probeRequest = new Request(request, probeInit);
+  const input = await probeRequest.formData();
+  return {
+    body: replayBody,
+    requestedModel: String(input.get('model') || '').trim()
+  };
 }
 function isImageContentType(value) {
   return normalizeImageMime(value).startsWith('image/');
@@ -223,48 +222,42 @@ function looksLikeSsePrefix(value) {
   const prefix = String(value || '').replace(/^\uFEFF/, '');
   return /^\s*(?:data|event|id|retry)\s*:/i.test(prefix) || /^\s*:/i.test(prefix);
 }
+function isPotentialSsePrefix(value) {
+  const raw = String(value || '').replace(/^\uFEFF/, '');
+  const prefix = raw.trimStart();
+  if (!prefix || looksLikeSsePrefix(raw)) return true;
+  const firstLine = prefix.split(/\r?\n/, 1)[0];
+  if (firstLine.includes(':')) return false;
+  return /^(?:d|da|dat|data|e|ev|eve|even|event|i|id|r|re|ret|retr|retry)$/i.test(firstLine);
+}
 function looksLikeJsonPrefix(value) {
   const prefix = String(value || '').replace(/^\uFEFF/, '').trimStart();
   return prefix.startsWith('{') || prefix.startsWith('[');
 }
 function isPrivateRemoteHostname(value) {
   const host = String(value || '').trim().toLowerCase();
-  if (!host || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.internal') || host.includes(':')) return true;
+  if (!host || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal') || host.endsWith('.lan') || host.endsWith('.home') || host === 'host.docker.internal' || host.includes(':')) return true;
   if (!/^\d+\.\d+\.\d+\.\d+$/.test(host)) return false;
   const octets = host.split('.').map(Number);
   if (octets.some((item) => !Number.isInteger(item) || item < 0 || item > 255)) return true;
-  const [a, b] = octets;
-  return a === 0 || a === 10 || a === 127 || a === 169 && b === 254 || a === 192 && b === 168 || a === 172 && b >= 16 && b <= 31;
+  const [a, b, c, d] = octets;
+  return a === 0
+    || a === 10
+    || a === 100 && b >= 64 && b <= 127
+    || a === 127
+    || a === 169 && b === 254
+    || a === 172 && b >= 16 && b <= 31
+    || a === 192 && (b === 0 || b === 2 || b === 168 || b === 88 && c === 99)
+    || a === 198 && (b === 18 || b === 19 || b === 51)
+    || a === 203 && b === 0 && c === 113
+    || a >= 224
+    || a === 255 && b === 255 && c === 255 && d === 255;
 }
 function isPrivateIpAddress(value) {
   const host = String(value || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
-  if (!host) return true;
-  if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) return isPrivateRemoteHostname(host);
-  if (!host.includes(':')) return false;
-  const parts = host.split('::');
-  if (parts.length > 2) return true;
-  const parseParts = (value) => String(value || '').split(':').filter(Boolean).flatMap((part) => {
-    if (!part.includes('.')) return [Number.parseInt(part, 16)];
-    const octets = part.split('.').map(Number);
-    if (octets.length !== 4 || octets.some((item) => !Number.isInteger(item) || item < 0 || item > 255)) return [Number.NaN];
-    return [(octets[0] << 8) | octets[1], (octets[2] << 8) | octets[3]];
-  });
-  const left = parseParts(parts[0]);
-  const right = parseParts(parts[1]);
-  if ([...left, ...right].some((item) => !Number.isInteger(item) || item < 0 || item > 0xffff)) return true;
-  const groups = parts.length === 2
-    ? [...left, ...Array(Math.max(0, 8 - left.length - right.length)).fill(0), ...right]
-    : [...left];
-  if (groups.length !== 8) return true;
-  const allZero = groups.every((item) => item === 0);
-  const loopback = allZero || groups.slice(0, 7).every((item) => item === 0) && groups[7] === 1;
-  const uniqueLocal = (groups[0] & 0xfe00) === 0xfc00;
-  const linkLocal = (groups[0] & 0xffc0) === 0xfe80;
-  const multicast = (groups[0] & 0xff00) === 0xff00;
-  const documentation = groups[0] === 0x2001 && groups[1] === 0x0db8;
-  const mapped = groups.slice(0, 5).every((item) => item === 0) && groups[5] === 0xffff;
-  if (mapped) return isPrivateIpAddress(`${groups[6] >> 8}.${groups[6] & 255}.${groups[7] >> 8}.${groups[7] & 255}`);
-  return loopback || uniqueLocal || linkLocal || multicast || documentation;
+  return /^\d+\.\d+\.\d+\.\d+$/.test(host)
+    ? isPrivateRemoteHostname(host)
+    : isSharedPrivateIpAddress(host);
 }
 function normalizeRemoteIpAddress(value) {
   const host = String(value || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
@@ -282,10 +275,16 @@ async function assertPublicRemoteHostname(hostname, signal) {
     error.code = 'REMOTE_IMAGE_HOST_REJECTED';
     throw error;
   }
+  if (signal?.aborted) {
+    const error = new Error('远程图片域名校验已取消');
+    error.name = 'AbortError';
+    throw error;
+  }
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 5000);
   const abortFromCaller = () => controller.abort();
   signal?.addEventListener?.('abort', abortFromCaller, { once: true });
+  if (signal?.aborted) abortFromCaller();
   try {
     let hasAddress = false;
     const addresses = new Set();
@@ -346,22 +345,52 @@ function safeRemoteImageUrl(value) {
   parsed.hash = '';
   return parsed;
 }
-async function proxyRemoteImage(request, value) {
+function remoteImageAllowlistError(code) {
+  return code === 'REMOTE_IMAGE_ALLOWLIST_MISSING'
+    || code === 'REMOTE_IMAGE_ALLOWLIST_INVALID'
+    || code === 'REMOTE_IMAGE_HOST_NOT_ALLOWED';
+}
+function assertRemoteImageHostAllowed(target, env) {
+  const required = String(env?.UPSTREAM_ALLOWLIST_REQUIRED || '').toLowerCase() === 'true';
+  const specificHosts = String(env?.REMOTE_IMAGE_ALLOWED_HOSTS || '').trim();
+  if (!required && !specificHosts) return target;
+  const allowedHosts = specificHosts || String(env?.UPSTREAM_ALLOWED_HOSTS || '').trim();
+  try {
+    return assertUpstreamHostAllowed(target, allowedHosts);
+  } catch (error) {
+    const mapped = new Error('远程图片地址未通过允许列表校验');
+    mapped.code = error?.code === 'UPSTREAM_HOST_ALLOWLIST_MISSING'
+      ? 'REMOTE_IMAGE_ALLOWLIST_MISSING'
+      : error?.code === 'UPSTREAM_HOST_ALLOWLIST_INVALID'
+        ? 'REMOTE_IMAGE_ALLOWLIST_INVALID'
+        : 'REMOTE_IMAGE_HOST_NOT_ALLOWED';
+    throw mapped;
+  }
+}
+function remoteImagePolicyResponse(request, error) {
+  if (!remoteImageAllowlistError(error?.code)) return null;
+  return json({ error: '远程图片地址未通过允许列表校验', code: error.code }, 400, corsHeaders(request));
+}
+async function proxyRemoteImage(request, value, env) {
   if (!['GET', 'HEAD'].includes(request.method)) return json({ error: 'Image download only supports GET or HEAD' }, 405, corsHeaders(request));
   let target;
   try {
-    target = safeRemoteImageUrl(value);
+    target = assertRemoteImageHostAllowed(safeRemoteImageUrl(value), env);
   } catch (error) {
+    const policyResponse = remoteImagePolicyResponse(request, error);
+    if (policyResponse) return policyResponse;
     return json({ error: error.message || 'Invalid remote image URL', code: 'REMOTE_IMAGE_URL_REJECTED' }, 400, corsHeaders(request));
   }
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 120000);
-  let clientAborted = false;
+  const timeoutSeconds = normalizeUpstreamTimeoutSeconds(120);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutSeconds * 1000);
+  let clientAborted = Boolean(request.signal?.aborted);
   const abortFromClient = () => {
     clientAborted = true;
     controller.abort();
   };
   request.signal?.addEventListener?.('abort', abortFromClient, { once: true });
+  if (clientAborted) abortFromClient();
   const cleanup = () => {
     clearTimeout(timeoutId);
     request.signal?.removeEventListener?.('abort', abortFromClient);
@@ -371,21 +400,21 @@ async function proxyRemoteImage(request, value) {
     let current = target;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const resolvedBeforeFetch = await assertPublicRemoteHostname(current.hostname, controller.signal);
-      upstream = await fetch(current, { method: request.method, redirect: 'manual', signal: controller.signal });
-      const resolvedAfterFetch = await assertPublicRemoteHostname(current.hostname, controller.signal);
-      if (!sameDnsAnswers(resolvedBeforeFetch, resolvedAfterFetch)) {
-        await upstream.body?.cancel?.().catch?.(() => {});
-        const error = new Error('远程图片域名解析在请求期间发生变化');
-        error.code = 'REMOTE_IMAGE_DNS_CHANGED';
-        throw error;
-      }
+      upstream = await fetchWithPinnedAddress(current, resolvedBeforeFetch, {
+        method: request.method,
+        redirect: 'manual',
+        signal: controller.signal
+      });
       if (upstream.status < 300 || upstream.status >= 400) break;
       const location = upstream.headers.get('Location');
       if (!location) break;
-      current = safeRemoteImageUrl(new URL(location, current).href);
+      current = assertRemoteImageHostAllowed(safeRemoteImageUrl(new URL(location, current).href), env);
     }
     if (!upstream?.ok) {
       cleanup();
+      if (upstream && upstream.status >= 300 && upstream.status < 400) {
+        return upstreamError(request, '远程图片重定向未通过安全校验', 'REMOTE_IMAGE_REDIRECT_BLOCKED', 'upstream_redirect', 502, upstream, { timeoutSeconds });
+      }
       return upstreamError(request, '远程图片下载失败', 'REMOTE_IMAGE_FETCH_FAILED', 'image_fetch', upstream?.status || 502, upstream);
     }
     if (request.method === 'HEAD' || !upstream.body) {
@@ -409,12 +438,17 @@ async function proxyRemoteImage(request, value) {
     });
   } catch (error) {
     cleanup();
-    if (clientAborted || error?.name === 'AbortError') {
-      return upstreamError(request, '远程图片下载已取消或超时', 'REMOTE_IMAGE_ABORTED', 'image_fetch', 504, null);
+    if (clientAborted) {
+      return upstreamError(request, '远程图片下载已取消', 'REMOTE_IMAGE_CLIENT_ABORTED', 'client_abort', 499, null);
+    }
+    if (error?.name === 'AbortError') {
+      return upstreamError(request, '远程图片下载等待上游超时', 'REMOTE_IMAGE_TIMEOUT', 'image_timeout', 504, null, { timeoutSeconds });
     }
     if (error?.code === 'REMOTE_IMAGE_HOST_REJECTED') {
       return json({ error: error.message || '远程图片地址被安全策略拒绝', code: error.code }, 400, corsHeaders(request));
     }
+    const policyResponse = remoteImagePolicyResponse(request, error);
+    if (policyResponse) return policyResponse;
     if (error?.code === 'REMOTE_IMAGE_DNS_CHANGED') {
       return json({ error: error.message, code: error.code }, 409, corsHeaders(request));
     }
@@ -460,8 +494,8 @@ async function proxyMultipartBody(request, headers, apiPath, profile) {
   if (!isImageApiPath(apiPath) || !isMultipart(headers)) return request.body;
   const provider = providerKey(profile);
   if (provider === 'openai') {
-    const input = await request.clone().formData();
-    const requestedModel = String(input.get('model') || '').trim();
+    const inspected = await inspectMultipartModel(request);
+    const requestedModel = inspected.requestedModel;
     const configuredModel = String(profile.model || '').trim();
     if (!requestedModel) {
       const error = new Error('图片请求缺少 model 字段，无法与当前图片配置绑定。');
@@ -479,7 +513,8 @@ async function proxyMultipartBody(request, headers, apiPath, profile) {
     }
     headers.delete('Content-Length');
     headers.delete('Transfer-Encoding');
-    return request.body;
+    if (headerBool(headers, 'X-GPT-Image-Stream', profile.streamImages)) headers.set('X-GPT-Image-Proxy-Stream-Intent', '1');
+    return inspected.body;
   }
   const input = await request.formData();
   const out = new FormData();
@@ -503,8 +538,17 @@ async function proxyMultipartBody(request, headers, apiPath, profile) {
       else if (value !== null && value !== undefined) out.append(key, value);
     }
   } else {
+    const canonicalFields = new Set([
+      'model', 'prompt', 'negative_prompt', 'negativePrompt', 'n', 'count',
+      'resolution', 'image_size', 'size', 'aspect_ratio', 'aspectRatio', 'ratio',
+      'response_format', 'target_size', 'targetSize', 'extra_body',
+      'quality', 'image_quality', 'output_format', 'format', 'moderation',
+      'transparent_background', 'transparent', 'background',
+      'output_compression', 'compression', 'image[]', 'image', 'mask'
+    ]);
     appendIfPresent('prompt', firstValue('prompt'));
-    out.append('n', '1');
+    appendIfPresent('negative_prompt', firstValue('negative_prompt', 'negativePrompt'));
+    appendIfPresent('n', firstValue('n', 'count') || '1');
     if (provider === 'google') {
       const imageSize = firstValue('image_size', 'resolution', 'size') || '2K';
       const aspectRatio = firstValue('aspect_ratio', 'aspectRatio', 'ratio') || '1:1';
@@ -514,10 +558,12 @@ async function proxyMultipartBody(request, headers, apiPath, profile) {
       out.append('aspect_ratio', String(aspectRatio));
       out.append('response_format', 'url');
       appendIfPresent('target_size', firstValue('target_size', 'targetSize') || googleOfficialImageSize(imageSize, aspectRatio));
-      out.append('extra_body', JSON.stringify(googleCompatExtraBody(imageSize, aspectRatio)));
+      if (firstValue('extra_body')) out.append('extra_body', firstValue('extra_body'));
+      else out.append('extra_body', JSON.stringify(googleCompatExtraBody(imageSize, aspectRatio)));
     } else {
       appendIfPresent('resolution', firstValue('resolution', 'image_size', 'size') || '2k');
       appendIfPresent('aspect_ratio', firstValue('aspect_ratio', 'aspectRatio', 'ratio') || '1:1');
+      appendIfPresent('extra_body', firstValue('extra_body'));
     }
     const requestedQuality = firstValue('quality', 'image_quality');
     appendIfPresent('quality', requestedQuality ? normalizeImageQuality(requestedQuality) : '');
@@ -535,6 +581,9 @@ async function proxyMultipartBody(request, headers, apiPath, profile) {
       if (key === 'image[]' || key === 'image' || key === 'mask') {
         if (value && value.name) out.append(key, value, value.name);
         else out.append(key, value);
+      } else if (!canonicalFields.has(key) && value !== null && value !== undefined && value !== '') {
+        if (value && value.name) out.append(key, value, value.name);
+        else out.append(key, String(value));
       }
     }
   }
@@ -588,7 +637,7 @@ async function proxyBody(request, headers, apiPath, profile) {
           headerNum(headers, 'X-GPT-Image-Partial-Images', profile.streamPartialImages),
           1
         );
-        if (wantsB64 && !isGoogleImageProfile(profile)) body.response_format = 'b64_json';
+        if (wantsB64 && providerKey(profile) === 'openai') body.response_format = 'b64_json';
         if (wantsStream && isStreamCompatibleImageProfile(profile) && !isMobileRequest(request)) {
           body.stream = true;
           body.partial_images = partialImages;
@@ -597,6 +646,9 @@ async function proxyBody(request, headers, apiPath, profile) {
           delete body.partial_images;
           delete body.stream_options;
         }
+      }
+      if ((isResponsesApiPath(apiPath) || isImageApiPath(apiPath)) && body.stream === true) {
+        headers.set('X-GPT-Image-Proxy-Stream-Intent', '1');
       }
       if (isImageApiPath(apiPath) && isGoogleImageProfile(profile)) sanitizeGoogleImageBody(body);
       headers.delete('Content-Length');
@@ -627,6 +679,26 @@ function proxyFetchFailedMessage(error, profile, apiPath, request, headers) {
     : '请检查 API 地址、模型名称和服务商网关状态后重试。';
   return `${base}。模型：${profile.name || profile.id || profile.model} / ${profile.model}；供应商：${provider}；路径：${apiPath}；模式：${mode}。${suggestion}`;
 }
+function proxyTimeoutDescriptor(phase) {
+  if (phase === 'stream-idle') return {
+    code: 'PROXY_STREAM_IDLE_TIMEOUT',
+    type: 'stream_idle_timeout',
+    stage: 'stream-idle',
+    message: '本站代理在流式响应阶段等待下一段数据超时。上游可能已开始生成但长时间没有新数据，请检查服务商流状态后重试。'
+  };
+  if (phase === 'total') return {
+    code: 'PROXY_TOTAL_TIMEOUT',
+    type: 'total_timeout',
+    stage: 'total-timeout',
+    message: '本站代理图片请求超过当前配置的总超时时间。上游可能仍在处理，请确认服务商任务状态后重试。'
+  };
+  return {
+    code: 'PROXY_RESPONSE_HEADER_TIMEOUT',
+    type: 'response_header_timeout',
+    stage: 'response-header',
+    message: '本站代理等待 API 响应头超时。请降低生成张数/图片尺寸，或更换响应更稳定的 API 服务商。'
+  };
+}
 function requiresNodeDuplex(body) {
   if (body === null || body === undefined) return false;
   if (typeof body === 'string') return false;
@@ -640,7 +712,56 @@ function requiresNodeDuplex(body) {
   if (typeof body[Symbol.asyncIterator] === 'function') return true;
   return false;
 }
-function streamBodyWithTimeout(body, controller, clearTimeoutState, maxBytes = 0) {
+function requestBodyWithLimit(request, maxBytes = PROXY_REQUEST_BODY_LIMIT) {
+  const declared = Number(request?.headers?.get?.('Content-Length') || 0);
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    const error = new Error('代理请求体超过安全上限');
+    error.code = 'PROXY_REQUEST_BODY_TOO_LARGE';
+    error.status = 413;
+    throw error;
+  }
+  const body = request?.body;
+  if (!body?.getReader || typeof ReadableStream === 'undefined') return request;
+  const reader = body.getReader();
+  let totalBytes = 0;
+  let finished = false;
+  const limitedBody = new ReadableStream({
+    async pull(controller) {
+      if (finished) return;
+      try {
+        const { value, done } = await reader.read();
+        if (done) {
+          finished = true;
+          controller.close();
+          return;
+        }
+        const chunk = value instanceof Uint8Array ? value : new Uint8Array(value || []);
+        totalBytes += chunk.byteLength;
+        if (totalBytes > maxBytes) {
+          const error = new Error('代理请求体超过安全上限');
+          error.code = 'PROXY_REQUEST_BODY_TOO_LARGE';
+          error.status = 413;
+          finished = true;
+          await reader.cancel(error).catch(() => {});
+          controller.error(error);
+          return;
+        }
+        controller.enqueue(chunk);
+      } catch (error) {
+        finished = true;
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      finished = true;
+      await reader.cancel(reason).catch(() => {});
+    }
+  });
+  const init = { body: limitedBody };
+  if (requiresNodeDuplex(limitedBody)) init.duplex = 'half';
+  return new Request(request, init);
+}
+function streamBodyWithTimeout(body, controller, clearTimeoutState, maxBytes = 0, onChunk = null) {
   const reader = body?.getReader?.();
   if (!reader || typeof ReadableStream === 'undefined') {
     clearTimeoutState();
@@ -653,9 +774,37 @@ function streamBodyWithTimeout(body, controller, clearTimeoutState, maxBytes = 0
     finished = true;
     clearTimeoutState();
   };
+  const fail = async (output, error) => {
+    const timeoutError = typeof clearTimeoutState?.streamTimeoutError === 'function'
+      ? clearTimeoutState.streamTimeoutError()
+      : null;
+      if (timeoutError) {
+        const event = typeof clearTimeoutState?.streamTimeoutEvent === 'function'
+          ? clearTimeoutState.streamTimeoutEvent(timeoutError)
+          : '';
+        finish();
+        if (event) {
+        controller.abort(timeoutError);
+        await reader.cancel?.(timeoutError).catch?.(() => {});
+        output.enqueue(new TextEncoder().encode(event));
+        output.close();
+        return;
+      }
+      controller.abort(timeoutError);
+      await reader.cancel?.(timeoutError).catch?.(() => {});
+      output.error(timeoutError);
+      return;
+    }
+    finish();
+    output.error(error);
+  };
   return new ReadableStream({
     async pull(output) {
       try {
+        if (controller.signal?.aborted) {
+          await fail(output, controller.signal.reason || new Error('代理请求已中止'));
+          return;
+        }
         const { value, done } = await reader.read();
         if (done) {
           finish();
@@ -672,10 +821,10 @@ function streamBodyWithTimeout(body, controller, clearTimeoutState, maxBytes = 0
           output.error(error);
           return;
         }
+        if (typeof onChunk === 'function') onChunk(value);
         output.enqueue(value);
       } catch (error) {
-        finish();
-        output.error(error);
+        await fail(output, error);
       }
     },
     async cancel(reason) {
@@ -689,7 +838,11 @@ function streamBodyWithTimeout(body, controller, clearTimeoutState, maxBytes = 0
 export async function onRequest(ctx) {
   const proxyStart = Date.now();
   let clearProxyTimeout = () => {};
+  let resetProxyTimeout = () => {};
   let detachClientAbort = () => {};
+  let proxyController = null;
+  let proxyClientAbort = null;
+  let proxyTimeoutTriggeredPhase = '';
   if (!isSameOriginRequest(ctx.request)) {
     return json({ error: 'Cross-origin proxy requests are not allowed' }, 403, corsHeaders(ctx.request));
   }
@@ -701,7 +854,7 @@ export async function onRequest(ctx) {
   const apiPath = url.pathname.replace(/^\/api-proxy\/?/, '') + url.search;
   if (!apiPath || apiPath === '/') return json({ error: 'API Proxy - no path specified' }, 400, corsHeaders(ctx.request));
   if (apiPath.split('?')[0] === 'image-download') {
-    return proxyRemoteImage(ctx.request, url.searchParams.get('url') || '');
+    return proxyRemoteImage(ctx.request, url.searchParams.get('url') || '', ctx.env);
   }
   let profile;
   try {
@@ -727,38 +880,67 @@ export async function onRequest(ctx) {
   try {
     const headers = new Headers(ctx.request.headers);
     const timeoutOverride = Number(ctx.request.headers.get('X-GPT-Image-Timeout-Seconds'));
-    headers.delete('Host'); headers.delete('Cookie'); headers.delete('Origin'); headers.delete('Referer'); headers.delete('CF-Connecting-IP'); headers.delete('X-Forwarded-For'); headers.delete('X-GPT-Image-Session'); headers.delete('X-GPT-Image-Profile-Id'); headers.delete('X-GPT-Image-Timeout-Seconds'); headers.delete('X-GPT-Image-Entry');
+    headers.delete('Host'); headers.delete('Cookie'); headers.delete('Origin'); headers.delete('Referer'); headers.delete('CF-Connecting-IP'); headers.delete('X-Forwarded-For'); headers.delete('Accept-Encoding'); headers.delete('X-GPT-Image-Session'); headers.delete('X-GPT-Image-Profile-Id'); headers.delete('X-GPT-Image-Timeout-Seconds'); headers.delete('X-GPT-Image-Entry');
     headers.set('Authorization', 'Bearer ' + apiKey);
     if (ctx.request.method !== 'GET' && ctx.request.method !== 'HEAD' && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
     const controller = new AbortController();
-    const abortFromClient = () => {
-      controller.abort();
-    };
-    if (ctx.request.signal?.aborted) abortFromClient();
-    else {
-      ctx.request.signal?.addEventListener?.('abort', abortFromClient, { once: true });
-      detachClientAbort = () => ctx.request.signal?.removeEventListener?.('abort', abortFromClient);
-    }
-    const timeoutMs = Math.max(1000, Math.min(Number(timeoutOverride || profile.timeout || settings.timeout || 600) * 1000, 6000 * 1000));
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-    timeoutId.unref?.();
+    proxyController = controller;
+    proxyClientAbort = bindClientAbort(ctx.request, controller);
+    detachClientAbort = () => proxyClientAbort.cleanup();
+    const requestedTimeout = Number.isFinite(timeoutOverride) && timeoutOverride > 0 ? timeoutOverride : Number(profile.timeout || settings.timeout || 600);
+    const timeoutSeconds = normalizeUpstreamTimeoutSeconds(requestedTimeout);
+    const timeoutMs = timeoutSeconds * 1000;
+    let timeoutId = null;
+    let totalTimeoutId = null;
     let timeoutCleared = false;
+    const armProxyTimeout = (phase) => {
+      if (timeoutCleared) return;
+      if (timeoutId) clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => {
+        proxyTimeoutTriggeredPhase = phase;
+        controller.abort();
+      }, timeoutMs);
+      timeoutId.unref?.();
+    };
+    const armTotalProxyTimeout = () => {
+      if (timeoutCleared) return;
+      if (totalTimeoutId) clearTimeout(totalTimeoutId);
+      totalTimeoutId = setTimeout(() => {
+        proxyTimeoutTriggeredPhase = 'total';
+        controller.abort();
+      }, timeoutMs);
+      totalTimeoutId.unref?.();
+    };
+    resetProxyTimeout = () => armProxyTimeout('stream-idle');
     clearProxyTimeout = () => {
       if (timeoutCleared) return;
       timeoutCleared = true;
-      clearTimeout(timeoutId);
+      if (timeoutId) clearTimeout(timeoutId);
+      if (totalTimeoutId) clearTimeout(totalTimeoutId);
       detachClientAbort();
       detachClientAbort = () => {};
+      resetProxyTimeout = () => {};
     };
-    const body = await proxyBody(ctx.request, headers, apiPath, profile);
+    armTotalProxyTimeout();
+    const boundedRequest = requestBodyWithLimit(ctx.request);
+    const body = await proxyBody(boundedRequest, headers, apiPath, profile);
+    const requestStreamIntent = headerBool(ctx.request.headers, 'X-GPT-Image-Stream', false)
+      || headerBool(headers, 'X-GPT-Image-Proxy-Stream-Intent', false);
     headers.delete('X-GPT-Image-Response-B64');
     headers.delete('X-GPT-Image-Stream');
     headers.delete('X-GPT-Image-Partial-Images');
     headers.delete('X-GPT-Image-Multipart-Sanitized');
+    headers.delete('X-GPT-Image-Proxy-Stream-Intent');
     const upstreamStart = Date.now();
     const fetchInit = { method: ctx.request.method, headers, body, redirect: 'manual', signal: controller.signal };
     if (ctx.request.method !== 'GET' && ctx.request.method !== 'HEAD' && requiresNodeDuplex(body)) fetchInit.duplex = 'half';
-    const upstream = await fetch(targetUrl, fetchInit);
+    armProxyTimeout('response-header');
+    const pinned = await fetchPinnedUpstream(targetUrl, fetchInit, {
+      allowedHosts: ctx.env?.UPSTREAM_ALLOWED_HOSTS,
+      requireAllowlist: String(ctx.env?.UPSTREAM_ALLOWLIST_REQUIRED || '').toLowerCase() === 'true'
+    });
+    const upstream = pinned.response;
+    armProxyTimeout('stream-idle');
     const upstreamMs = Date.now() - upstreamStart;
     if (upstream.status >= 300 && upstream.status < 400) {
       clearProxyTimeout();
@@ -779,6 +961,7 @@ export async function onRequest(ctx) {
     responseHeaders.delete('Content-Length');
     responseHeaders.delete('Content-Encoding');
     responseHeaders.delete('Transfer-Encoding');
+    responseHeaders.delete('X-GPT-Image-Proxy-Probed');
     Object.entries(corsHeaders(ctx.request, {
       'X-GPT-Image-Upstream-Ms': String(upstreamMs),
       'X-GPT-Image-Proxy-Ms': String(Date.now() - proxyStart),
@@ -786,93 +969,60 @@ export async function onRequest(ctx) {
       'X-GPT-Image-Profile-Name': encodeURIComponent(String(profile.name || ''))
     })).forEach(([k, v]) => responseHeaders.set(k, v));
     let responseBody = upstream.body;
-    let binaryProbeMime = '';
     const upstreamContentType = String(upstream.headers.get('Content-Type') || '').toLowerCase();
-    if (upstream.ok && isImageApiPath(apiPath) && responseBody) {
-      const sniffed = await sniffImageBody(responseBody);
-      responseBody = sniffed.body;
-      binaryProbeMime = sniffed.mime;
-      const responsePrefix = sniffed.prefix || '';
-      const sseLike = !binaryProbeMime && (
-        looksLikeSsePrefix(responsePrefix)
-        || (isEventStream(upstream.headers) && !looksLikeJsonPrefix(responsePrefix))
-      );
-      const binaryLike = !!binaryProbeMime || isImageContentType(upstreamContentType);
-      const jsonLike = upstreamContentType.includes('json') || looksLikeJsonPrefix(responsePrefix);
-      if (sseLike) {
-        responseHeaders.set('Content-Type', 'text/event-stream; charset=utf-8');
-        responseHeaders.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-        responseHeaders.set('X-Accel-Buffering', 'no');
-        responseHeaders.set('X-GPT-Image-Proxy-Streamed', '1');
-        return new Response(streamBodyWithTimeout(responseBody, controller, clearProxyTimeout), {
-          status: upstream.status,
-          statusText: upstream.statusText,
-          headers: responseHeaders
+    const rawImageApiResponse = isImageApiPath(apiPath) || isResponsesApiPath(apiPath);
+    if (upstream.ok && rawImageApiResponse && responseBody) {
+      const declaredSse = isEventStream(upstream.headers);
+      let detectedMime = '';
+      {
+        const sniffed = await sniffImageBody(responseBody, 8192, {
+          stopAfterFirstChunk: requestStreamIntent,
+          onChunk: resetProxyTimeout
         });
-      }
-      if (binaryLike) {
-        const responseMime = binaryProbeMime || normalizeImageMime(upstreamContentType);
-        if (responseMime) {
-          responseHeaders.delete('Content-Encoding');
-          responseHeaders.delete('Transfer-Encoding');
-          responseHeaders.set('Content-Type', responseMime);
-          responseHeaders.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
-          responseHeaders.set('X-GPT-Image-Proxy-Streamed', '0');
-          return new Response(streamBodyWithTimeout(responseBody, controller, clearProxyTimeout), {
-            status: upstream.status,
-            statusText: upstream.statusText,
-            headers: responseHeaders
-          });
+        responseBody = sniffed.body;
+        detectedMime = sniffed.mime || '';
+        if (detectedMime) responseHeaders.set('Content-Type', detectedMime);
+        else if (looksLikeSsePrefix(sniffed.prefix)) responseHeaders.set('Content-Type', 'text/event-stream; charset=utf-8');
+        else if (looksLikeJsonPrefix(sniffed.prefix) && (declaredSse || isImageContentType(upstreamContentType))) responseHeaders.set('Content-Type', 'application/json; charset=utf-8');
+        if (detectedMime || looksLikeSsePrefix(sniffed.prefix) || looksLikeJsonPrefix(sniffed.prefix)) {
+          responseHeaders.set('X-GPT-Image-Proxy-Probed', '1');
         }
       }
-      if (jsonLike) {
-        responseHeaders.set('Content-Type', 'application/json; charset=utf-8');
-        responseHeaders.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
-        responseHeaders.set('X-GPT-Image-Proxy-Streamed', '1');
-        return new Response(streamBodyWithTimeout(responseBody, controller, clearProxyTimeout), {
-          status: upstream.status,
-          statusText: upstream.statusText,
-          headers: responseHeaders
-        });
-      }
+      const responseIsSse = isEventStream(responseHeaders);
+      clearProxyTimeout.streamTimeoutError = () => {
+        if (!proxyController?.signal?.aborted || proxyClientAbort?.wasAborted()) return null;
+        const descriptor = proxyTimeoutDescriptor(proxyTimeoutTriggeredPhase || 'response-header');
+        const error = new Error(descriptor.message);
+        Object.assign(error, descriptor);
+        error.name = 'AbortError';
+        return error;
+      };
+      clearProxyTimeout.streamTimeoutEvent = (error) => responseIsSse
+        ? `event: error\ndata: ${JSON.stringify({
+          error: { message: `${error.message}（代码：${error.code}；阶段：${error.stage}）`, type: error.type, code: error.code, stage: error.stage },
+          code: error.code,
+          stage: error.stage
+        })}\n\n`
+        : '';
+      responseHeaders.set('Cache-Control', responseIsSse || requestStreamIntent
+        ? 'no-cache, no-store, must-revalidate'
+        : 'no-store, no-cache, must-revalidate, max-age=0');
+      if (responseIsSse || requestStreamIntent) responseHeaders.set('X-Accel-Buffering', 'no');
+      responseHeaders.set('X-GPT-Image-Proxy-Streamed', responseIsSse || requestStreamIntent || (!detectedMime && !isImageContentType(upstreamContentType)) ? '1' : '0');
+      return new Response(streamBodyWithTimeout(responseBody, controller, clearProxyTimeout, IMAGE_RESPONSE_LIMIT, resetProxyTimeout), {
+        status: upstream.status,
+        statusText: upstream.statusText,
+        headers: responseHeaders
+      });
     }
     let bodyText = '';
-    let bodyConsumed = false;
-    if (upstream.ok && isImageApiPath(apiPath) && responseBody && (isImageContentType(upstreamContentType) || binaryProbeMime || (!upstreamContentType.includes('json') && !isEventStream(upstream.headers)))) {
-      const reader = responseBody.getReader();
-      let bytes;
-      try {
-        bytes = await readReaderBytes(reader);
-      } finally {
-        reader.releaseLock?.();
-      }
-      bodyConsumed = true;
-      const responseMime = imageMimeFromResponse(bytes, binaryProbeMime || upstreamContentType);
-      if (responseMime && bytes.length) {
-        responseHeaders.delete('Content-Length');
-        responseHeaders.delete('Content-Encoding');
-        responseHeaders.delete('Transfer-Encoding');
-        responseHeaders.set('Content-Type', responseMime);
-        responseHeaders.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
-        responseHeaders.set('X-GPT-Image-Proxy-Streamed', '0');
-        clearProxyTimeout();
-        return new Response(bytes, { status: upstream.status, statusText: upstream.statusText, headers: responseHeaders });
-      }
-      bodyText = new TextDecoder().decode(bytes);
+    try {
+      const timedBody = responseBody
+        ? streamBodyWithTimeout(responseBody, controller, clearProxyTimeout, IMAGE_RESPONSE_LIMIT, resetProxyTimeout)
+        : null;
+      bodyText = timedBody ? await new Response(timedBody).text() : await upstream.text();
+    } finally {
       clearProxyTimeout();
-    }
-    if (!bodyConsumed && upstream.ok && isImageApiPath(apiPath) && responseBody && upstreamContentType.includes('application/json')) {
-      responseHeaders.set('Content-Type', 'application/json; charset=utf-8');
-      responseHeaders.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
-      responseHeaders.set('X-GPT-Image-Proxy-Streamed', '1');
-      return new Response(streamBodyWithTimeout(responseBody, controller, clearProxyTimeout), { status: upstream.status, statusText: upstream.statusText, headers: responseHeaders });
-    }
-    if (!bodyConsumed) {
-      try {
-        bodyText = responseBody ? await new Response(responseBody).text() : await upstream.text();
-      } finally {
-        clearProxyTimeout();
-      }
     }
     try { JSON.parse(bodyText); responseHeaders.set('Content-Type', 'application/json; charset=utf-8'); return new Response(bodyText, { status: upstream.status, statusText: upstream.statusText, headers: responseHeaders }); } catch (parseError) {
       if (looksLikeCloudflareTimeout(bodyText, upstream.status)) return upstreamError(
@@ -904,6 +1054,9 @@ export async function onRequest(ctx) {
     }
   } catch (e) {
     clearProxyTimeout();
+    if (e?.code === 'PROXY_REQUEST_BODY_TOO_LARGE') {
+      return upstreamError(ctx.request, e.message || '代理请求体超过安全上限。', e.code, 'request_body', 413, null, { proxyMs: Date.now() - proxyStart });
+    }
     if (e?.code === 'IMAGE_PROFILE_MODEL_MISSING' || e?.code === 'IMAGE_PROFILE_MODEL_MISMATCH') {
       return json({
         error: e.message,
@@ -912,11 +1065,21 @@ export async function onRequest(ctx) {
         configuredModel: e.configuredModel || profile?.model || undefined
       }, 400, corsHeaders(ctx.request));
     }
-    if (e.name === 'AbortError') {
-      if (ctx.request.signal?.aborted) {
+    if (e?.code === 'UPSTREAM_DNS_REJECTED') {
+      return upstreamError(ctx.request, e.message || '上游地址解析到了内部网络。', e.code, 'upstream_dns', 400, null, { proxyMs: Date.now() - proxyStart });
+    }
+    if (e?.code === 'UPSTREAM_HOST_ALLOWLIST_MISSING' || e?.code === 'UPSTREAM_HOST_ALLOWLIST_INVALID' || e?.code === 'UPSTREAM_HOST_NOT_ALLOWED') {
+      return upstreamError(ctx.request, e.message || '上游 API 域名未通过允许列表校验。', e.code, 'upstream_host_policy', 400, null, { proxyMs: Date.now() - proxyStart });
+    }
+    if (e?.code === 'UPSTREAM_DNS_REBOUND' || e?.code === 'UPSTREAM_DNS_FAILED') {
+      return upstreamError(ctx.request, e.message || '上游地址 DNS 校验失败。', e.code, 'upstream_dns', 502, null, { proxyMs: Date.now() - proxyStart });
+    }
+    if (e?.name === 'AbortError' || e?.code === 'UPSTREAM_DNS_TIMEOUT' || (proxyController?.signal?.aborted && !ctx.request.signal?.aborted)) {
+      if (proxyClientAbort?.wasAborted()) {
         return upstreamError(ctx.request, '客户端已取消图片请求。', 'PROXY_CLIENT_ABORTED', 'client_abort', 499, null, { proxyMs: Date.now() - proxyStart });
       }
-      return upstreamError(ctx.request, '本站代理等待 API 响应超时。请降低生成张数/图片尺寸，或更换响应更稳定的 API 服务商。', 'PROXY_TIMEOUT', 'proxy_timeout', 504, null, { proxyMs: Date.now() - proxyStart });
+      const descriptor = proxyTimeoutDescriptor(proxyTimeoutTriggeredPhase || 'response-header');
+      return upstreamError(ctx.request, descriptor.message, descriptor.code, descriptor.type, 504, null, { proxyMs: Date.now() - proxyStart, timeoutPhase: descriptor.stage });
     }
     if (e?.code === 'UPSTREAM_RESPONSE_TOO_LARGE' || e?.code === 'UPSTREAM_BODY_READ_FAILED') {
       return upstreamError(ctx.request, e.message || '上游图片响应读取失败', e.code, 'upstream_read', 502, null, { proxyMs: Date.now() - proxyStart });

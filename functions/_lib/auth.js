@@ -1,5 +1,3 @@
-const JWT_FALLBACK = 'gpt-image2-jwt-secret-key-2026-secure';
-
 function b64url(bytes) {
   return btoa(String.fromCharCode(...new Uint8Array(bytes)))
     .replace(/\+/g, '-')
@@ -15,21 +13,17 @@ function b64urlDecode(value) {
 
 function getCookie(header, name) {
   const match = String(header || '').match(new RegExp('(?:^|;\\s*)' + name + '=([^;]*)'));
-  return match ? decodeURIComponent(match[1]) : null;
-}
-
-function isLocalRequest(request) {
+  if (!match) return null;
   try {
-    const hostname = new URL(request?.url || 'http://invalid').hostname;
-    return hostname === '127.0.0.1' || hostname === 'localhost';
+    return decodeURIComponent(match[1]);
   } catch (error) {
-    return false;
+    return null;
   }
 }
 
-function resolveJwtSecret(env, request) {
+function resolveJwtSecret(env) {
   if (env?.JWT_SECRET) return env.JWT_SECRET;
-  if (isLocalRequest(request)) return JWT_FALLBACK;
+  if (env?.ALLOW_INSECURE_JWT_FALLBACK === 'true' && env?.LOCAL_JWT_SECRET) return env.LOCAL_JWT_SECRET;
   throw new Error('JWT_SECRET is required');
 }
 
@@ -50,7 +44,7 @@ export async function signToken(payload, env, request) {
   const encoder = new TextEncoder();
   const head = b64url(encoder.encode(JSON.stringify({ alg: 'HS256', typ: 'JWT' })));
   const body = b64url(encoder.encode(JSON.stringify(payload)));
-  const key = await importHmacKey(resolveJwtSecret(env, request), ['sign']);
+  const key = await importHmacKey(resolveJwtSecret(env), ['sign']);
   const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(head + '.' + body));
   return head + '.' + body + '.' + b64url(signature);
 }
@@ -58,7 +52,7 @@ export async function signToken(payload, env, request) {
 export async function verifyToken(token, env, request) {
   const parts = String(token || '').split('.');
   if (parts.length !== 3) throw new Error('invalid token');
-  const key = await importHmacKey(resolveJwtSecret(env, request), ['verify']);
+  const key = await importHmacKey(resolveJwtSecret(env), ['verify']);
   const valid = await crypto.subtle.verify(
     'HMAC',
     key,
@@ -74,16 +68,16 @@ export async function verifyToken(token, env, request) {
 export function getRequestToken(request, env) {
   const cookieToken = getCookie(request.headers.get('Cookie') || '', 'session');
   if (cookieToken) return cookieToken;
-  const allowHeader = env?.ALLOW_SESSION_HEADER_AUTH === 'true' || isLocalRequest(request);
+  const allowHeader = env?.ALLOW_SESSION_HEADER_AUTH === 'true';
   if (!allowHeader) return null;
   const headerToken = String(request.headers.get('X-GPT-Image-Session') || '').trim();
   return headerToken || null;
 }
 
 export async function currentUser(request, env) {
-  const token = getRequestToken(request, env);
-  if (!token) return null;
   try {
+    const token = getRequestToken(request, env);
+    if (!token) return null;
     const payload = await verifyToken(token, env, request);
     if (!Number.isSafeInteger(payload.sessionVersion) || payload.sessionVersion < 1) return null;
     const user = await env.gpt_image2_db
@@ -112,9 +106,22 @@ export function json(data, status = 200, extraHeaders = {}) {
   });
 }
 
+export async function readJsonBody(request, maxBytes = 16 * 1024) {
+  const declared = Number(request?.headers?.get?.('Content-Length') || 0);
+  if (declared > maxBytes) throw Object.assign(new Error('Request body is too large'), { status: 413 });
+  const text = await request.text();
+  if (new TextEncoder().encode(text).byteLength > maxBytes) {
+    throw Object.assign(new Error('Request body is too large'), { status: 413 });
+  }
+  try {
+    return JSON.parse(text || '{}');
+  } catch {
+    throw Object.assign(new Error('Invalid JSON body'), { status: 400 });
+  }
+}
+
 export function clientIp(request) {
-  const forwarded = String(request.headers.get('X-Forwarded-For') || '').split(',')[0].trim();
-  return request.headers.get('CF-Connecting-IP') || forwarded || 'unknown';
+  return String(request.headers.get('CF-Connecting-IP') || '').trim() || 'unknown';
 }
 
 export function decodeUsername(body) {

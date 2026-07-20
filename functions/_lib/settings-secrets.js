@@ -1,6 +1,6 @@
 export const SECRET_PLACEHOLDER = '***MASKED***';
 
-const SECRET_KEY_PATTERN = /(?:api.?key|access.?key|private.?key|service.?account.?key|secret|password|credential|authorization|cookie|token)$/i;
+const SECRET_KEY_PATTERN = /(?:api.?keys?|access.?keys?|private.?keys?|service.?account.?keys?|secret(?:s?|keys?|values?)|password(?:s?|hash|values?)|credentials?|authorizations?|cookies?|token(?:s?|values?|secrets?|hash))(?:encrypted|ciphertext)?$/i;
 
 export function isSecretKey(key) {
   return SECRET_KEY_PATTERN.test(String(key || '').replace(/[^a-z0-9]/gi, ''));

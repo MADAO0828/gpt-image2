@@ -1,4 +1,6 @@
 const STORE_KEY = 'gpt-image2.home.v3';
+const TASK_DELETE_TOMBSTONE_KEY = `${STORE_KEY}.task-deletions`;
+const TASK_DELETE_TOMBSTONE_LIMIT = 256;
 const THEME_KEY = 'gpt-image2.theme';
 const COMPOSER_SESSION_KEY = 'gpt-image2.home.v3.composer-session';
 const ENTRY_ADVANCED_PREFIX = 'nexgen-entry-advanced.';
@@ -6,14 +8,19 @@ const PERSISTED_PROMPT_KEY = 'gpt-image2.home.v3.persisted-prompt';
 const DB_NAME = 'gpt-image2-home-v3';
 const DB_STORE = 'blobs';
 const DB_AGENT_STORE = 'agentThreads';
+const DB_TASK_STORE = 'tasks';
+const TASK_TOMBSTONE_PREFIX = '__task-delete__:';
+const TASK_TOMBSTONE_KIND = 'task-delete';
 const BLOB_RESERVATION_KEY = 'gpt-image2.home.v3.blob-reservations';
 const BLOB_RESERVATION_PREFIX = `${BLOB_RESERVATION_KEY}.`;
 const BLOB_RESERVATION_TTL_MS = 90 * 1000;
+const BLOB_RELEASE_RETRY_DELAY_MS = 5000;
+const BLOB_REFERENCE_LOCK_NAME = 'gpt-image2-blob-reference';
 const PROMPT_PAGE_SIZE = 36;
 const PROMPT_VIRTUAL_THRESHOLD = 108;
 const PROMPT_VIRTUAL_BUFFER_ROWS = 5;
 const PROMPT_REPO_CACHE_LIMIT = 24;
-const PROMPT_FAST_VERSION = 'home-v3-20260718-scroll-smooth-r112';
+const PROMPT_FAST_VERSION = 'home-v3-20260720-full-audit-r191';
 const PROMPT_FAST_BOOTSTRAP_URL = `/prompts_fast/bootstrap.json?v=${PROMPT_FAST_VERSION}`;
 const PROMPT_FAST_PREVIEWS_URL = `/prompts_fast/category_previews.json?v=${PROMPT_FAST_VERSION}`;
 const PROMPT_FAST_SEARCH_URL = `/prompts_fast/search_index.json?v=${PROMPT_FAST_VERSION}`;
@@ -21,8 +28,14 @@ const GALLERY_VIRTUAL_BUFFER_ROWS = 6;
 const GALLERY_VIRTUAL_THRESHOLD = 42;
 const GALLERY_VIRTUAL_WINDOW_STEP_ROWS = 8;
 const PROMPT_VIRTUAL_WINDOW_STEP_ROWS = 5;
-const VIRTUAL_SCROLL_IDLE_DELAY = 120;
+const VIRTUAL_SCROLL_IDLE_DELAY = 220;
+const SCROLL_END_FALLBACK_DELAY = 360;
 const IMAGE_OBJECT_URL_CACHE_LIMIT = 72;
+const GALLERY_PREVIEW_URL_CACHE_LIMIT = 48;
+const GALLERY_PREVIEW_MAX_EDGE = 1280;
+const GALLERY_PREVIEW_CONCURRENCY = 2;
+const GALLERY_POST_SCROLL_HYDRATION_DELAY = 360;
+const LEGACY_IMAGE_URL_MAX_LENGTH = 8 * 1024 * 1024;
 const REFERENCE_OBJECT_URL_CACHE_LIMIT = 48;
 const STREAM_IMAGE_LIMIT = 8;
 const IMAGE_STREAM_EVENT_LIMIT = 32 * 1024 * 1024;
@@ -31,6 +44,7 @@ const STREAM_EVENT_METADATA_LIMIT = 24;
 const AGENT_STREAM_TEXT_LIMIT = 4 * 1024 * 1024;
 const AGENT_STREAM_EVENT_LIMIT = 8 * 1024 * 1024;
 const transientObjectUrls = new Set();
+const deferredObjectUrlReleases = new Set();
 const localBlobReservations = new Map();
 const COMPOSER_SETTING_KEYS = ['quality', 'output_format', 'output_compression', 'n', 'transparent_output', 'moderation', 'openaiSize', 'openaiAspectRatio', 'googleBaseResolution', 'googleAspectRatio', 'xaiResolution', 'xaiAspectRatio'];
 const COMPOSER_SESSION_FIELDS = ['activeImageProfileId', 'activeProfileId'];
@@ -78,10 +92,16 @@ const HOMEPAGE_V3_TEST_HOOKS = typeof window !== 'undefined' ? (window.__homepag
 const IMAGE_STREAM_RUNTIME = typeof globalThis !== 'undefined' ? globalThis.NexGenImageStream : null;
 const STREAM_PARTIAL_PER_OUTPUT_LIMIT = 2;
 const STREAM_PARTIAL_TASK_LIMIT = 8;
+const STREAM_PARTIAL_PERSIST_DELAY_MS = 180;
 const STREAM_INPUT_FILE_LIMIT = 50 * 1024 * 1024;
 const STREAM_INPUT_TOTAL_LIMIT = 512 * 1024 * 1024;
 const streamPartialPersistChains = new Map();
 const streamPartialPersistPending = new Map();
+const taskGenerationVersions = new Map();
+const taskGenerationControllers = new Map();
+const pendingBlobReleases = new Set();
+const pendingBlobReservationReleases = new Set();
+let pendingBlobReleaseFlushTimer = 0;
 
 const DEFAULT_AGENT_BUDGET = {
   maxSteps: 5,
@@ -171,11 +191,45 @@ const PRO_DIMENSIONS = [
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 const uid = (prefix) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+const BLOB_RESERVATION_OWNER = uid('blob-owner');
+
+function beginTaskGeneration(task) {
+  if (!task?.id) return { version: 0, signal: undefined };
+  taskGenerationControllers.get(task.id)?.abort?.();
+  const version = Number(taskGenerationVersions.get(task.id) || 0) + 1;
+  taskGenerationVersions.set(task.id, version);
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  if (controller) taskGenerationControllers.set(task.id, controller);
+  return { version, signal: controller?.signal };
+}
+
+function isTaskGenerationActive(task, version) {
+  return !!task?.id
+    && Number(taskGenerationVersions.get(task.id) || 0) === Number(version || 0)
+    && state.tasks.some((item) => item === task || item?.id === task.id);
+}
+
+function invalidateTaskGeneration(taskId) {
+  if (!taskId) return;
+  const version = Number(taskGenerationVersions.get(taskId) || 0) + 1;
+  taskGenerationVersions.set(taskId, version);
+  taskGenerationControllers.get(taskId)?.abort?.();
+  taskGenerationControllers.delete(taskId);
+  const pending = streamPartialPersistPending.get(taskId);
+  pending?.pending?.clear?.();
+}
+
+function finishTaskGeneration(taskId, version) {
+  if (!taskId || Number(taskGenerationVersions.get(taskId) || 0) !== Number(version || 0)) return;
+  taskGenerationVersions.delete(taskId);
+  taskGenerationControllers.delete(taskId);
+}
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
 const cssEscape = (value) => (typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(String(value ?? '')) : String(value ?? '').replace(/["\\]/g, '\\$&'));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const MODAL_FOCUSABLE_SELECTOR = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 const modalOpenerSnapshots = new Map();
+let imageContextMenuOpener = null;
 const AGENT_DEFAULT_TIMEOUT_SECONDS = 60;
 const AGENT_RENDER_MESSAGE_LIMIT = 80;
 const AGENT_THREAD_MESSAGE_LIMIT = 240;
@@ -194,20 +248,56 @@ let galleryVirtualRenderTimer = 0;
 let promptRepoVirtualRenderTimer = 0;
 let galleryVirtualRenderFrame = 0;
 let promptRepoVirtualRenderFrame = 0;
+let galleryScrollLastAt = 0;
+let promptRepoScrollLastAt = 0;
+let galleryScrollDelta = 0;
+let promptRepoScrollDelta = 0;
+let galleryScrollNode = null;
+let promptRepoScrollNode = null;
+let galleryScrollGeneration = 0;
+let promptRepoScrollGeneration = 0;
+let galleryScrollIdleNode = null;
+let promptRepoScrollIdleNode = null;
+let galleryScrollIdleGeneration = 0;
+let promptRepoScrollIdleGeneration = 0;
+let agentScrollLastAt = 0;
 let galleryVirtualRenderToken = 0;
 let promptRepoVirtualRenderToken = 0;
 let galleryVirtualHydratePending = false;
 let agentScrollIdleTimer = 0;
-let agentScrollCaptureFrame = 0;
-let agentScrollCaptureToken = 0;
+let deferredRenderFrame = 0;
+let deferredRenderPending = false;
 let agentScrollRestoreToken = 0;
+let lastRenderedAgentScrollKey = '';
 let galleryScrollRestoreToken = 0;
+let promptRepoScrollRestoreToken = 0;
+let workflowScrollRestoreToken = 0;
+let workflowScrollIdleTimer = 0;
+let workflowScrollLastAt = 0;
 let agentScrollActivity = false;
+let galleryScrollActivity = false;
 let promptRepoScrollActivity = false;
+let workflowScrollActivity = false;
 let promptRepoEdgeCheckFrame = 0;
+let promptRepoEdgeCheckTimer = 0;
+let promptRepoEdgeCheckLastAt = 0;
 let promptRepoEdgeCheckToken = 0;
 let agentTaskCardSyncFrame = 0;
+let galleryTaskCardSyncFrame = 0;
 const agentTaskCardSyncQueue = new Map();
+const galleryTaskCardSyncQueue = new Map();
+const galleryPreviewPromises = new Map();
+const galleryDeferredHydrations = new Map();
+const galleryPreviewQueue = [];
+let galleryPreviewActive = 0;
+const galleryPreviewConsumers = new WeakMap();
+let filteredTasksCache = null;
+let persistedStoreBaseline = null;
+let promptRepoSyncPending = false;
+let galleryHydrationFlushScheduled = false;
+let galleryHydrationFlushRunning = false;
+let galleryHydrationDeferUntil = 0;
+let userInteractionRenderAllowed = false;
 
 function makeAgentThread(projectId, overrides = {}) {
   const createdAt = overrides.createdAt || Date.now();
@@ -413,6 +503,17 @@ function revokeMapEntry(map, key) {
   revokeObjectUrl(map.get(key));
   map.delete(key);
 }
+function objectUrlUsedByDocument(url) {
+  if (!url || typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return false;
+  return Array.from(document.querySelectorAll('img')).some((img) => img?.currentSrc === url || img?.src === url);
+}
+function releaseDeferredObjectUrls() {
+  for (const url of [...deferredObjectUrlReleases]) {
+    if (objectUrlUsedByDocument(url)) continue;
+    deferredObjectUrlReleases.delete(url);
+    revokeObjectUrl(url);
+  }
+}
 function compactAgentMessageForStorage(message) {
   const attachments = Array.isArray(message?.attachments)
     ? message.attachments.map(({ url, file, dataUrl, image_url, imageUrl, ...attachment }) => attachment)
@@ -499,10 +600,18 @@ function revokeTransientObjectUrl(url) {
 }
 function rememberObjectUrl(map, key, url, limit) {
   if (!map || !key || !url) return url;
-  if (map.has(key)) revokeObjectUrl(map.get(key));
+  const previous = map.get(key);
+  if (previous && previous !== url) {
+    if (objectUrlUsedByDocument(previous)) deferredObjectUrlReleases.add(previous);
+    else revokeObjectUrl(previous);
+  }
   map.delete(key);
   map.set(key, url);
-  while (map.size > limit) revokeMapEntry(map, map.keys().next().value);
+  while (map.size > limit) {
+    const candidate = [...map.entries()].find(([, candidateUrl]) => !objectUrlUsedByDocument(candidateUrl));
+    if (!candidate) break;
+    revokeMapEntry(map, candidate[0]);
+  }
   return url;
 }
 function touchObjectUrl(map, key) {
@@ -512,16 +621,55 @@ function touchObjectUrl(map, key) {
   map.set(key, url);
   return url;
 }
-function revokeAllObjectUrls() {
-  for (const map of [state?.imageUrls, state?.refUrls]) {
+function revokeAllObjectUrls(options = {}) {
+  const preserveUrls = options.preserveUrls instanceof Set ? options.preserveUrls : new Set();
+  for (const map of [state?.imageUrls, state?.galleryPreviewUrls, state?.refUrls]) {
     if (!map) continue;
-    for (const url of map.values()) revokeObjectUrl(url);
-    map.clear();
+    for (const [key, url] of [...map.entries()]) {
+      if (preserveUrls.has(url)) continue;
+      revokeObjectUrl(url);
+      map.delete(key);
+    }
   }
-  for (const url of transientObjectUrls) revokeObjectUrl(url);
-  transientObjectUrls.clear();
+  for (const url of [...transientObjectUrls]) {
+    if (preserveUrls.has(url)) continue;
+    revokeObjectUrl(url);
+    transientObjectUrls.delete(url);
+  }
+  for (const url of [...deferredObjectUrlReleases]) {
+    if (preserveUrls.has(url)) continue;
+    revokeObjectUrl(url);
+    deferredObjectUrlReleases.delete(url);
+  }
+}
+function resetManagedImageSourcesForHydration() {
+  const preserveStreamUrls = new Set();
+  for (const task of state.tasks || []) {
+    for (const slot of Object.values(task?.streamPreviewSlots || {})) {
+      if (slot?.temporary && slot.url) preserveStreamUrls.add(slot.url);
+    }
+  }
+  revokeAllObjectUrls({ preserveUrls: preserveStreamUrls });
+  const selector = 'img[data-image-kind], img[data-blob-id], img[data-remote-url], img[data-ref-id], img[data-pro-ref-id], img[data-workflow-ref-id], img[data-agent-attachment-id], img[data-task-ref-task-id]';
+  for (const img of $$(selector)) {
+    if (img?.dataset?.imageKind === 'stream-preview') continue;
+    img.removeAttribute?.('src');
+    clearImageCacheMissing(img);
+  }
 }
 function scheduleStoreWrite(delay = 260) {
+  if (scrollInteractionActive()) {
+    if (storeWriteTimer) clearTimeout(storeWriteTimer);
+    storeWriteTimer = setTimeout(() => {
+      storeWriteTimer = 0;
+      if (scrollInteractionActive()) {
+        if (scrollInteractionActive()) scheduleStoreWrite(delay);
+        return;
+      }
+      writeStore();
+    }, Math.max(delay, VIRTUAL_SCROLL_IDLE_DELAY));
+    return;
+  }
   if (storeWriteTimer) clearTimeout(storeWriteTimer);
   storeWriteTimer = setTimeout(() => {
     storeWriteTimer = 0;
@@ -534,12 +682,17 @@ function shouldCloseModalFromClick(actionTarget, originalTarget) {
 }
 
 let dbPromise = null;
+let taskPersistenceChain = Promise.resolve();
+let pendingTaskPersistence = null;
+let taskPersistenceDrain = null;
+let taskPersistenceActive = false;
+let taskPersistenceRevisionClock = Date.now();
 const agentArchiveBaselines = new Map();
 const knownAgentArchiveThreadIds = new Set();
 function openDb() {
   if (dbPromise) return dbPromise;
   dbPromise = new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 2);
+    const req = indexedDB.open(DB_NAME, 3);
     let settled = false;
     let blockedTimer = 0;
     const rejectOpen = (error) => {
@@ -553,6 +706,7 @@ function openDb() {
       const database = req.result;
       if (!database.objectStoreNames?.contains?.(DB_STORE)) database.createObjectStore(DB_STORE);
       if (!database.objectStoreNames?.contains?.(DB_AGENT_STORE)) database.createObjectStore(DB_AGENT_STORE);
+      if (!database.objectStoreNames?.contains?.(DB_TASK_STORE)) database.createObjectStore(DB_TASK_STORE);
     };
     req.onblocked = () => {
       console.warn('[home-v3] IndexedDB upgrade is waiting for an older tab to close');
@@ -578,46 +732,124 @@ function openDb() {
   });
   return dbPromise;
 }
-function readBlobReservations() {
-  const now = Date.now();
-  for (const [id, expiresAt] of localBlobReservations) {
-    if (Number(expiresAt || 0) <= now) localBlobReservations.delete(id);
+function parseBlobReservation(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return {
+      expiresAt: Number(value.expiresAt || value.expires_at || 0),
+      owner: String(value.owner || '')
+    };
   }
-  const reservations = Object.fromEntries(localBlobReservations);
+  try {
+    const parsed = JSON.parse(String(value || ''));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return {
+        expiresAt: Number(parsed.expiresAt || parsed.expires_at || 0),
+        owner: String(parsed.owner || '')
+      };
+    }
+  } catch {}
+  return { expiresAt: Number(value || 0), owner: '' };
+}
+function readStoredBlobReservation(id) {
+  if (!id) return { expiresAt: 0, owner: '' };
+  try { return parseBlobReservation(localStorage.getItem(`${BLOB_RESERVATION_PREFIX}${id}`)); } catch { return { expiresAt: 0, owner: '' }; }
+}
+function readBlobReservationRecords() {
+  const now = Date.now();
+  const records = new Map();
+  for (const [id, expiresAt] of localBlobReservations) {
+    if (Number(expiresAt || 0) > now) records.set(id, { expiresAt: Number(expiresAt), owner: BLOB_RESERVATION_OWNER });
+    else localBlobReservations.delete(id);
+  }
   try {
     const legacy = JSON.parse(localStorage.getItem(BLOB_RESERVATION_KEY) || '{}');
-    for (const [id, expiresAt] of Object.entries(legacy).slice(-256)) {
-      if (Number(expiresAt || 0) > now) reservations[id] = Number(expiresAt);
+    for (const [id, value] of Object.entries(legacy).slice(-256)) {
+      const record = parseBlobReservation(value);
+      if (record.expiresAt > now && !records.has(id)) records.set(id, record);
     }
-    const reservationKeys = [];
     for (let index = 0; index < Number(localStorage.length || 0); index += 1) {
       const key = localStorage.key(index);
-      if (key?.startsWith(BLOB_RESERVATION_PREFIX)) reservationKeys.push(key);
-    }
-    for (const key of reservationKeys) {
       if (!key?.startsWith(BLOB_RESERVATION_PREFIX)) continue;
       const id = key.slice(BLOB_RESERVATION_PREFIX.length);
-      const expiresAt = Number(localStorage.getItem(key) || 0);
-      if (expiresAt > now) reservations[id] = expiresAt;
-      else localStorage.removeItem(key);
+      const record = parseBlobReservation(localStorage.getItem(key));
+      if (record.expiresAt > now && !records.has(id)) records.set(id, record);
     }
-    return reservations;
-  } catch {
-    return reservations;
-  }
+  } catch {}
+  return records;
+}
+function readBlobReservations() {
+  return Object.fromEntries([...readBlobReservationRecords()].map(([id, record]) => [id, record.expiresAt]));
 }
 function reserveBlobId(id) {
   if (!id) return;
   const expiresAt = Date.now() + BLOB_RESERVATION_TTL_MS;
   localBlobReservations.set(id, expiresAt);
-  try { localStorage.setItem(`${BLOB_RESERVATION_PREFIX}${id}`, String(expiresAt)); } catch {}
+  try {
+    localStorage.setItem(`${BLOB_RESERVATION_PREFIX}${id}`, JSON.stringify({ version: 1, owner: BLOB_RESERVATION_OWNER, expiresAt }));
+  } catch {}
 }
-function releaseBlobReservation(id) {
-  if (!id) return;
+function reserveReferencedBlobIds(source = state) {
+  const referenced = collectReferencedBlobIds(source);
+  for (const id of referenced) {
+    if (blobReservationExpiry(id) <= Date.now()) reserveBlobId(id);
+  }
+}
+function blobReservationExpiry(id) {
+  if (!id) return 0;
+  const local = Number(localBlobReservations.get(id) || 0);
+  if (local > 0) return local;
+  return Number(readStoredBlobReservation(id).expiresAt || 0);
+}
+function readCandidateBlobReservation(id) {
+  if (!id) return [];
+  const now = Date.now();
+  const records = new Map();
+  const add = (owner, expiresAt) => {
+    const normalizedExpiresAt = Number(expiresAt || 0);
+    if (!owner || normalizedExpiresAt <= now) return;
+    const previous = records.get(owner) || 0;
+    if (normalizedExpiresAt > previous) records.set(owner, normalizedExpiresAt);
+  };
+  add(BLOB_RESERVATION_OWNER, localBlobReservations.get(id));
+  const stored = readStoredBlobReservation(id);
+  add(stored.owner || `storage:${id}`, stored.expiresAt);
+  return [...records].map(([owner, expiresAt]) => ({ owner, expiresAt }));
+}
+function snapshotCandidateBlobReservations(ids = []) {
+  return new Map([...new Set((Array.isArray(ids) ? ids : [...(ids || [])]).filter(Boolean))]
+    .map((id) => [String(id), readCandidateBlobReservation(String(id))]));
+}
+function candidateBlobReservationChanged(before = [], after = []) {
+  const beforeByOwner = new Map((Array.isArray(before) ? before : []).map((record) => [String(record?.owner || ''), Number(record?.expiresAt || 0)]));
+  for (const record of Array.isArray(after) ? after : []) {
+    const owner = String(record?.owner || '');
+    const expiresAt = Number(record?.expiresAt || 0);
+    if (!beforeByOwner.has(owner) || beforeByOwner.get(owner) !== expiresAt) return true;
+  }
+  return false;
+}
+function changedCandidateBlobReservations(ids = [], snapshot = new Map()) {
+  const changed = new Set();
+  for (const id of ids) {
+    const key = String(id);
+    if (candidateBlobReservationChanged(snapshot.get(key) || [], readCandidateBlobReservation(key))) changed.add(key);
+  }
+  return changed;
+}
+function releaseBlobReservation(id, expectedExpiresAt = null) {
+  if (!id) return false;
+  const localExpiresAt = Number(localBlobReservations.get(id) || 0);
+  const stored = readStoredBlobReservation(id);
+  const currentExpiresAt = localExpiresAt || Number(stored.expiresAt || 0);
+  if (expectedExpiresAt !== null && currentExpiresAt !== Number(expectedExpiresAt)) return false;
   localBlobReservations.delete(id);
-  try { localStorage.removeItem(`${BLOB_RESERVATION_PREFIX}${id}`); } catch {}
+  if (localExpiresAt > 0 && stored.owner !== BLOB_RESERVATION_OWNER && stored.expiresAt !== localExpiresAt) return true;
+  if (stored.owner === BLOB_RESERVATION_OWNER || (localExpiresAt > 0 && !stored.owner && stored.expiresAt === localExpiresAt)) {
+    try { localStorage.removeItem(`${BLOB_RESERVATION_PREFIX}${id}`); } catch {}
+  }
+  return true;
 }
-async function putBlob(blob, id = uid('blob')) {
+async function putBlobUnlocked(blob, id = uid('blob')) {
   reserveBlobId(id);
   try {
     const db = await openDb();
@@ -633,6 +865,11 @@ async function putBlob(blob, id = uid('blob')) {
   }
   return id;
 }
+async function putBlob(blob, id = uid('blob')) {
+  const locks = blobReferenceLockApi();
+  if (!locks) return putBlobUnlocked(blob, id);
+  return locks.request(BLOB_REFERENCE_LOCK_NAME, { mode: 'exclusive' }, () => putBlobUnlocked(blob, id));
+}
 async function getBlob(id) {
   if (!id) return null;
   const db = await openDb();
@@ -643,31 +880,522 @@ async function getBlob(id) {
     req.onerror = () => reject(req.error);
   });
 }
-async function deleteBlob(id) {
-  if (!id) return;
-  releaseBlobReservation(id);
+async function deleteBlob(id, options = {}) {
+  if (!id) return false;
+  const reservationBeforeDelete = blobReservationExpiry(id);
   const db = await openDb();
+  if (options.reservationSnapshot instanceof Map) {
+    const currentReservation = readCandidateBlobReservation(id);
+    if (candidateBlobReservationChanged(options.reservationSnapshot.get(String(id)) || [], currentReservation)) return false;
+  }
   await new Promise((resolve, reject) => {
     const tx = db.transaction(DB_STORE, 'readwrite');
     tx.objectStore(DB_STORE).delete(id);
     tx.oncomplete = resolve;
     tx.onerror = () => reject(tx.error);
   });
+  releaseBlobReservation(id, reservationBeforeDelete);
+  return true;
 }
-function collectReferencedBlobIds() {
+
+function nextTaskPersistenceRevision() {
+  taskPersistenceRevisionClock = Math.max(taskPersistenceRevisionClock + 1, Date.now());
+  return taskPersistenceRevisionClock;
+}
+
+function ensureTaskPersistenceRevision(task) {
+  if (!task?.id) return 0;
+  const current = Number(task.persistenceRevision || 0);
+  if (Number.isFinite(current) && current > 0) {
+    taskPersistenceRevisionClock = Math.max(taskPersistenceRevisionClock, current);
+    return current;
+  }
+  taskPersistenceRevisionClock = Math.max(
+    taskPersistenceRevisionClock,
+    Number(task.updatedAt || 0),
+    Number(task.finishedAt || 0),
+    Number(task.startedAt || 0),
+    Number(task.createdAt || 0)
+  );
+  task.persistenceRevision = nextTaskPersistenceRevision();
+  return task.persistenceRevision;
+}
+
+function touchTaskPersistence(task) {
+  if (!task?.id) return 0;
+  task.persistenceRevision = nextTaskPersistenceRevision();
+  return task.persistenceRevision;
+}
+
+function taskPersistenceVersion(task) {
+  const revision = Number(task?.persistenceRevision || 0);
+  if (Number.isFinite(revision) && revision > 0) return revision;
+  return Math.max(
+    Number(task?.updatedAt || 0),
+    Number(task?.finishedAt || 0),
+    Number(task?.startedAt || 0),
+    Number(task?.createdAt || 0)
+  );
+}
+
+function taskTombstoneKey(id) {
+  return `${TASK_TOMBSTONE_PREFIX}${String(id || '')}`;
+}
+
+function isTaskTombstone(record) {
+  return record?.kind === TASK_TOMBSTONE_KIND && String(record?.taskId || '').trim() !== '';
+}
+
+function taskTombstoneId(record) {
+  return isTaskTombstone(record) ? String(record.taskId) : '';
+}
+
+function taskStatusRank(status) {
+  return { queued: 1, running: 2, interrupted: 3, error: 4, partial_success: 5, success: 6 }[status] || 0;
+}
+
+function preferTaskRecord(first, second) {
+  if (!first) return second;
+  if (!second) return first;
+  const firstVersion = taskPersistenceVersion(first);
+  const secondVersion = taskPersistenceVersion(second);
+  if (firstVersion !== secondVersion) return secondVersion > firstVersion ? second : first;
+  const firstRank = taskStatusRank(first.status);
+  const secondRank = taskStatusRank(second.status);
+  if (firstRank !== secondRank) return secondRank > firstRank ? second : first;
+  const firstImages = Array.isArray(first.images) ? first.images.length : 0;
+  const secondImages = Array.isArray(second.images) ? second.images.length : 0;
+  if (firstImages !== secondImages) return secondImages > firstImages ? second : first;
+  return first;
+}
+
+function mergeTaskRecords(firstTasks = [], secondTasks = []) {
+  const merged = new Map();
+  for (const task of [...(Array.isArray(firstTasks) ? firstTasks : []), ...(Array.isArray(secondTasks) ? secondTasks : [])]) {
+    if (!task?.id) continue;
+    const id = String(task.id);
+    merged.set(id, preferTaskRecord(merged.get(id), task));
+  }
+  return [...merged.values()].sort((a, b) => {
+    const versionDelta = taskPersistenceVersion(b) - taskPersistenceVersion(a);
+    if (versionDelta) return versionDelta;
+    return Number(b?.createdAt || 0) - Number(a?.createdAt || 0);
+  });
+}
+
+async function replaceTaskRecordsUnlocked(tasks = [], options = {}) {
+  const snapshot = (Array.isArray(tasks) ? tasks : [])
+    .filter((task) => task?.id)
+    .map((task) => compactTaskForStorage(task, 'normal'));
+  const db = await openDb();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(DB_TASK_STORE, 'readwrite');
+    const store = tx.objectStore(DB_TASK_STORE);
+    const requestedDeletedIds = new Set((Array.isArray(options.deletedTaskIds) ? options.deletedTaskIds : [])
+      .filter(Boolean)
+      .map(String));
+    let transactionComplete = false;
+    let readComplete = false;
+    let settled = false;
+    const resolveIfComplete = () => {
+      if (!settled && transactionComplete && readComplete) {
+        settled = true;
+        resolve();
+      }
+    };
+    const rejectOnce = (error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+    const putAll = () => {
+      const request = store.getAll?.();
+      if (!request) {
+        for (const task of snapshot) {
+          if (!requestedDeletedIds.has(String(task.id))) store.put(task, task.id);
+        }
+        for (const id of requestedDeletedIds) {
+          const key = taskTombstoneKey(id);
+          store.put({ id: key, taskId: id, kind: TASK_TOMBSTONE_KIND, deletedAt: Date.now() }, key);
+        }
+        readComplete = true;
+        resolveIfComplete();
+        return;
+      }
+      request.onsuccess = () => {
+        const existing = Array.isArray(request.result) ? request.result : [];
+        const existingTombstones = existing.filter(isTaskTombstone);
+        const deletedIds = new Set([
+          ...existingTombstones.map(taskTombstoneId),
+          ...requestedDeletedIds
+        ]);
+        const desired = new Map(mergeTaskRecords(existing.filter((task) => !isTaskTombstone(task)), snapshot)
+          .map((task) => [String(task.id), task]));
+        for (const id of deletedIds) desired.delete(id);
+        for (const [id, task] of desired) store.put(task, id);
+        const tombstoneRecords = new Map(existingTombstones.map((record) => [taskTombstoneKey(record.taskId), record]));
+        const deletedAt = Date.now();
+        for (const id of requestedDeletedIds) {
+          const key = taskTombstoneKey(id);
+          const previous = tombstoneRecords.get(key);
+          tombstoneRecords.set(key, {
+            id: key,
+            taskId: id,
+            kind: TASK_TOMBSTONE_KIND,
+            deletedAt: Math.max(Number(previous?.deletedAt || 0), deletedAt)
+          });
+        }
+        for (const [key, record] of tombstoneRecords) store.put(record, key);
+        if (typeof store.getAllKeys !== 'function') {
+          readComplete = true;
+          resolveIfComplete();
+          return;
+        }
+        const keyRequest = store.getAllKeys();
+        keyRequest.onsuccess = () => {
+          const tombstoneKeys = new Set(tombstoneRecords.keys());
+          for (const key of keyRequest.result || []) {
+            const keyText = String(key);
+            if (deletedIds.has(keyText) || (keyText.startsWith(TASK_TOMBSTONE_PREFIX) && !tombstoneKeys.has(keyText))) store.delete(key);
+          }
+          readComplete = true;
+          resolveIfComplete();
+        };
+        keyRequest.onerror = () => rejectOnce(keyRequest.error);
+      };
+      request.onerror = () => rejectOnce(request.error);
+    };
+    tx.oncomplete = () => {
+      transactionComplete = true;
+      resolveIfComplete();
+    };
+    tx.onerror = () => rejectOnce(tx.error || new Error('IndexedDB 任务写入失败'));
+    tx.onabort = () => rejectOnce(tx.error || new Error('IndexedDB 任务写入已中止'));
+    putAll();
+  });
+}
+
+async function replaceTaskRecords(tasks = [], options = {}) {
+  if (options?.lockHeld === true) return replaceTaskRecordsUnlocked(tasks, options);
+  const locks = blobReferenceLockApi();
+  if (!locks) return replaceTaskRecordsUnlocked(tasks, options);
+  return locks.request(BLOB_REFERENCE_LOCK_NAME, { mode: 'exclusive' }, () => replaceTaskRecordsUnlocked(tasks, { ...options, lockHeld: true }));
+}
+
+async function readTaskRecords() {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DB_TASK_STORE, 'readonly');
+    const store = tx.objectStore(DB_TASK_STORE);
+    if (typeof store.getAll !== 'function') {
+      reject(new Error('IndexedDB 任务仓库不支持批量读取'));
+      return;
+    }
+    const request = store.getAll();
+    request.onsuccess = () => resolve((Array.isArray(request.result) ? request.result : []).filter((task) => !isTaskTombstone(task)));
+    request.onerror = () => reject(request.error);
+    tx.onerror = () => reject(tx.error || new Error('IndexedDB 任务读取失败'));
+  });
+}
+
+async function readTaskDeletionIds() {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DB_TASK_STORE, 'readonly');
+    const store = tx.objectStore(DB_TASK_STORE);
+    const request = store.getAll?.();
+    if (!request) {
+      resolve(new Set());
+      return;
+    }
+    request.onsuccess = () => resolve(new Set(
+      (Array.isArray(request.result) ? request.result : []).map(taskTombstoneId).filter(Boolean)
+    ));
+    request.onerror = () => reject(request.error);
+    tx.onerror = () => reject(tx.error || new Error('IndexedDB 任务删除记录读取失败'));
+  });
+}
+
+function taskSnapshotRevision(tasks = []) {
+  return (Array.isArray(tasks) ? tasks : []).reduce((revision, task) => Math.max(revision, taskPersistenceVersion(task)), 0);
+}
+function taskStoreMarkerVersion(marker) {
+  return [Number(marker?.snapshotRevision || 0), Number(marker?.updatedAt || 0)];
+}
+function isOlderTaskStoreMarker(candidate, current) {
+  const [candidateRevision, candidateUpdatedAt] = taskStoreMarkerVersion(candidate);
+  const [currentRevision, currentUpdatedAt] = taskStoreMarkerVersion(current);
+  return candidateRevision < currentRevision
+    || (candidateRevision === currentRevision && candidateUpdatedAt < currentUpdatedAt);
+}
+function taskStoreMarker(tasks = [], status = 'ready', error = '', snapshotRevision = null) {
+  const safeTasks = Array.isArray(tasks) ? tasks : [];
+  return {
+    version: 2,
+    count: safeTasks.length,
+    ids: safeTasks.map((task) => task?.id).filter(Boolean),
+    status,
+    error: String(error || '').slice(0, 180),
+    snapshotRevision: Math.max(Number(snapshotRevision || 0), taskSnapshotRevision(safeTasks)),
+    updatedAt: Date.now()
+  };
+}
+function persistTaskStoreMarker(marker) {
+  try {
+    const current = readPersistedStoreSnapshot() || {};
+    if (current.taskStore && isOlderTaskStoreMarker(marker, current.taskStore)) return false;
+    const next = { ...current, tasks: [], taskStore: marker };
+    localStorage.setItem(STORE_KEY, JSON.stringify(next));
+    persistedStoreBaseline = next;
+    return true;
+  } catch {
+    return false;
+  }
+}
+function markTaskPersistenceFailure(snapshot, error) {
+  const detail = String(error?.message || error || 'IndexedDB 任务写入失败').trim().slice(0, 180);
+  const taskSnapshot = snapshot && typeof snapshot === 'object' && Array.isArray(snapshot.tasks)
+    ? snapshot
+    : { tasks: Array.isArray(snapshot) ? snapshot : [] };
+  const marker = taskStoreMarker(taskSnapshot.tasks, 'error', detail, taskSnapshot.snapshotRevision);
+  state.taskStore = marker;
+  state.taskRecovery = {
+    status: 'error',
+    retrying: false,
+    error: '本地任务保存失败，请点击“重试恢复”。',
+    detail
+  };
+  persistTaskStoreMarker(marker);
+}
+function scheduleOwnedBlobReservationRelease(clean, persisted) {
+  if (persisted === false) return;
+  const referenced = collectReferencedBlobIds(clean);
+  const candidates = [...localBlobReservations.entries()]
+    .filter(([id]) => !referenced.has(id))
+    .map(([id, expiresAt]) => ({ id, expiresAt: Number(expiresAt) }));
+  if (!candidates.length) return;
+  void (async () => {
+    if (await flushTaskPersistence() !== true) return;
+    const current = collectReferencedBlobIds(state);
+    const persistedSnapshot = collectPersistedReferencedBlobSnapshot();
+    const taskStoreSnapshot = await collectTaskStoreReferencedBlobIds();
+    const archived = await collectArchivedAgentReferencedBlobIds();
+    if (!persistedSnapshot.available || !taskStoreSnapshot.available || !archived.available) return;
+    const keep = new Set([...current, ...persistedSnapshot.ids, ...taskStoreSnapshot.ids, ...archived.ids]);
+    for (const { id, expiresAt } of candidates) {
+      if (!keep.has(id)) releaseBlobReservation(id, expiresAt);
+    }
+  })().catch(() => {});
+}
+
+function scheduleTaskPersistence(tasks = [], options = {}) {
+  const deletedTaskIds = (Array.isArray(options.deletedTaskIds) ? options.deletedTaskIds : [...(options.deletedTaskIds || [])])
+    .filter(Boolean)
+    .map(String);
+  const next = {
+    tasks: Array.isArray(tasks) ? tasks : [],
+    deletedTaskIds,
+    snapshotRevision: taskSnapshotRevision(tasks)
+  };
+  if (pendingTaskPersistence) {
+    pendingTaskPersistence = {
+      tasks: next.tasks,
+      deletedTaskIds: [...new Set([
+        ...(pendingTaskPersistence.deletedTaskIds || []),
+        ...next.deletedTaskIds
+      ])],
+      snapshotRevision: Math.max(
+        Number(pendingTaskPersistence.snapshotRevision || 0),
+        Number(next.snapshotRevision || 0)
+      )
+    };
+  } else {
+    pendingTaskPersistence = next;
+  }
+  if (taskPersistenceActive) return taskPersistenceDrain || taskPersistenceChain;
+  taskPersistenceActive = true;
+  const drain = (async () => {
+    while (pendingTaskPersistence) {
+      const current = pendingTaskPersistence;
+      pendingTaskPersistence = null;
+      try {
+        await replaceTaskRecords(current.tasks, { deletedTaskIds: current.deletedTaskIds });
+      } catch (error) {
+        const queued = pendingTaskPersistence
+          ? {
+            tasks: pendingTaskPersistence.tasks,
+            deletedTaskIds: [...new Set([
+              ...(current.deletedTaskIds || []),
+              ...(pendingTaskPersistence.deletedTaskIds || [])
+            ])],
+            snapshotRevision: Math.max(
+              Number(current.snapshotRevision || 0),
+              Number(pendingTaskPersistence.snapshotRevision || 0)
+            )
+          }
+          : current;
+        pendingTaskPersistence = queued;
+        markTaskPersistenceFailure(queued, error);
+        taskPersistenceActive = false;
+        if (taskPersistenceDrain === drain) taskPersistenceDrain = null;
+        return false;
+      }
+      for (const id of pendingBlobReservationReleases) releaseBlobReservation(id);
+      pendingBlobReservationReleases.clear();
+      schedulePendingBlobReleaseFlush();
+    }
+    taskPersistenceActive = false;
+    if (taskPersistenceDrain === drain) taskPersistenceDrain = null;
+    return true;
+  })();
+  taskPersistenceDrain = drain;
+  taskPersistenceChain = drain;
+  return taskPersistenceChain;
+}
+
+function flushTaskPersistence() {
+  return (async () => {
+    while (true) {
+      const chain = taskPersistenceChain;
+      const result = await chain.catch(() => false);
+      if (result === false) return false;
+      if (taskPersistenceActive) continue;
+      if (!pendingTaskPersistence) return true;
+      const queued = pendingTaskPersistence;
+      pendingTaskPersistence = null;
+      scheduleTaskPersistence(queued.tasks, { deletedTaskIds: queued.deletedTaskIds });
+    }
+  })();
+}
+
+async function hydrateTasksFromDb() {
+  const records = await readTaskRecords();
+  const idbTombstones = await readTaskDeletionIds();
+  const tombstones = new Set([
+    ...readTaskDeleteTombstones().keys(),
+    ...idbTombstones
+  ]);
+  const markerTaskCount = Number(state.taskStore?.count || 0);
+  const hasTaskStoreIds = !!state.taskStore && Object.prototype.hasOwnProperty.call(state.taskStore, 'ids');
+  if (state.taskStore?.status === 'error' && !state.taskRecovery?.retrying) {
+    throw new Error(state.taskStore.error || '上次本地任务写入失败，请重试恢复。');
+  }
+  if (hasTaskStoreIds && !Array.isArray(state.taskStore.ids)) {
+    throw new Error('本地任务索引损坏，无法恢复历史任务。');
+  }
+  const rawExpectedTaskIds = hasTaskStoreIds
+    ? [...new Set(state.taskStore.ids.map((id) => String(id || '').trim()).filter(Boolean))]
+    : [];
+  if (hasTaskStoreIds && markerTaskCount > 0 && !rawExpectedTaskIds.length) {
+    throw new Error(`本地任务索引不完整（预期 ${markerTaskCount} 条，但没有有效任务 ID）`);
+  }
+  if (hasTaskStoreIds && markerTaskCount !== rawExpectedTaskIds.length) {
+    throw new Error(`本地任务索引不一致（预期 ${markerTaskCount} 条，索引包含 ${rawExpectedTaskIds.length} 条）`);
+  }
+  const expectedTaskIds = rawExpectedTaskIds.filter((id) => !tombstones.has(id));
+  const expectedTaskCount = hasTaskStoreIds ? expectedTaskIds.length : markerTaskCount;
+  if (expectedTaskCount > records.length) {
+    throw new Error(`本地任务数据库恢复不完整（预期 ${expectedTaskCount} 条，实际 ${records.length} 条）`);
+  }
+  if (expectedTaskIds.length) {
+    const actualTaskIds = new Set(records.map((task) => String(task?.id || '').trim()).filter(Boolean));
+    const missingTaskIds = expectedTaskIds.filter((id) => !actualTaskIds.has(id));
+    if (missingTaskIds.length) {
+      throw new Error(`本地任务数据库恢复不完整（缺少 ${missingTaskIds.slice(0, 3).join('、')}${missingTaskIds.length > 3 ? ' 等任务' : ''}）`);
+    }
+  }
+  if (!records.length) {
+    const previous = JSON.stringify(state.tasks || []);
+    state.tasks = (state.tasks || []).filter((task) => task?.id && !tombstones.has(String(task.id)));
+    filteredTasksCache = null;
+    return previous !== JSON.stringify(state.tasks);
+  }
+  const merged = mergeTaskRecords(state.tasks, records)
+    .filter((task) => task?.id && !tombstones.has(String(task.id)))
+    .map(normalizeRestoredTask);
+  const previous = JSON.stringify(state.tasks || []);
+  state.tasks = merged;
+  filteredTasksCache = null;
+  return previous !== JSON.stringify(merged);
+}
+function setTaskRecoveryError(error) {
+  const detail = String(error?.message || error || '').trim().slice(0, 180);
+  state.taskRecovery = {
+    status: 'error',
+    retrying: false,
+    error: '本地历史任务暂时无法恢复，请点击“重试恢复”。',
+    detail
+  };
+}
+function renderTaskRecoveryNotice() {
+  const recovery = state.taskRecovery;
+  if (!recovery?.error) return '';
+  return `<div class="returned-prompt stream-warning task-recovery-notice" role="alert">
+    <strong>历史任务恢复失败</strong>
+    <span>${esc(recovery.error)}${recovery.detail ? `（${esc(recovery.detail)}）` : ''}</span>
+    <button class="mini-button" data-action="retry-task-history" ${recovery.retrying ? 'disabled' : ''}>${recovery.retrying ? '恢复中...' : '重试恢复'}</button>
+  </div>`;
+}
+async function retryTaskHistory() {
+  if (state.taskRecovery?.retrying) return false;
+  state.taskRecovery = { status: 'retrying', retrying: true, error: '', detail: '' };
+  render({ allowDuringScroll: true });
+  let taskStoreErrorSnapshot = null;
+  try {
+    const taskStoreHadError = state.taskStore?.status === 'error';
+    taskStoreErrorSnapshot = taskStoreHadError ? { ...state.taskStore } : null;
+    if (taskStoreHadError) state.taskStore = taskStoreMarker(state.tasks, 'ready', '');
+    const changed = await hydrateTasksFromDb();
+    if (changed || taskStoreHadError) {
+      const readyMarker = taskStoreMarker(state.tasks, 'ready', '');
+      state.taskStore = readyMarker;
+      const persisted = writeStore({ forceTaskPersistence: true });
+      const committed = persisted === false ? false : await flushTaskPersistence();
+      if (committed !== true) throw new Error('本地任务恢复后的写入仍未完成，请稍后重试。');
+      persistTaskStoreMarker(readyMarker);
+      state.taskRecovery = { status: 'ready', retrying: false, error: '', detail: '' };
+      render({ allowDuringScroll: true });
+      void hydrateImages();
+    } else {
+      state.taskRecovery = { status: 'ready', retrying: false, error: '', detail: '' };
+      render({ allowDuringScroll: true });
+    }
+    return true;
+  } catch (error) {
+    if (taskStoreErrorSnapshot) {
+      state.taskStore = taskStoreErrorSnapshot;
+      persistTaskStoreMarker(taskStoreErrorSnapshot);
+    }
+    setTaskRecoveryError(error);
+    render({ allowDuringScroll: true });
+    return false;
+  }
+}
+function addAgentMessageBlobIds(message, add) {
+  for (const attachment of message?.attachments || []) add(attachment?.blobId);
+}
+function collectReferencedBlobIds(source = state) {
+  const store = source && typeof source === 'object' ? source : {};
   const ids = new Set();
   const add = (id) => { if (id) ids.add(id); };
-  for (const task of state.tasks || []) {
-    for (const img of task.images || []) add(img.blobId);
+  const addImage = (image) => {
+    if (!image) return;
+    add(image.blobId);
+    add(image.originalBlobId);
+    add(image.compositedBlobId);
+    add(image.maskBlobId);
+  };
+  for (const task of store.tasks || []) {
+    for (const img of task.images || []) addImage(img);
     for (const partial of task.streamPartialImages || []) add(partial.blobId);
-    for (const ref of task.referenceSnapshots || []) {
+    for (const ref of taskReferenceSnapshots(task)) {
       add(ref.blobId);
       add(ref.originalBlobId);
       add(ref.compositedBlobId);
       add(ref.maskBlobId);
     }
   }
-  for (const group of [state.references || [], state.pro?.refs || [], state.workflowInvoke?.references || []]) {
+  for (const group of [store.references || [], store.pro?.refs || [], store.workflowInvoke?.references || []]) {
     for (const ref of group) {
       add(ref.blobId);
       add(ref.originalBlobId);
@@ -675,13 +1403,313 @@ function collectReferencedBlobIds() {
       add(ref.maskBlobId);
     }
   }
-  for (const attachment of state.agent?.attachments || []) add(attachment.blobId);
-  for (const messages of Object.values(state.agent?.messagesByThread || {})) {
+  for (const run of store.agent?.workflowRuns || []) {
+    if (!['queued', 'running'].includes(run?.status)) continue;
+    for (const ref of run.references || []) {
+      add(ref.blobId);
+      add(ref.originalBlobId);
+      add(ref.compositedBlobId);
+      add(ref.maskBlobId);
+    }
+  }
+  for (const attachment of store.agent?.attachments || []) add(attachment.blobId);
+  for (const messages of Object.values(store.agent?.messagesByThread || {})) {
     for (const message of Array.isArray(messages) ? messages : []) {
-      for (const attachment of message.attachments || []) add(attachment.blobId);
+      addAgentMessageBlobIds(message, add);
     }
   }
   return ids;
+}
+
+async function collectTaskStoreReferencedBlobIds() {
+  try {
+    const records = await readTaskRecords();
+    return { ids: collectReferencedBlobIds({ tasks: records }), available: true };
+  } catch (error) {
+    console.warn('[home-v3] 任务仓库引用读取失败，跳过 Blob 回收', error);
+    return { ids: new Set(), available: false };
+  }
+}
+
+async function collectArchivedAgentReferencedBlobIds() {
+  const ids = new Set();
+  try {
+    const database = await openDb();
+    const snapshots = await new Promise((resolve, reject) => {
+      const tx = database.transaction(DB_AGENT_STORE, 'readonly');
+      const store = tx.objectStore(DB_AGENT_STORE);
+      if (typeof store.getAll !== 'function') {
+        reject(new Error('IndexedDB Agent 归档不支持批量读取'));
+        return;
+      }
+      const request = store.getAll();
+      request.onsuccess = () => resolve(request.result || []);
+      request.onerror = () => reject(request.error);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error('IndexedDB Agent 归档读取已中止'));
+    });
+    for (const snapshot of snapshots) {
+      for (const message of Array.isArray(snapshot?.messages) ? snapshot.messages : []) {
+        addAgentMessageBlobIds(message, (id) => { if (id) ids.add(id); });
+      }
+    }
+    return { ids, available: true };
+  } catch (error) {
+    console.warn('[home-v3] Agent 归档引用读取失败，跳过 Blob 回收', error);
+    return { ids, available: false };
+  }
+}
+
+function readTaskDeleteTombstones() {
+  const tombstones = new Map();
+  try {
+    const raw = localStorage.getItem(TASK_DELETE_TOMBSTONE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    for (const [id, deletedAt] of Object.entries(parsed && typeof parsed === 'object' ? parsed : {})) {
+      if (id && Number(deletedAt) > 0) tombstones.set(id, Number(deletedAt));
+    }
+  } catch {}
+  return tombstones;
+}
+
+function rememberTaskDeleteTombstones(ids = []) {
+  const tombstones = readTaskDeleteTombstones();
+  const now = Date.now();
+  for (const id of Array.isArray(ids) ? ids : [...(ids || [])]) {
+    if (id) tombstones.set(String(id), now);
+  }
+  const entries = [...tombstones.entries()].sort((a, b) => a[1] - b[1]).slice(-TASK_DELETE_TOMBSTONE_LIMIT);
+  try { localStorage.setItem(TASK_DELETE_TOMBSTONE_KEY, JSON.stringify(Object.fromEntries(entries))); } catch {}
+  return new Map(entries);
+}
+
+function mergeCrossTabTasks(clean, deletedTaskIds = []) {
+  if (!clean || typeof clean !== 'object') return;
+  const deletedIds = (Array.isArray(deletedTaskIds) ? deletedTaskIds : [...(deletedTaskIds || [])]).filter(Boolean).map(String);
+  if (deletedIds.length) rememberTaskDeleteTombstones(deletedIds);
+  const tombstones = readTaskDeleteTombstones();
+  let remoteTasks = [];
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    const remote = raw ? JSON.parse(raw) : null;
+    remoteTasks = Array.isArray(remote?.tasks) ? remote.tasks : [];
+  } catch {}
+  clean.tasks = mergeTaskRecords(clean.tasks, remoteTasks)
+    .filter((task) => task?.id && !tombstones.has(String(task.id)));
+}
+const CROSS_TAB_STORE_DOMAINS = [
+  'mode',
+  'settings',
+  'preferences',
+  'entryAdvanced',
+  'agent',
+  'pro',
+  'references',
+  'favorites',
+  'selectedTaskIds',
+  'composerPrompt',
+  'promptQuery',
+  'agentScrollStateByThread'
+];
+function readPersistedStoreSnapshot() {
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+function comparableStoreDomain(value) {
+  try { return JSON.stringify(value === undefined ? null : value); } catch { return ''; }
+}
+function storeArrayItemId(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return '';
+  return String(value.id || value.key || value.name || '').trim();
+}
+function mergeCrossTabStoreValue(local, remote, baseline) {
+  const localChanged = comparableStoreDomain(local) !== comparableStoreDomain(baseline);
+  const remoteChanged = comparableStoreDomain(remote) !== comparableStoreDomain(baseline);
+  if (Array.isArray(local) && Array.isArray(remote)) {
+    const localIds = local.map(storeArrayItemId);
+    const remoteIds = remote.map(storeArrayItemId);
+    if (local.every((item) => storeArrayItemId(item)) && remote.every((item) => storeArrayItemId(item))) {
+      const localMap = new Map(local.map((item) => [storeArrayItemId(item), item]));
+      const remoteMap = new Map(remote.map((item) => [storeArrayItemId(item), item]));
+      const baselineMap = new Map((Array.isArray(baseline) ? baseline : []).map((item) => [storeArrayItemId(item), item]));
+      const order = [...localIds, ...remoteIds.filter((id) => !localMap.has(id))];
+      const merged = [];
+      for (const id of order) {
+        const localItem = localMap.get(id);
+        const remoteItem = remoteMap.get(id);
+        const baselineItem = baselineMap.get(id);
+        if (!localItem && remoteItem) {
+          merged.push(remoteItem);
+        } else if (localItem && !remoteItem) {
+          merged.push(localItem);
+        } else if (localItem && remoteItem) {
+          merged.push(mergeCrossTabStoreValue(localItem, remoteItem, baselineItem));
+        }
+      }
+      return merged;
+    }
+    if (!localChanged) return remote;
+    if (!remoteChanged) return local;
+    return local;
+  }
+  if (local && remote && typeof local === 'object' && typeof remote === 'object' && !Array.isArray(local) && !Array.isArray(remote)) {
+    const baselineObject = baseline && typeof baseline === 'object' && !Array.isArray(baseline) ? baseline : {};
+    const merged = {};
+    for (const key of new Set([...Object.keys(local), ...Object.keys(remote)])) {
+      const hasLocal = Object.prototype.hasOwnProperty.call(local, key);
+      const hasRemote = Object.prototype.hasOwnProperty.call(remote, key);
+      const hasBaseline = Object.prototype.hasOwnProperty.call(baselineObject, key);
+      if (hasLocal && hasRemote) {
+        merged[key] = mergeCrossTabStoreValue(local[key], remote[key], hasBaseline ? baselineObject[key] : undefined);
+      } else if (hasLocal) {
+        merged[key] = local[key];
+      } else if (hasRemote) {
+        merged[key] = remote[key];
+      }
+    }
+    return merged;
+  }
+  if (!localChanged) return remote;
+  if (!remoteChanged) return local;
+  return local;
+}
+function mergeCrossTabStoreDomains(clean) {
+  if (!clean || typeof clean !== 'object' || !persistedStoreBaseline) return;
+  const remote = readPersistedStoreSnapshot();
+  if (!remote) return;
+  for (const key of CROSS_TAB_STORE_DOMAINS) {
+    if (Object.prototype.hasOwnProperty.call(remote, key)) {
+      clean[key] = mergeCrossTabStoreValue(clean[key], remote[key], persistedStoreBaseline[key]);
+    }
+  }
+}
+
+function collectPersistedReferencedBlobSnapshot() {
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    if (!raw) return { ids: new Set(), available: true };
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return { ids: new Set(), available: false };
+    return { ids: collectReferencedBlobIds(parsed), available: true };
+  } catch {
+    return { ids: new Set(), available: false };
+  }
+}
+function blobReferenceLockApi() {
+  return typeof navigator !== 'undefined' && navigator.locks && typeof navigator.locks.request === 'function'
+    ? navigator.locks
+    : null;
+}
+async function deleteUnreferencedBlobIds(ids = [], options = {}) {
+  const candidates = [...new Set((Array.isArray(ids) ? ids : [...(ids || [])]).filter(Boolean))];
+  if (!candidates.length) return { deleted: 0, retry: [] };
+  const reservationSnapshot = options.reservationSnapshot instanceof Map
+    ? options.reservationSnapshot
+    : snapshotCandidateBlobReservations(candidates);
+  if (options.lockHeld === true) return deleteUnreferencedBlobIdsUnlocked(candidates, { ...options, reservationSnapshot });
+  const locks = blobReferenceLockApi();
+  if (!locks) return { deleted: 0, retry: candidates, skipped: true, reason: 'blob-reference-lock-unavailable' };
+  return locks.request(BLOB_REFERENCE_LOCK_NAME, { mode: 'exclusive' }, () => deleteUnreferencedBlobIdsUnlocked(candidates, { ...options, lockHeld: true, reservationSnapshot }));
+}
+async function deleteUnreferencedBlobIdsUnlocked(ids = [], options = {}) {
+  const candidates = [...new Set((Array.isArray(ids) ? ids : [...(ids || [])]).filter(Boolean))];
+  if (!candidates.length) return { deleted: 0, retry: [] };
+  const reservationSnapshot = options.reservationSnapshot instanceof Map
+    ? options.reservationSnapshot
+    : snapshotCandidateBlobReservations(candidates);
+  const currentKeep = collectReferencedBlobIds();
+  const persistedSnapshot = options.includePersisted === false
+    ? { ids: new Set(), available: true }
+    : collectPersistedReferencedBlobSnapshot();
+  if (!persistedSnapshot.available) return { deleted: 0, retry: candidates, skipped: true, reason: 'persisted-store-unavailable' };
+  const persistedKeep = persistedSnapshot.ids;
+  const taskStoreSnapshot = await collectTaskStoreReferencedBlobIds();
+  if (!taskStoreSnapshot.available) return { deleted: 0, retry: candidates, skipped: true, reason: 'task-store-unavailable' };
+  const archived = await collectArchivedAgentReferencedBlobIds();
+  if (!archived.available) return { deleted: 0, retry: candidates, skipped: true, reason: 'agent-archive-unavailable' };
+  const keep = new Set([...currentKeep, ...persistedKeep, ...taskStoreSnapshot.ids, ...archived.ids]);
+  // 候选 Blob 已经离开当前删除流程；是否仍被引用由两轮快照决定，旧租约不能阻止最后引用释放。
+  const candidateSet = new Set(candidates);
+  const protectedIds = new Set(Object.keys(readBlobReservations()).filter((id) => !candidateSet.has(id)));
+  const firstChangedReservations = changedCandidateBlobReservations(candidates, reservationSnapshot);
+  const firstRetry = candidates.filter((id) => !currentKeep.has(id) && (firstChangedReservations.has(String(id)) || persistedKeep.has(id) || archived.ids.has(id) || protectedIds.has(id)));
+  const firstDeletable = candidates.filter((id) => !keep.has(id) && !protectedIds.has(id) && !firstChangedReservations.has(String(id)));
+  // Blob 引用可能在首次扫描等待归档读取期间由另一标签页写入，删除前必须二次确认。
+  const latestCurrentKeep = collectReferencedBlobIds();
+  const latestPersisted = options.includePersisted === false
+    ? { ids: new Set(), available: true }
+    : collectPersistedReferencedBlobSnapshot();
+  const latestTaskStore = await collectTaskStoreReferencedBlobIds();
+  const latestArchived = await collectArchivedAgentReferencedBlobIds();
+  if (!latestPersisted.available || !latestTaskStore.available || !latestArchived.available) {
+    return { deleted: 0, retry: candidates, skipped: true, reason: 'reference-snapshot-unavailable' };
+  }
+  const latestKeep = new Set([...latestCurrentKeep, ...latestPersisted.ids, ...latestTaskStore.ids, ...latestArchived.ids]);
+  const latestProtectedIds = new Set(Object.keys(readBlobReservations()).filter((id) => !candidateSet.has(id)));
+  const retry = [...new Set([
+    ...firstRetry,
+    ...candidates.filter((id) => !latestCurrentKeep.has(id) && (changedCandidateBlobReservations([id], reservationSnapshot).has(String(id)) || latestKeep.has(id) || latestProtectedIds.has(id)))
+  ])];
+  const latestChangedReservations = changedCandidateBlobReservations(candidates, reservationSnapshot);
+  const deletable = firstDeletable.filter((id) => !latestKeep.has(id) && !latestProtectedIds.has(id) && !latestChangedReservations.has(String(id)));
+  const deletedResults = await Promise.all(deletable.map(async (id) => {
+    try {
+      return await deleteBlob(id, { reservationSnapshot }) ? id : '';
+    } catch {
+      return '';
+    }
+  }));
+  const deletedIds = deletedResults.filter(Boolean);
+  for (const id of deletedIds) {
+    revokeMapEntry(state.imageUrls, id);
+    revokeMapEntry(state.galleryPreviewUrls, id);
+  }
+  return { deleted: deletedIds.length, deletedIds, retry: [...new Set([...retry, ...deletable.filter((id) => !deletedIds.includes(id))])] };
+}
+async function releaseBlobIdsSafely(ids = []) {
+  const candidates = [...new Set((Array.isArray(ids) ? ids : [...(ids || [])]).filter(Boolean))];
+  if (!candidates.length) return { deleted: 0, retry: [] };
+  const result = await deleteUnreferencedBlobIds(candidates).catch(() => ({ deleted: 0, retry: candidates, skipped: true }));
+  if (result.retry?.length) queuePendingBlobRelease(result.retry, false);
+  return result;
+}
+
+function queuePendingBlobRelease(ids = [], flushNow = false) {
+  for (const id of Array.isArray(ids) ? ids : [...(ids || [])]) if (id) pendingBlobReleases.add(id);
+  if (flushNow) schedulePendingBlobReleaseFlush();
+}
+
+function schedulePendingBlobReleaseFlush() {
+  if (pendingBlobReleaseFlushTimer || !pendingBlobReleases.size) return;
+  pendingBlobReleaseFlushTimer = setTimeout(async () => {
+    pendingBlobReleaseFlushTimer = 0;
+    const ids = [...pendingBlobReleases];
+    pendingBlobReleases.clear();
+    const result = await deleteUnreferencedBlobIds(ids).catch(() => ({ deleted: 0, retry: ids, skipped: true }));
+    if (result.skipped) {
+      queuePendingBlobRelease(result.retry || ids, false);
+      pendingBlobReleaseFlushTimer = setTimeout(() => {
+        pendingBlobReleaseFlushTimer = 0;
+        schedulePendingBlobReleaseFlush();
+      }, BLOB_RELEASE_RETRY_DELAY_MS);
+      return;
+    }
+    queuePendingBlobRelease(result.retry || [], false);
+    if (!pendingBlobReleases.size) return;
+    if (result.retry?.length) {
+      pendingBlobReleaseFlushTimer = setTimeout(() => {
+        pendingBlobReleaseFlushTimer = 0;
+        schedulePendingBlobReleaseFlush();
+      }, BLOB_RELEASE_RETRY_DELAY_MS);
+      return;
+    }
+    schedulePendingBlobReleaseFlush();
+  }, 0);
 }
 function deleteStoreKeysNotIn(store, keep, normalizeKey = (key) => key, isProtected = () => false) {
   if (typeof store.openKeyCursor === 'function') {
@@ -689,7 +1717,10 @@ function deleteStoreKeysNotIn(store, keep, normalizeKey = (key) => key, isProtec
     cursorRequest.onsuccess = () => {
       const cursor = cursorRequest.result;
       if (!cursor) return;
-      if (!keep.has(normalizeKey(cursor.key)) && !isProtected(cursor.key)) store.delete(cursor.key);
+      if (!keep.has(normalizeKey(cursor.key)) && !isProtected(cursor.key)) {
+        if (typeof cursor.delete === 'function') cursor.delete();
+        else store.delete(cursor.key);
+      }
       cursor.continue();
     };
     return;
@@ -822,7 +1853,7 @@ function removeArchivedAgentThread(threadId) {
     }
   }
 }
-async function performAgentHistoryPersist() {
+async function performAgentHistoryPersistUnlocked() {
   const database = await openDb();
   const snapshots = Object.entries(state.agent?.messagesByThread || {}).map(([threadId, messages]) => agentArchiveSnapshot(threadId, messages));
   const activeIds = new Set(snapshots.map((item) => item.threadId));
@@ -915,6 +1946,11 @@ async function performAgentHistoryPersist() {
     tx.onerror = () => reject(tx.error);
   });
 }
+async function performAgentHistoryPersist() {
+  const locks = blobReferenceLockApi();
+  if (!locks) return performAgentHistoryPersistUnlocked();
+  return locks.request(BLOB_REFERENCE_LOCK_NAME, { mode: 'exclusive' }, () => performAgentHistoryPersistUnlocked());
+}
 function persistAgentHistorySnapshots() {
   const run = agentHistoryPersistChain
     .catch(() => {})
@@ -963,17 +1999,60 @@ async function hydrateAgentHistoryFromDb() {
     rememberAgentArchiveBaseline({ ...snapshot, messages: state.agent.messagesByThread[threadId] });
   }
 }
-async function cleanupOrphanBlobs() {
+async function cleanupOrphanBlobs(options = {}) {
+  if (options?.confirm !== true) return { deleted: 0, skipped: true, reason: 'explicit-confirmation-required' };
+  if (options.lockHeld !== true) {
+    const locks = blobReferenceLockApi();
+    if (!locks) return { deleted: 0, skipped: true, reason: 'blob-reference-lock-unavailable' };
+    return locks.request(BLOB_REFERENCE_LOCK_NAME, { mode: 'exclusive' }, () => cleanupOrphanBlobs({ ...options, lockHeld: true }));
+  }
+  reserveReferencedBlobIds(state);
+  const archived = await collectArchivedAgentReferencedBlobIds();
+  if (!archived.available) return { deleted: 0, skipped: true, reason: 'agent-archive-unavailable' };
   const db = await openDb();
   const keep = collectReferencedBlobIds();
+  const persistedSnapshot = collectPersistedReferencedBlobSnapshot();
+  if (!persistedSnapshot.available) return { deleted: 0, skipped: true, reason: 'persisted-store-unavailable' };
+  const taskStoreSnapshot = await collectTaskStoreReferencedBlobIds();
+  if (!taskStoreSnapshot.available) return { deleted: 0, skipped: true, reason: 'task-store-unavailable' };
+  for (const id of persistedSnapshot.ids) keep.add(id);
+  for (const id of taskStoreSnapshot.ids) keep.add(id);
+  for (const id of archived.ids) keep.add(id);
+  const hasStoredTaskImages = (state.tasks || []).some((task) => (task.images || []).some((image) => image?.blobId));
+  if (hasStoredTaskImages && !keep.size) {
+    console.warn('[home-v3] skipped blob cleanup because task references were not ready');
+    return { deleted: 0, skipped: true, reason: 'references-not-ready' };
+  }
   const protectedIds = new Set(Object.keys(readBlobReservations()));
   await new Promise((resolve, reject) => {
     const tx = db.transaction(DB_STORE, 'readwrite');
     const store = tx.objectStore(DB_STORE);
-    deleteStoreKeysNotIn(store, keep, (key) => key, (key) => protectedIds.has(String(key)));
+    deleteStoreKeysNotIn(store, keep, (key) => key, (key) => {
+      if (protectedIds.has(String(key))) return true;
+      return Object.prototype.hasOwnProperty.call(readBlobReservations(), String(key));
+    });
     tx.oncomplete = resolve;
     tx.onerror = () => reject(tx.error);
   });
+  return { deleted: 0, skipped: false };
+}
+function taskBlobIds(task) {
+  const ids = new Set();
+  const add = (id) => { if (id) ids.add(id); };
+  for (const image of task?.images || []) {
+    add(image?.blobId);
+    add(image?.originalBlobId);
+    add(image?.compositedBlobId);
+    add(image?.maskBlobId);
+  }
+  for (const partial of task?.streamPartialImages || []) add(partial?.blobId);
+  for (const ref of taskReferenceSnapshots(task)) {
+    add(ref?.blobId);
+    add(ref?.originalBlobId);
+    add(ref?.compositedBlobId);
+    add(ref?.maskBlobId);
+  }
+  return ids;
 }
 function blobToDataUrl(blob) {
   return new Promise((resolve, reject) => {
@@ -1231,6 +2310,7 @@ function defaultStore() {
     mode: 'gallery',
     tasks: [],
     galleryVirtual: { scrollTop: 0, viewportHeight: 720, viewportWidth: 0, cardHeight: 0, columns: 0 },
+    agentScrollStateByThread: {},
     favorites: {},
     selectedTaskIds: [],
     references: [],
@@ -1330,12 +2410,29 @@ function readStore() {
       agent: { ...DEFAULT_ENTRY_ADVANCED, ...(readEntryAdvanced('agent') || parsed.entryAdvanced?.agent || {}) }
     };
     if (typeof sessionStorage !== 'undefined') {
-      const sessionSettings = JSON.parse(sessionStorage.getItem(COMPOSER_SESSION_KEY) || 'null');
-      for (const key of COMPOSER_SETTING_KEYS) merged.settings[key] = sessionSettings && Object.prototype.hasOwnProperty.call(sessionSettings, key) ? sessionSettings[key] : base.settings[key];
-      merged.settings.quality = normalizeImageQuality(merged.settings.quality);
-      for (const key of COMPOSER_SESSION_FIELDS) {
-        if (sessionSettings && Object.prototype.hasOwnProperty.call(sessionSettings, key)) merged[key] = sessionSettings[key];
-        else merged[key] = null;
+      let sessionSettings = null;
+      let sessionSettingsReadable = false;
+      try {
+        const rawSession = sessionStorage.getItem(COMPOSER_SESSION_KEY);
+        if (!rawSession) {
+          sessionSettingsReadable = true;
+        } else {
+          const parsedSession = JSON.parse(rawSession);
+          if (parsedSession && typeof parsedSession === 'object' && !Array.isArray(parsedSession)) {
+            sessionSettings = parsedSession;
+            sessionSettingsReadable = true;
+          }
+        }
+      } catch {
+        sessionSettings = null;
+      }
+      if (sessionSettingsReadable) {
+        for (const key of COMPOSER_SETTING_KEYS) merged.settings[key] = sessionSettings && Object.prototype.hasOwnProperty.call(sessionSettings, key) ? sessionSettings[key] : base.settings[key];
+        merged.settings.quality = normalizeImageQuality(merged.settings.quality);
+        for (const key of COMPOSER_SESSION_FIELDS) {
+          if (sessionSettings && Object.prototype.hasOwnProperty.call(sessionSettings, key)) merged[key] = sessionSettings[key];
+          else merged[key] = null;
+        }
       }
     }
     merged.agent = migrateAgentThreads({ ...base.agent, ...(parsed.agent || {}) });
@@ -1365,6 +2462,17 @@ function readStore() {
       return run;
     });
     if (!Array.isArray(merged.tasks)) merged.tasks = [];
+    merged.tasks = merged.tasks.map((task) => ({
+      ...task,
+      images: (Array.isArray(task.images) ? task.images : []).map((image) => {
+        const sourceUrl = String(image?.remoteUrl || image?.url || '').trim();
+        if (!sourceUrl || sourceUrl.length > LEGACY_IMAGE_URL_MAX_LENGTH) return image;
+        if (/^data:image\//i.test(sourceUrl) || /^blob:/i.test(sourceUrl)) {
+          return { ...image, remoteUrl: sourceUrl, url: sourceUrl };
+        }
+        return image;
+      })
+    }));
     merged.tasks = merged.tasks.map(normalizeRestoredTask);
     return merged;
   } catch (err) {
@@ -1418,7 +2526,7 @@ function normalizeRestoredTask(task) {
 }
 function sanitizeStoredImages(images = []) {
   return (Array.isArray(images) ? images : []).map((img) => {
-    const remoteUrl = /^data:/i.test(String(img.remoteUrl || img.url || '')) ? '' : (img.remoteUrl || img.url || '');
+    const remoteUrl = /^(?:data|blob):/i.test(String(img.remoteUrl || img.url || '')) ? '' : (img.remoteUrl || img.url || '');
     return { ...img, remoteUrl, url: remoteUrl || undefined, objectUrl: undefined };
   });
 }
@@ -1479,7 +2587,7 @@ function compactTaskForStorage(task, mode = 'normal') {
     streamPreviewRemoteUrl: '',
     streamPreviewSlots: {},
     images: sanitizeStoredImages(task.images),
-    referenceSnapshots: sanitizeReferenceSnapshots(task.referenceSnapshots)
+    referenceSnapshots: taskReferenceSnapshots(task)
   };
   if (mode === 'normal') {
     return { ...base, rawResponse: base.rawResponse ? summarizeResponse(base.rawResponse) : undefined };
@@ -1511,6 +2619,7 @@ function compactTaskForStorage(task, mode = 'normal') {
     returnedPrompt: base.returnedPrompt,
     createdAt: base.createdAt,
     startedAt: base.startedAt,
+    persistenceRevision: base.persistenceRevision,
     finishedAt: base.finishedAt,
     elapsedMs: base.elapsedMs,
     apiElapsedMs: base.apiElapsedMs,
@@ -1518,6 +2627,11 @@ function compactTaskForStorage(task, mode = 'normal') {
     timing: base.timing,
     responseMode: base.responseMode,
     completionReason: base.completionReason,
+    streamState: base.streamState,
+    streamPartialImages: Array.isArray(base.streamPartialImages) ? base.streamPartialImages : [],
+    streamEventCount: base.streamEventCount,
+    streamPartialCount: base.streamPartialCount,
+    lastStreamEventType: base.lastStreamEventType,
     errorStage: base.errorStage,
     errorCode: base.errorCode,
     expectedCount: base.expectedCount,
@@ -1537,7 +2651,15 @@ function compactTaskForStorage(task, mode = 'normal') {
     images: base.images
   };
 }
-function writeStore() {
+function writeStore(options = {}) {
+  if (options?.deletedTaskIds) rememberTaskDeleteTombstones(options.deletedTaskIds);
+  if (scrollInteractionActive() && options.forceTaskPersistence !== true) {
+    scheduleStoreWrite();
+    return;
+  }
+  let persisted = false;
+  let persistedSnapshot = null;
+  filteredTasksCache = null;
   const agentForStorage = {
     ...state.agent,
     messagesByThread: compactAgentMessagesByThreadForStorage(state.agent?.messagesByThread)
@@ -1555,26 +2677,50 @@ function writeStore() {
     workflowEditorOpen: false,
     confirmDialog: null,
     entryAdvancedModal: null,
+    taskRecovery: undefined,
     proFileTarget: '',
     promptRepo: { ...state.promptRepo, detail: null, imageViewer: null }
   }));
   const baseSettings = defaultStore().settings;
   for (const key of COMPOSER_SETTING_KEYS) clean.settings[key] = baseSettings[key];
   for (const key of COMPOSER_SESSION_FIELDS) clean[key] = null;
+  state.tasks.forEach(ensureTaskPersistenceRevision);
   clean.references = clean.references.map((ref) => ({ ...ref, url: undefined, file: undefined }));
   clean.pro.refs = (clean.pro.refs || []).map((ref) => ({ ...ref, url: undefined, file: undefined }));
   clean.entryAdvanced = clean.entryAdvanced || {};
-  clean.tasks = state.tasks.slice(0, 100).map((task) => compactTaskForStorage(task, 'normal'));
+  clean.tasks = state.tasks.map((task) => compactTaskForStorage(task, 'normal'));
+  mergeCrossTabTasks(clean, options.deletedTaskIds);
+  mergeCrossTabStoreDomains(clean);
+  reserveReferencedBlobIds(clean);
+  const directDeletedIds = (Array.isArray(options.deletedTaskIds) ? options.deletedTaskIds : [...(options.deletedTaskIds || [])])
+    .filter(Boolean)
+    .map(String);
+  const persistedDeletedIds = new Set([
+    ...readTaskDeleteTombstones().keys(),
+    ...directDeletedIds
+  ]);
+  scheduleTaskPersistence(clean.tasks, { deletedTaskIds: [...persistedDeletedIds] });
   try {
     localStorage.setItem(STORE_KEY, JSON.stringify(clean));
+    persisted = true;
+    persistedSnapshot = clean;
   } catch (err) {
     try {
       const compact = {
         ...clean,
-        tasks: state.tasks.slice(0, 80).map((task) => compactTaskForStorage(task, 'compact'))
+        tasks: [],
+        taskStore: {
+          version: 2,
+          count: state.tasks.length,
+          ids: state.tasks.map((task) => task?.id).filter(Boolean),
+          snapshotRevision: taskSnapshotRevision(state.tasks),
+          updatedAt: Date.now()
+        }
       };
       localStorage.setItem(STORE_KEY, JSON.stringify(compact));
-      console.warn('[home-v3] store write compacted after quota pressure', err);
+      persisted = 'idb';
+      persistedSnapshot = compact;
+      console.warn('[home-v3] localStorage 配额不足，完整任务已转存 IndexedDB', err);
     } catch (compactErr) {
       try {
         const emergency = {
@@ -1582,18 +2728,34 @@ function writeStore() {
           modal: null,
           viewer: null,
           promptRepo: { ...clean.promptRepo, items: [], detail: null, imageViewer: null },
-          tasks: state.tasks.slice(0, 60).map((task) => compactTaskForStorage(task, 'essential'))
+          tasks: [],
+          taskStore: {
+            version: 2,
+            count: state.tasks.length,
+            ids: state.tasks.map((task) => task?.id).filter(Boolean),
+            snapshotRevision: taskSnapshotRevision(state.tasks),
+            updatedAt: Date.now()
+          }
         };
         localStorage.setItem(STORE_KEY, JSON.stringify(emergency));
-        console.warn('[home-v3] store write used emergency task-only compaction', compactErr);
+        persisted = 'idb';
+        persistedSnapshot = emergency;
+        console.warn('[home-v3] localStorage 仍受限，已写入最小状态并保留 IndexedDB 任务', compactErr);
       } catch (emergencyErr) {
-        toast('浏览器本地容量不足，请清理历史任务或导出后删除。');
-        console.warn('[home-v3] store write failed', emergencyErr);
+        persisted = false;
+        console.warn('[home-v3] localStorage 状态写入失败，完整任务仍已排队 IndexedDB', emergencyErr);
       }
     }
   }
+  if (persistedSnapshot) persistedStoreBaseline = persistedSnapshot;
+  scheduleOwnedBlobReservationRelease(clean, persisted);
+  if (persisted === true && pendingBlobReservationReleases.size) {
+    for (const id of pendingBlobReservationReleases) releaseBlobReservation(id);
+    pendingBlobReservationReleases.clear();
+  }
   writePersistedPrompt();
   scheduleAgentHistoryPersist();
+  return persisted;
 }
 function writeComposerSessionSettings() {
   if (typeof sessionStorage === 'undefined') return;
@@ -1642,9 +2804,15 @@ function normalizeStreamPartialImages(value, fallback = 1) {
   const normalized = Number.isFinite(number) ? number : (Number.isFinite(fallbackNumber) ? fallbackNumber : 1);
   return Math.max(0, Math.min(3, Math.floor(normalized)));
 }
-function effectiveAdvanced(entry = currentEntryKey(), profile = imageProfile()) {
+function effectiveAdvanced(entry = currentEntryKey(), profile = imageProfile(), override = null) {
+  const safeOverride = override && typeof override === 'object' ? override : null;
   const defaults = profileDefaultAdvanced(profile);
-  const overrides = entryAdvanced(entry);
+  const overrides = { ...entryAdvanced(entry) };
+  if (safeOverride) {
+    for (const [key, value] of Object.entries(safeOverride)) {
+      if (value !== undefined) overrides[key] = value;
+    }
+  }
   return {
     responseFormatB64Json: overrides.responseFormatB64Json === null || overrides.responseFormatB64Json === undefined ? defaults.responseFormatB64Json : !!overrides.responseFormatB64Json,
     streamImages: overrides.streamImages === null || overrides.streamImages === undefined ? defaults.streamImages : !!overrides.streamImages,
@@ -1657,14 +2825,18 @@ function streamSupported(profile = imageProfile()) {
   const key = providerKey(profile);
   return key === 'openai' && profileMode(profile) === 'images';
 }
+function agentResponsesStreamEnabled(profile = agentTextProfile()) {
+  if (!profile || profileMode(profile) !== 'responses') return false;
+  return profile.streamResponses === true || profile.responsesStream === true || profile.agentStream === true;
+}
 function openAiTransparentBackgroundSupported(profile = imageProfile()) {
   return providerKey(profile) === 'openai' && profile?.supportsNativeTransparency === true;
 }
 function transparentBackgroundUnsupportedMessage(profile = imageProfile()) {
   return `当前模型 ${profile?.name || profile?.id || profile?.model || '未命名模型'} / ${profile?.model || 'model'} 不能确认支持透明背景。请切换 OpenAI 图片模型，或关闭透明背景后重试。`;
 }
-function appendAdvancedHeaders(headers = {}, entry = currentEntryKey(), profile = imageProfile()) {
-  const advanced = effectiveAdvanced(entry, profile);
+function appendAdvancedHeaders(headers = {}, entry = currentEntryKey(), profile = imageProfile(), advancedOverride = null) {
+  const advanced = effectiveAdvanced(entry, profile, advancedOverride);
   const out = { ...headers };
   out['X-GPT-Image-Profile-Id'] = profileId(profile);
   if (advanced.timeout) out['X-GPT-Image-Timeout-Seconds'] = String(advanced.timeout);
@@ -1674,8 +2846,8 @@ function appendAdvancedHeaders(headers = {}, entry = currentEntryKey(), profile 
   out['X-GPT-Image-Entry'] = entry;
   return out;
 }
-function applyAdvancedToJsonBody(body, entry = currentEntryKey(), profile = imageProfile()) {
-  const advanced = effectiveAdvanced(entry, profile);
+function applyAdvancedToJsonBody(body, entry = currentEntryKey(), profile = imageProfile(), advancedOverride = null) {
+  const advanced = effectiveAdvanced(entry, profile, advancedOverride);
   const provider = providerKey(profile);
   if (advanced.responseFormatB64Json && provider !== 'google' && provider !== 'xai') body.response_format = 'b64_json';
   if (advanced.streamImages && streamSupported(profile)) {
@@ -1684,8 +2856,8 @@ function applyAdvancedToJsonBody(body, entry = currentEntryKey(), profile = imag
   }
   return body;
 }
-function appendAdvancedToFormData(form, entry = currentEntryKey(), profile = imageProfile()) {
-  const advanced = effectiveAdvanced(entry, profile);
+function appendAdvancedToFormData(form, entry = currentEntryKey(), profile = imageProfile(), advancedOverride = null) {
+  const advanced = effectiveAdvanced(entry, profile, advancedOverride);
   const provider = providerKey(profile);
   if (advanced.responseFormatB64Json && provider !== 'google' && provider !== 'xai') form.append('response_format', 'b64_json');
   if (advanced.streamImages && streamSupported(profile)) {
@@ -1720,7 +2892,9 @@ const state = {
   activeProfileId: '',
   activeImageProfileId: '',
   agentConfig: { mode: 'off', textProfileId: null, imageProfileId: null, webSearchEnabled: false, scrollAfterSubmit: true },
+  taskRecovery: { status: 'idle', retrying: false, error: '', detail: '' },
   imageUrls: new Map(),
+  galleryPreviewUrls: new Map(),
   refUrls: new Map(),
   selectedTaskIds: initialStore.selectedTaskIds || [],
   popover: null,
@@ -1737,9 +2911,11 @@ const state = {
   entryAdvancedModal: null,
   proFileTarget: '',
   agentScrollState: { nearBottom: true, offsetFromBottom: 0 },
+  agentScrollStateByThread: initialStore.agentScrollStateByThread || {},
   agentScrollIntent: '',
   toastSeq: 0
 };
+persistedStoreBaseline = readPersistedStoreSnapshot();
 
 function activeProfile() {
   return imageProfile();
@@ -1851,18 +3027,26 @@ function ensureAgentProjectThread(projectId = state.agent.activeProjectId) {
   if (!projectId) return null;
   state.agent = migrateAgentThreads(state.agent, { interruptPending: false });
   const threads = projectThreads(projectId);
-  if (threads.length) return threads[0];
+  if (threads.length) return activeAgentThread(projectId) || threads[0];
   const thread = makeAgentThread(projectId, { title: '主对话' });
   state.agent.threadsByProject[projectId] = [thread];
   state.agent.messagesByThread[thread.id] = [];
   state.agent.activeThreadIdByProject[projectId] = thread.id;
   return thread;
 }
+function isActiveAgentContext(projectId, threadId) {
+  if (!projectId || !threadId) return false;
+  return state.mode === 'agent'
+    && state.agent.activeProjectId === projectId
+    && activeAgentThreadId(projectId) === threadId;
+}
 function setActiveAgentThread(projectId, threadId) {
   if (!projectId || !threadId) return;
+  if (state.mode === 'agent' && activeAgentThreadId(projectId) !== threadId) captureAgentScrollState();
   state.agent = migrateAgentThreads(state.agent, { interruptPending: false });
   if (!projectThreads(projectId).some((thread) => thread.id === threadId)) return;
   state.agent.activeThreadIdByProject[projectId] = threadId;
+  state.agentScrollState = readActiveAgentScrollState();
 }
 function agentConfigNotice() {
   if ((state.agentConfig?.mode || 'off') === 'hybrid') return '';
@@ -2575,13 +3759,27 @@ function extractResponseText(data, fallback = '') {
   try { return JSON.stringify(summarizeResponse(data), null, 2).slice(0, 1600); } catch { return '收到响应，但无法解析为文本。'; }
 }
 
-function render() {
+function render(options = {}) {
+  const scrolling = scrollInteractionActive();
+  const galleryScroll = $('.gallery-scroll');
+  const galleryVirtualBoundaryChanged = galleryScroll
+    && ((galleryScroll.dataset.virtual === '1') !== (filteredTasks().length > GALLERY_VIRTUAL_THRESHOLD));
+  if (scrolling && options.allowDuringScroll !== true && !userInteractionRenderAllowed && !galleryVirtualBoundaryChanged) {
+    deferredRenderPending = true;
+    scheduleDeferredRender();
+    return false;
+  }
+  deferredRenderPending = false;
   const app = $('#app');
   if (!app) return;
-  const galleryWasScrolling = $('.gallery-scroll')?.classList?.contains('is-scrolling') === true;
-  const promptRepoWasScrolling = $('#promptList')?.classList?.contains('is-scrolling') === true;
-  cancelGalleryVirtualRender({ preserveActivity: galleryWasScrolling });
-  cancelPromptRepoVirtualRender({ preserveActivity: promptRepoWasScrolling });
+  disconnectGalleryImageObservers();
+  const galleryWasScrolling = galleryScrollActivity || galleryScroll?.classList?.contains('is-scrolling') === true;
+  const promptRepoList = $('#promptList');
+  const promptRepoWasScrolling = promptRepoScrollActivity || promptRepoList?.classList?.contains('is-scrolling') === true;
+  const promptRepoScrollSnapshot = state.promptRepo?.open ? capturePromptRepoViewportSnapshot() : null;
+  const workflowScrollSnapshot = captureWorkflowScrollState();
+  cancelGalleryVirtualRender({ preserveActivity: galleryWasScrolling && state.mode === 'gallery' });
+  cancelPromptRepoVirtualRender({ preserveActivity: promptRepoWasScrolling && state.promptRepo?.open === true });
   const previousModalKeys = visibleModalKeys();
   const nextModalKeys = stateModalKeys();
   const focusState = captureFocusState();
@@ -2589,8 +3787,17 @@ function render() {
   const closingKey = [...previousModalKeys].reverse().find((key) => !nextModalKeys.includes(key));
   if (openingKey && focusState) modalOpenerSnapshots.set(openingKey, focusState);
   const galleryScrollState = captureGalleryScrollState(document, { positionOnly: galleryWasScrolling });
-  if (agentScrollActivity) captureAgentScrollState({ positionOnly: true });
-  else captureAgentScrollState();
+  const existingAgentLog = $('.agent-log');
+  if (existingAgentLog && state.mode === 'agent') {
+    const nextAgentScrollKey = activeAgentScrollKey();
+    if (lastRenderedAgentScrollKey === nextAgentScrollKey) {
+      if (agentScrollActivity) captureAgentScrollState({ positionOnly: true });
+      else captureAgentScrollState();
+    } else {
+      state.agentScrollState = readActiveAgentScrollState();
+    }
+    lastRenderedAgentScrollKey = nextAgentScrollKey;
+  }
   const workspaceMode = state.mode === 'agent' ? 'is-agent' : state.mode === 'pro' ? 'is-pro' : state.mode === 'workflow' ? 'is-workflow' : 'is-gallery';
   app.innerHTML = `
     <div class="workspace ${workspaceMode}">
@@ -2600,7 +3807,7 @@ function render() {
         ${state.mode === 'agent' ? renderAgentComposer() : state.mode === 'gallery' ? renderGalleryComposer() : ''}
       </main>
     </div>
-    <div class="toast-stack" id="toastStack"></div>
+    <div class="toast-stack" id="toastStack" aria-live="polite" aria-atomic="false"></div>
     ${state.modal ? renderDetailModal(state.modal) : ''}
     ${state.viewer ? renderViewer(state.viewer) : ''}
     <div id="imageMenuMount" data-modal-inert-exempt></div>
@@ -2630,14 +3837,20 @@ function render() {
   }
   restoreGalleryScrollState(galleryScrollState, document, { exact: galleryWasScrolling });
   restoreAgentScrollState();
-  if (galleryWasScrolling && state.mode === 'gallery' && $('.gallery-scroll')) {
+  const nextGalleryScroll = $('.gallery-scroll');
+  if (galleryWasScrolling && state.mode === 'gallery' && nextGalleryScroll && isCurrentGalleryScroll(nextGalleryScroll)) {
     setGalleryScrollActivity(true);
     scheduleGalleryScrollRender();
   }
-  if (promptRepoWasScrolling && state.promptRepo.open && $('#promptList')) {
+  const nextPromptRepoList = $('#promptList');
+  if (promptRepoWasScrolling && state.promptRepo.open && nextPromptRepoList && isCurrentPromptRepoScroll(nextPromptRepoList)) {
     setPromptRepoScrollActivity(true);
     schedulePromptRepoScrollRender();
   }
+  restorePromptRepoViewportSnapshot(promptRepoScrollSnapshot);
+  restoreWorkflowScrollState(workflowScrollSnapshot);
+  syncWorkspaceScrollActivity();
+  releaseDeferredObjectUrls();
 }
 function nextRenderFrame(fn) {
   const raf = typeof requestAnimationFrame === 'function'
@@ -2665,6 +3878,74 @@ function cancelRenderFrame(frameId) {
     return;
   }
   clearTimeout(frameId);
+}
+function isScrollNodeConnected(node) {
+  return !!node && node.isConnected !== false;
+}
+function isCurrentGalleryScroll(node, generation = galleryScrollGeneration) {
+  return isScrollNodeConnected(node)
+    && node === galleryScrollNode
+    && Number(generation) === galleryScrollGeneration;
+}
+function isCurrentPromptRepoScroll(node, generation = promptRepoScrollGeneration) {
+  return isScrollNodeConnected(node)
+    && node === promptRepoScrollNode
+    && Number(generation) === promptRepoScrollGeneration;
+}
+function adoptGalleryScrollNode(node) {
+  if (!node) return 0;
+  if (galleryScrollNode && galleryScrollNode !== node) cancelGalleryVirtualRender();
+  if (galleryScrollNode !== node) {
+    galleryScrollNode = node;
+    galleryScrollGeneration += 1;
+    galleryScrollActivity = false;
+  }
+  return galleryScrollGeneration;
+}
+function adoptPromptRepoScrollNode(node) {
+  if (!node) return 0;
+  if (promptRepoScrollNode && promptRepoScrollNode !== node) cancelPromptRepoVirtualRender();
+  if (promptRepoScrollNode !== node) {
+    promptRepoScrollNode = node;
+    promptRepoScrollGeneration += 1;
+    promptRepoScrollActivity = false;
+  }
+  return promptRepoScrollGeneration;
+}
+function scrollInteractionActive() {
+  return galleryScrollActivity || promptRepoScrollActivity || agentScrollActivity || workflowScrollActivity;
+}
+function supportsNativeScrollEnd(node) {
+  return !!node && ('onscrollend' in node || (typeof window !== 'undefined' && 'onscrollend' in window));
+}
+function bindScrollActivityPrimers(node, callback) {
+  if (!node || typeof callback !== 'function' || node.dataset.scrollActivityPrimed === '1') return;
+  node.dataset.scrollActivityPrimed = '1';
+  node.addEventListener('wheel', callback, { passive: true });
+  node.addEventListener('touchmove', callback, { passive: true });
+  node.addEventListener('keydown', (event) => {
+    if (['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'Home', 'End', ' '].includes(event.key)) callback();
+  }, { passive: true });
+}
+function scheduleDeferredRender() {
+  if (!deferredRenderPending || deferredRenderFrame) return;
+  deferredRenderFrame = requestRenderFrame(() => {
+    deferredRenderFrame = 0;
+    if (!deferredRenderPending || scrollInteractionActive()) return;
+    render({ allowDuringScroll: true });
+  });
+}
+function syncWorkspaceScrollActivity() {
+  // 滚动状态只保留在实际滚动容器，避免工作区整树触发样式失效计算。
+}
+function markUserInteractionRender() {
+  userInteractionRenderAllowed = true;
+  queueMicrotask(() => { userInteractionRenderAllowed = false; });
+}
+function setScrollTopIfNeeded(node, value) {
+  if (!node) return;
+  const nextTop = Math.max(0, Number(value) || 0);
+  if (Math.abs((Number(node.scrollTop) || 0) - nextTop) > 1) node.scrollTop = nextTop;
 }
 function captureFocusState() {
   const active = document.activeElement;
@@ -2845,60 +4126,93 @@ function renderThemeToggleButton(className = '') {
   const mode = currentThemeMode();
   return `<button class="theme-toggle-button${className ? ` ${className}` : ''}" data-action="theme" data-theme-toggle-button="1" data-theme-mode="${esc(mode)}" title="${esc(themeButtonLabel(mode))}" aria-label="${esc(themeButtonLabel(mode))}"><span class="theme-toggle-icon" aria-hidden="true">${themeButtonIconHtml(mode)}</span></button>`;
 }
+function activeAgentScrollKey(projectId = state.agent.activeProjectId, threadId = activeAgentThreadId(projectId)) {
+  return projectId && threadId ? `${projectId}:${threadId}` : '';
+}
+function readActiveAgentScrollState() {
+  const key = activeAgentScrollKey();
+  const states = state.agentScrollStateByThread && typeof state.agentScrollStateByThread === 'object'
+    ? state.agentScrollStateByThread
+    : {};
+  return states[key] || state.agentScrollState || { nearBottom: true, offsetFromBottom: 0 };
+}
+function writeActiveAgentScrollState(snapshot, key = activeAgentScrollKey()) {
+  const next = snapshot && typeof snapshot === 'object' ? { ...snapshot } : { nearBottom: true, offsetFromBottom: 0 };
+  state.agentScrollState = next;
+  state.agentScrollStateByThread = state.agentScrollStateByThread && typeof state.agentScrollStateByThread === 'object'
+    ? state.agentScrollStateByThread
+    : {};
+  if (key) state.agentScrollStateByThread[key] = next;
+}
 function captureAgentScrollState(options = {}) {
   const log = $('.agent-log');
   if (!log) return;
   if (options.positionOnly === true || agentScrollActivity) {
-    state.agentScrollState = {
-      ...(state.agentScrollState || {}),
-      scrollTop: Number(log.scrollTop) || 0
-    };
+    const snapshot = { ...readActiveAgentScrollState(), scrollTop: Number(log.scrollTop) || 0 };
+    writeActiveAgentScrollState(snapshot);
     return;
   }
   if (state.agentScrollLock?.anchor) {
-    state.agentScrollState = {
+    writeActiveAgentScrollState({
       nearBottom: false,
       offsetFromBottom: Math.max(0, log.scrollHeight - log.scrollTop - log.clientHeight),
       scrollTop: Number(log.scrollTop) || 0,
       anchor: state.agentScrollLock.anchor
-    };
+    });
     return;
   }
   const offsetFromBottom = Math.max(0, log.scrollHeight - log.scrollTop - log.clientHeight);
-  state.agentScrollState = {
+  writeActiveAgentScrollState({
     nearBottom: offsetFromBottom <= 56,
     offsetFromBottom,
     scrollTop: log.scrollTop,
     anchor: captureAgentScrollAnchor(log)
-  };
+  });
+}
+function finishAgentScroll(force = false) {
+  clearTimeout(agentScrollIdleTimer);
+  agentScrollIdleTimer = 0;
+  const remaining = SCROLL_END_FALLBACK_DELAY - (Date.now() - agentScrollLastAt);
+  if (!force && remaining > 0) {
+    agentScrollIdleTimer = setTimeout(finishAgentScroll, remaining);
+    return;
+  }
+  setAgentScrollActivity(false);
+  captureAgentScrollState();
+  if (deferredRenderPending) {
+    scheduleDeferredRender();
+    return;
+  }
+  scheduleAgentTaskCardSyncFrame();
+  scheduleGalleryHydrationFlush();
+  scheduleDeferredRender();
 }
 function scheduleAgentScrollStateCapture() {
-  clearTimeout(agentScrollIdleTimer);
-  cancelRenderFrame(agentScrollCaptureFrame);
-  agentScrollCaptureFrame = 0;
-  const token = ++agentScrollCaptureToken;
-  agentScrollIdleTimer = setTimeout(() => {
-    agentScrollIdleTimer = 0;
-      agentScrollCaptureFrame = requestRenderFrame(() => {
-        agentScrollCaptureFrame = 0;
-        if (token !== agentScrollCaptureToken) return;
-        agentScrollActivity = false;
-        captureAgentScrollState();
-      });
-  }, VIRTUAL_SCROLL_IDLE_DELAY);
+  agentScrollLastAt = Date.now();
+  setAgentScrollActivity(true);
+  if (!agentScrollIdleTimer) agentScrollIdleTimer = setTimeout(finishAgentScroll, SCROLL_END_FALLBACK_DELAY);
+}
+function setAgentScrollActivity(active) {
+  const next = !!active;
+  const log = $('.agent-log');
+  const classMismatch = log?.classList?.contains('is-scrolling') !== next;
+  if (agentScrollActivity === next && !classMismatch) return;
+  agentScrollActivity = next;
+  if (log?.classList && log.classList.contains('is-scrolling') !== next) log.classList.toggle('is-scrolling', next);
+  syncWorkspaceScrollActivity();
 }
 function restoreAgentScrollState() {
   const log = $('.agent-log');
   if (!log) return;
-  const snapshot = state.agentScrollState || { nearBottom: true, offsetFromBottom: 0 };
+  const snapshot = readActiveAgentScrollState();
   const intent = state.agentScrollIntent || '';
   const restoreToken = ++agentScrollRestoreToken;
   const wasScrolling = agentScrollActivity;
   nextRenderFrame(() => {
     if (restoreToken !== agentScrollRestoreToken) return;
-    if (wasScrolling) log.scrollTop = Math.max(0, Number(snapshot.scrollTop) || 0);
-    else if (intent === 'force-bottom' || snapshot.nearBottom) log.scrollTop = log.scrollHeight;
-    else if (!restoreAgentScrollAnchor(log, snapshot.anchor)) log.scrollTop = Math.max(0, log.scrollHeight - log.clientHeight - snapshot.offsetFromBottom);
+    if (wasScrolling) setScrollTopIfNeeded(log, Number(snapshot.scrollTop) || 0);
+    else if (intent === 'force-bottom' || snapshot.nearBottom) setScrollTopIfNeeded(log, log.scrollHeight);
+    else if (!restoreAgentScrollAnchor(log, snapshot.anchor)) setScrollTopIfNeeded(log, Math.max(0, log.scrollHeight - log.clientHeight - snapshot.offsetFromBottom));
     state.agentScrollIntent = '';
     if (state.agentScrollLock && !state.agentScrollLock.keep) state.agentScrollLock = null;
   });
@@ -2906,12 +4220,12 @@ function restoreAgentScrollState() {
 function freezeAgentScrollForRender(anchor = captureAgentScrollAnchor()) {
   if (!anchor?.id) return null;
   state.agentScrollLock = { anchor, keep: true };
-  state.agentScrollState = {
+  writeActiveAgentScrollState({
     nearBottom: false,
     offsetFromBottom: 0,
     scrollTop: Number(anchor.scrollTop) || 0,
     anchor
-  };
+  });
   return anchor;
 }
 function releaseAgentScrollFreezeAfterRender() {
@@ -2929,6 +4243,8 @@ function renderPreservingAgentScroll(anchor = captureAgentScrollAnchor()) {
   release();
 }
 function shouldPreserveAgentScrollForTask(task) {
+  const hasAgentContext = !!task?.agentProjectId || !!task?.agentThreadId;
+  if (hasAgentContext && !isActiveAgentContext(task.agentProjectId, task.agentThreadId)) return false;
   return state.mode === 'agent' || !!task?.agentMessageId || String(task?.workflowMeta?.entry || '') === 'agent';
 }
 function captureAgentScrollAnchor(log = $('.agent-log')) {
@@ -2967,7 +4283,7 @@ function restoreAgentScrollAnchor(log = $('.agent-log'), anchor = null) {
   const logRect = log.getBoundingClientRect();
   const rect = message.getBoundingClientRect();
   const delta = Math.round((rect.top - logRect.top) - (Number(anchor.offsetTop) || 0));
-  log.scrollTop = Math.max(0, (Number(log.scrollTop) || 0) + delta);
+  setScrollTopIfNeeded(log, Math.max(0, (Number(log.scrollTop) || 0) + delta));
   return true;
 }
 function captureGalleryScrollState(root = document, options = {}) {
@@ -2996,15 +4312,71 @@ function restoreGalleryScrollState(snapshot, root = document, options = {}) {
     const scroll = $('.gallery-scroll', root);
     if (!scroll) return;
     if (options.exact === true) {
-      scroll.scrollTop = Math.max(0, Number(snapshot.scrollTop) || 0);
-      scroll.scrollLeft = Math.max(0, Number(snapshot.scrollLeft) || 0);
+      setScrollTopIfNeeded(scroll, Number(snapshot.scrollTop) || 0);
+      if (Math.abs((Number(scroll.scrollLeft) || 0) - Math.max(0, Number(snapshot.scrollLeft) || 0)) > 1) {
+        scroll.scrollLeft = Math.max(0, Number(snapshot.scrollLeft) || 0);
+      }
       return;
     }
     const maxTop = Math.max(0, (Number(scroll.scrollHeight) || 0) - (Number(scroll.clientHeight) || 0));
     const maxLeft = Math.max(0, (Number(scroll.scrollWidth) || 0) - (Number(scroll.clientWidth) || 0));
-    scroll.scrollTop = Math.min(Number(snapshot.scrollTop) || 0, maxTop);
-    scroll.scrollLeft = Math.min(Number(snapshot.scrollLeft) || 0, maxLeft);
+    setScrollTopIfNeeded(scroll, Math.min(Number(snapshot.scrollTop) || 0, maxTop));
+    if (Math.abs((Number(scroll.scrollLeft) || 0) - Math.min(Number(snapshot.scrollLeft) || 0, maxLeft)) > 1) {
+      scroll.scrollLeft = Math.min(Number(snapshot.scrollLeft) || 0, maxLeft);
+    }
   });
+}
+function captureWorkflowScrollState(root = document) {
+  const scroll = $('.workflow-manager-scroll', root);
+  if (!scroll) return null;
+  return {
+    scrollTop: Number(scroll.scrollTop) || 0,
+    scrollLeft: Number(scroll.scrollLeft) || 0
+  };
+}
+function restoreWorkflowScrollState(snapshot, root = document) {
+  if (!snapshot) return;
+  const restoreToken = ++workflowScrollRestoreToken;
+  nextRenderFrame(() => {
+    if (restoreToken !== workflowScrollRestoreToken) return;
+    const scroll = $('.workflow-manager-scroll', root);
+    if (!scroll) return;
+    const maxTop = Math.max(0, Number(scroll.scrollHeight) - Number(scroll.clientHeight));
+    const maxLeft = Math.max(0, Number(scroll.scrollWidth) - Number(scroll.clientWidth));
+    setScrollTopIfNeeded(scroll, Math.min(Number(snapshot.scrollTop) || 0, maxTop));
+    if (Math.abs((Number(scroll.scrollLeft) || 0) - Math.min(Number(snapshot.scrollLeft) || 0, maxLeft)) > 1) {
+      scroll.scrollLeft = Math.min(Number(snapshot.scrollLeft) || 0, maxLeft);
+    }
+  });
+}
+function setWorkflowScrollActivity(active) {
+  const next = !!active;
+  const scroll = $('.workflow-manager-scroll');
+  const classMismatch = scroll?.classList?.contains('is-scrolling') !== next;
+  if (workflowScrollActivity === next && !classMismatch) return;
+  workflowScrollActivity = next;
+  if (scroll?.classList && scroll.classList.contains('is-scrolling') !== next) scroll.classList.toggle('is-scrolling', next);
+  syncWorkspaceScrollActivity();
+}
+function finishWorkflowScroll(force = false) {
+  clearTimeout(workflowScrollIdleTimer);
+  workflowScrollIdleTimer = 0;
+  const remaining = SCROLL_END_FALLBACK_DELAY - (Date.now() - workflowScrollLastAt);
+  if (!force && remaining > 0) {
+    workflowScrollIdleTimer = setTimeout(finishWorkflowScroll, remaining);
+    return;
+  }
+  setWorkflowScrollActivity(false);
+  if (deferredRenderPending) {
+    scheduleDeferredRender();
+    return;
+  }
+  scheduleDeferredRender();
+}
+function scheduleWorkflowScrollCapture() {
+  workflowScrollLastAt = Date.now();
+  setWorkflowScrollActivity(true);
+  if (!workflowScrollIdleTimer) workflowScrollIdleTimer = setTimeout(finishWorkflowScroll, SCROLL_END_FALLBACK_DELAY);
 }
 
 function renderSidebar() {
@@ -3061,7 +4433,9 @@ function taskCountInfo(task) {
   return { label: multi && task.status === 'success' ? `${statusText} ${ratio}` : statusText, actual, expected, multi };
 }
 function taskReferenceSnapshots(task) {
-  return sanitizeReferenceSnapshots(task.referenceSnapshots || task.references || []);
+  const snapshots = Array.isArray(task?.referenceSnapshots) ? task.referenceSnapshots : [];
+  const legacy = Array.isArray(task?.references) ? task.references : [];
+  return sanitizeReferenceSnapshots(snapshots.length ? snapshots : legacy);
 }
 function taskReferenceDisplayBlobId(ref) {
   return ref?.compositedBlobId || ref?.blobId || '';
@@ -3162,7 +4536,25 @@ function measureGalleryMetrics(scroll = null) {
   };
 }
 function galleryMetrics() {
-  return measureGalleryMetrics();
+  const mountedScroll = typeof document !== 'undefined' ? $('.gallery-scroll') : null;
+  const cached = state.galleryVirtual || {};
+  if ((galleryScrollActivity || mountedScroll?.classList?.contains('is-scrolling'))
+    && Number(cached.viewportWidth) > 0
+    && Number(cached.cardHeight) > 0
+    && Number(cached.columns) > 0) {
+    return {
+      viewportWidth: Number(cached.viewportWidth),
+      columns: Number(cached.columns),
+      gap: Number(cached.gap) || 0,
+      cardHeight: Number(cached.cardHeight)
+    };
+  }
+  return measureGalleryMetrics(mountedScroll);
+}
+function galleryVirtualTuning(totalItems) {
+  return Number(totalItems) > 60
+    ? { bufferRows: 3, windowStepRows: 6 }
+    : { bufferRows: 2, windowStepRows: 6 };
 }
 function syncGalleryLayoutMetrics(options = {}) {
   const scroll = $('.gallery-scroll');
@@ -3198,15 +4590,18 @@ function galleryVirtualWindow(totalItems) {
   const totalRows = Math.ceil(totalItems / metrics.columns);
   const pitch = metrics.cardHeight + metrics.gap;
   const viewportHeight = Math.max(320, Number(state.galleryVirtual?.viewportHeight) || 720);
-  const scrollTop = Math.max(0, Number(state.galleryVirtual?.scrollTop) || 0);
+  const rawScrollTop = Math.max(0, Number(state.galleryVirtual?.scrollTop) || 0);
   const shouldVirtualize = totalItems > GALLERY_VIRTUAL_THRESHOLD;
   if (!shouldVirtualize) {
     return { ...metrics, shouldVirtualize, startIndex: 0, endIndex: totalItems, topPad: 0, bottomPad: 0, totalRows };
   }
-  const bufferedRow = Math.max(0, Math.floor(scrollTop / pitch) - GALLERY_VIRTUAL_BUFFER_ROWS);
-  const startRow = Math.floor(bufferedRow / GALLERY_VIRTUAL_WINDOW_STEP_ROWS) * GALLERY_VIRTUAL_WINDOW_STEP_ROWS;
-  const visibleRows = Math.ceil(viewportHeight / pitch) + GALLERY_VIRTUAL_BUFFER_ROWS * 2;
-  const endRow = Math.min(totalRows, startRow + visibleRows + GALLERY_VIRTUAL_WINDOW_STEP_ROWS);
+  const maxScrollTop = Math.max(0, totalRows * pitch - viewportHeight);
+  const scrollTop = Math.min(rawScrollTop, maxScrollTop);
+  const tuning = galleryVirtualTuning(totalItems);
+  const bufferedRow = Math.max(0, Math.floor(scrollTop / pitch) - tuning.bufferRows);
+  const startRow = Math.floor(bufferedRow / tuning.windowStepRows) * tuning.windowStepRows;
+  const visibleRows = Math.ceil(viewportHeight / pitch) + tuning.bufferRows * 2;
+  const endRow = Math.min(totalRows, startRow + visibleRows + tuning.bufferRows);
   return {
     ...metrics,
     shouldVirtualize,
@@ -3221,7 +4616,11 @@ function galleryVirtualRangeChanged(windowState, virtualState = state.galleryVir
   return virtualState?.renderedStartIndex !== windowState.startIndex
     || virtualState?.renderedEndIndex !== windowState.endIndex;
 }
-function galleryVirtualWindowRefreshMode(totalItems = filteredTasks().length) {
+function galleryFilteredTaskCount() {
+  const cached = Number(state.galleryVirtual?.filteredTaskCount);
+  return Number.isFinite(cached) && cached >= 0 ? cached : filteredTasks().length;
+}
+function galleryVirtualWindowRefreshMode(totalItems = galleryFilteredTaskCount()) {
   const virtualState = state.galleryVirtual || {};
   if (totalItems <= GALLERY_VIRTUAL_THRESHOLD) return { needed: false, immediate: false };
   const metrics = galleryMetrics();
@@ -3232,17 +4631,21 @@ function galleryVirtualWindowRefreshMode(totalItems = filteredTasks().length) {
   const endRow = Math.min(totalRows, Math.ceil(Number(virtualState.renderedEndIndex || 0) / columns));
   const scrollTop = Math.max(0, Number(virtualState.scrollTop) || 0);
   const viewportHeight = Math.max(320, Number(virtualState.viewportHeight) || 720);
-  const safetyRows = Math.max(2, Math.floor(GALLERY_VIRTUAL_BUFFER_ROWS / 2));
-  const outside = scrollTop < startRow * pitch
-    || scrollTop + viewportHeight > endRow * pitch;
+  const tuning = galleryVirtualTuning(totalItems);
+  const safetyRows = Math.max(2, Math.floor(tuning.bufferRows / 2));
+  const topDistance = Math.max(0, startRow * pitch - scrollTop);
+  const bottomDistance = Math.max(0, scrollTop + viewportHeight - endRow * pitch);
+  const outside = topDistance > 0 || bottomDistance > 0;
   const nearStart = startRow > 0 && scrollTop < (startRow + safetyRows) * pitch;
   const nearEnd = endRow < totalRows && scrollTop + viewportHeight > Math.max(0, endRow - safetyRows) * pitch;
-  return { needed: outside || nearStart || nearEnd, immediate: outside };
+  const largeJump = galleryScrollDelta > viewportHeight * 1.5;
+  const immediate = largeJump || outside;
+  return { needed: outside || nearStart || nearEnd, immediate };
 }
-function galleryVirtualWindowNeedsRefresh(totalItems = filteredTasks().length) {
+function galleryVirtualWindowNeedsRefresh(totalItems = galleryFilteredTaskCount()) {
   return galleryVirtualWindowRefreshMode(totalItems).needed;
 }
-function galleryVirtualWindowNeedsImmediateRefresh(totalItems = filteredTasks().length) {
+function galleryVirtualWindowNeedsImmediateRefresh(totalItems = galleryFilteredTaskCount()) {
   return galleryVirtualWindowRefreshMode(totalItems).immediate;
 }
 function renderWorkflowSidebar(project) {
@@ -3269,6 +4672,11 @@ function renderWorkflowSidebar(project) {
   `;
 }
 
+function galleryVirtualClass(windowState) {
+  if (!windowState?.shouldVirtualize) return '';
+  return 'is-virtual';
+}
+
 function renderGalleryStage() {
   const tasks = filteredTasks();
   const hasSelection = state.selectedTaskIds.length > 0;
@@ -3276,6 +4684,7 @@ function renderGalleryStage() {
   const visibleTasks = tasks.slice(windowState.startIndex, windowState.endIndex);
   state.galleryVirtual = {
     ...(state.galleryVirtual || {}),
+    filteredTaskCount: tasks.length,
     renderedStartIndex: windowState.startIndex,
     renderedEndIndex: windowState.endIndex
   };
@@ -3288,10 +4697,11 @@ function renderGalleryStage() {
         </label>
         ${renderBatchActions(hasSelection)}
       </div>
+      ${renderTaskRecoveryNotice()}
       <div class="gallery-scroll" data-virtual="${windowState.shouldVirtualize ? '1' : '0'}">
         ${tasks.length ? `
           <div class="gallery-spacer" style="height:${esc(windowState.topPad)}px"></div>
-          <div class="gallery-grid ${windowState.shouldVirtualize ? 'is-virtual' : ''}" style="--gallery-card-height:${esc(windowState.cardHeight)}px">${visibleTasks.map(renderAssetCard).join('')}</div>
+          <div class="gallery-grid ${galleryVirtualClass(windowState)}" style="--gallery-card-height:${esc(windowState.cardHeight)}px">${visibleTasks.map(renderAssetCard).join('')}</div>
           <div class="gallery-spacer" style="height:${esc(windowState.bottomPad)}px"></div>
         ` : `<div class="empty-state"><div><strong>画廊等待第一个任务</strong><span>输入提示词并点击生成，运行卡片会立即进入画廊。</span></div></div>`}
       </div>
@@ -3323,7 +4733,11 @@ function updateBatchActionsDom() {
 function renderGalleryListOnly(options = {}) {
   const scroll = $('.gallery-scroll');
   if (!scroll) return render();
+  if (!state.galleryVirtual) state.galleryVirtual = {};
   const isScrolling = scroll.classList.contains('is-scrolling');
+  const forceHydrate = options.allowDuringScroll !== true
+    && (galleryVirtualHydratePending || options.forceHydrate === true);
+  if (isScrolling || galleryScrollActivity) galleryVirtualHydratePending = true;
   const galleryScrollState = isScrolling || options.virtualScroll
     ? { scrollTop: Number(scroll.scrollTop) || 0, scrollLeft: Number(scroll.scrollLeft) || 0 }
     : captureGalleryScrollState();
@@ -3333,7 +4747,12 @@ function renderGalleryListOnly(options = {}) {
     viewportHeight: scroll.clientHeight || state.galleryVirtual?.viewportHeight || 720,
     viewportWidth: scroll.clientWidth || state.galleryVirtual?.viewportWidth || 0
   };
+  if ((galleryScrollActivity || isScrolling) && options.virtualScroll === true && options.allowDuringScroll !== true) {
+    galleryVirtualHydratePending = true;
+    return false;
+  }
   const tasks = filteredTasks();
+  state.galleryVirtual.filteredTaskCount = tasks.length;
   if (options.virtualScroll === true && isScrolling && !galleryVirtualWindowNeedsRefresh(tasks.length)) {
     return false;
   }
@@ -3343,7 +4762,7 @@ function renderGalleryListOnly(options = {}) {
     || (scroll.dataset.virtual === '1' && windowState.shouldVirtualize);
   if ((options.virtualScroll === true || options.layoutChanged === true) && !galleryVirtualRangeChanged(windowState)) {
     if (options.forceHydrate) void hydrateImages({ galleryOnly: true });
-    return false;
+    if (options.layoutChanged !== true) return false;
   }
   const visibleTasks = tasks.slice(windowState.startIndex, windowState.endIndex);
   state.galleryVirtual = {
@@ -3357,15 +4776,16 @@ function renderGalleryListOnly(options = {}) {
     ? patchGalleryVirtualDom(scroll, visibleTasks, windowState)
     : false;
   if (!patched) {
-    if (galleryImageObserver) galleryImageObserver.disconnect();
+    $$('.asset-card', scroll).forEach((card) => releaseGalleryImageWork(card));
+    disconnectGalleryImageObservers();
     scroll.innerHTML = tasks.length
-      ? `<div class="gallery-spacer" style="height:${esc(windowState.topPad)}px"></div><div class="gallery-grid ${windowState.shouldVirtualize ? 'is-virtual' : ''}" style="--gallery-card-height:${esc(windowState.cardHeight)}px">${visibleTasks.map(renderAssetCard).join('')}</div><div class="gallery-spacer" style="height:${esc(windowState.bottomPad)}px"></div>`
+      ? `<div class="gallery-spacer" style="height:${esc(windowState.topPad)}px"></div><div class="gallery-grid ${galleryVirtualClass(windowState)}" style="--gallery-card-height:${esc(windowState.cardHeight)}px">${visibleTasks.map(renderAssetCard).join('')}</div><div class="gallery-spacer" style="height:${esc(windowState.bottomPad)}px"></div>`
       : `<div class="empty-state"><div><strong>没有匹配的任务</strong><span>换一个关键词，或清空搜索查看全部画廊资产。</span></div></div>`;
   }
   void hydrateImages({
     galleryOnly: true,
     skipReferenceImages: (options.virtualScroll === true || options.layoutChanged === true || scroll.classList.contains('is-scrolling'))
-      && options.forceHydrate !== true
+      && !forceHydrate
   });
   if (!isVirtualUpdate) {
     restoreGalleryScrollState(galleryScrollState);
@@ -3383,14 +4803,7 @@ function patchGalleryVirtualDom(scroll, visibleTasks, windowState) {
   const spacers = $$('.gallery-spacer', scroll);
   if (!grid || spacers.length < 2) return false;
   const currentCards = new Map($$('.asset-card', grid).map((card) => [String(card.dataset.taskId || ''), card]));
-  const desiredIds = new Set(visibleTasks.map((task) => String(task.id)));
-  for (const card of currentCards.values()) {
-    if (!desiredIds.has(String(card.dataset.taskId || ''))) {
-      $$('.asset-media img', card).forEach((img) => galleryImageObserver?.unobserve?.(img));
-      card.remove();
-    }
-  }
-  let desiredNodesIndex = 0;
+  const desiredCards = [];
   for (const task of visibleTasks) {
     const id = String(task.id);
     let card = currentCards.get(id);
@@ -3398,7 +4811,8 @@ function patchGalleryVirtualDom(scroll, visibleTasks, windowState) {
     if (card && card.dataset.cardSignature !== signature) {
       const nextCard = createElementFromHtml(renderAssetCard(task));
       if (nextCard) {
-        $$('.asset-media img', card).forEach((img) => galleryImageObserver?.unobserve?.(img));
+        releaseGalleryImageWork(card);
+        $$('.asset-media img', card).forEach(unobserveGalleryImage);
         card.replaceWith(nextCard);
         card = nextCard;
       }
@@ -3406,19 +4820,43 @@ function patchGalleryVirtualDom(scroll, visibleTasks, windowState) {
     if (!card) card = createElementFromHtml(renderAssetCard(task));
     if (!card) continue;
     card.classList.toggle('selected', state.selectedTaskIds.includes(task.id));
-    if (grid.children[desiredNodesIndex] !== card) {
-      grid.insertBefore(card, grid.children[desiredNodesIndex] || null);
+    desiredCards.push(card);
+  }
+  const desiredSet = new Set(desiredCards);
+  for (const card of currentCards.values()) {
+    if (desiredSet.has(card)) continue;
+    releaseGalleryImageWork(card);
+    $$('.asset-media img', card).forEach(unobserveGalleryImage);
+    card.remove();
+  }
+  const currentOrder = [...grid.children];
+  const needsReorder = desiredCards.length !== currentOrder.length
+    || desiredCards.some((card, index) => card !== currentOrder[index]);
+  if (needsReorder) {
+    const fragment = grid.ownerDocument?.createDocumentFragment?.();
+    if (fragment) {
+      desiredCards.forEach((card) => fragment.appendChild(card));
+      grid.appendChild(fragment);
+    } else {
+      let cursor = grid.firstElementChild;
+      for (const card of desiredCards) {
+        if (card !== cursor) grid.insertBefore(card, cursor);
+        cursor = card.nextElementSibling;
+      }
     }
-    desiredNodesIndex += 1;
   }
   spacers[0].style.height = `${windowState.topPad}px`;
   spacers[1].style.height = `${windowState.bottomPad}px`;
-  grid.className = `gallery-grid ${windowState.shouldVirtualize ? 'is-virtual' : ''}`;
+  grid.className = `gallery-grid ${galleryVirtualClass(windowState)}`;
   grid.style.setProperty('--gallery-card-height', `${windowState.cardHeight}px`);
   return true;
 }
 function cancelGalleryVirtualRender(options = {}) {
-  const preserveActivity = options.preserveActivity === true;
+  const preservePending = options.preserveActivity === true;
+  const scroll = galleryScrollNode || $('.gallery-scroll');
+  cancelRenderFrame(galleryTaskCardSyncFrame);
+  galleryTaskCardSyncFrame = 0;
+  galleryTaskCardSyncQueue.clear();
   galleryVirtualRenderToken += 1;
   clearTimeout(galleryVirtualRenderTimer);
   cancelRenderFrame(galleryVirtualRenderFrame);
@@ -3426,13 +4864,15 @@ function cancelGalleryVirtualRender(options = {}) {
   galleryVirtualRenderTimer = 0;
   galleryVirtualRenderFrame = 0;
   galleryScrollIdleTimer = 0;
-  if (!preserveActivity) galleryVirtualHydratePending = false;
-  const scroll = $('.gallery-scroll');
-  const stage = scroll?.closest?.('.gallery-stage');
-  if (!preserveActivity) {
-    scroll?.classList?.remove('is-scrolling');
-    stage?.classList?.remove('is-scrolling');
-  }
+  galleryScrollIdleNode = null;
+  galleryScrollIdleGeneration = 0;
+  galleryScrollDelta = 0;
+  if (!preservePending) galleryVirtualHydratePending = false;
+  galleryScrollGeneration += 1;
+  galleryScrollNode = null;
+  galleryScrollActivity = false;
+  scroll?.classList?.remove('is-scrolling');
+  syncWorkspaceScrollActivity();
   state.galleryVirtual = { ...(state.galleryVirtual || {}), scheduled: false };
 }
 function scheduleGalleryVirtualRender(options = {}) {
@@ -3447,20 +4887,24 @@ function scheduleGalleryVirtualRender(options = {}) {
   }
   state.galleryVirtual = { ...(state.galleryVirtual || {}), scheduled: true };
   const token = ++galleryVirtualRenderToken;
+  const allowDuringScroll = options.allowDuringScroll === true || options.lightweightDuringScroll === true;
+  const scrollNode = options.node || (options.allowDuringScroll === true ? galleryScrollNode : null);
+  const scrollGeneration = options.generation === undefined
+    ? (scrollNode ? galleryScrollGeneration : null)
+    : Number(options.generation);
+  const isValidScrollRun = () => !scrollNode || isCurrentGalleryScroll(scrollNode, scrollGeneration);
   const run = () => {
-    if (token !== galleryVirtualRenderToken) return;
+    if (token !== galleryVirtualRenderToken || !isValidScrollRun()) return;
     galleryVirtualRenderTimer = 0;
     galleryVirtualRenderFrame = 0;
     state.galleryVirtual = { ...(state.galleryVirtual || {}), scheduled: false };
     const forceHydrate = galleryVirtualHydratePending || options.forceHydrate === true;
     galleryVirtualHydratePending = false;
-    renderGalleryListOnly({
-      virtualScroll: true,
-      forceHydrate
-    });
+    if (forceHydrate) renderGalleryListOnly({ virtualScroll: true, forceHydrate, allowDuringScroll });
+    else renderGalleryListOnly({ virtualScroll: true, allowDuringScroll });
   };
   const enqueue = () => {
-    if (token !== galleryVirtualRenderToken) return;
+    if (token !== galleryVirtualRenderToken || !isValidScrollRun()) return;
     galleryVirtualRenderFrame = requestRenderFrame(run);
   };
   if (delay > 0) {
@@ -3472,21 +4916,83 @@ function scheduleGalleryVirtualRender(options = {}) {
     enqueue();
   }
 }
-function setGalleryScrollActivity(active) {
+function setGalleryScrollActivity(active, node = $('.gallery-scroll'), generation = galleryScrollGeneration) {
+  if (!state.galleryVirtual) state.galleryVirtual = {};
+  const scroll = node;
+  const next = !!active;
+  if (next && scroll && !isCurrentGalleryScroll(scroll, generation)) return false;
+  const classMismatch = scroll?.classList?.contains('is-scrolling') !== next;
+  if (galleryScrollActivity === next && !classMismatch) return true;
+  galleryScrollActivity = next;
+  if (scroll?.classList && scroll.classList.contains('is-scrolling') !== next) scroll.classList.toggle('is-scrolling', next);
+  syncWorkspaceScrollActivity();
+  return true;
+}
+function syncGalleryScrollPosition() {
   const scroll = $('.gallery-scroll');
-  const stage = scroll?.closest?.('.gallery-stage');
-  scroll?.classList?.toggle('is-scrolling', !!active);
-  stage?.classList?.toggle('is-scrolling', !!active);
+  if (!scroll || !state.galleryVirtual) return;
+  const nextScrollTop = Number(scroll.scrollTop) || 0;
+  galleryScrollDelta = Math.abs(nextScrollTop - (Number(state.galleryVirtual.scrollTop) || 0));
+  state.galleryVirtual.scrollTop = nextScrollTop;
+  state.galleryVirtual.viewportHeight = scroll.clientHeight || state.galleryVirtual.viewportHeight || 720;
+  state.galleryVirtual.viewportWidth = scroll.clientWidth || state.galleryVirtual.viewportWidth || 0;
+}
+function inspectGalleryScrollPosition() {
+  const currentScroll = $('.gallery-scroll');
+  if (!isCurrentGalleryScroll(currentScroll)) return { needed: false, immediate: false };
+  if (currentScroll.dataset.virtual !== '1') return { needed: false, immediate: false };
+  const refreshMode = galleryVirtualWindowRefreshMode();
+  if (!refreshMode.needed) return refreshMode;
+  galleryVirtualHydratePending = true;
+  scheduleGalleryVirtualRender({ allowDuringScroll: true, immediate: refreshMode.immediate });
+  return refreshMode;
+}
+function finishGalleryScroll(force = false, node = galleryScrollIdleNode || galleryScrollNode, generation = galleryScrollIdleGeneration || galleryScrollGeneration) {
+  if (!isCurrentGalleryScroll(node, generation)) return;
+  clearTimeout(galleryScrollIdleTimer);
+  galleryScrollIdleTimer = 0;
+  const remaining = SCROLL_END_FALLBACK_DELAY - (Date.now() - galleryScrollLastAt);
+  if (!force && remaining > 0) {
+    galleryScrollIdleNode = node;
+    galleryScrollIdleGeneration = generation;
+    galleryScrollIdleTimer = setTimeout(finishGalleryScroll, remaining);
+    return;
+  }
+  syncGalleryScrollPosition();
+  inspectGalleryScrollPosition();
+  galleryHydrationDeferUntil = Date.now() + GALLERY_POST_SCROLL_HYDRATION_DELAY;
+  setGalleryScrollActivity(false);
+  galleryScrollIdleNode = null;
+  galleryScrollIdleGeneration = 0;
+  if (deferredRenderPending) {
+    scheduleDeferredRender();
+    galleryScrollDelta = 0;
+    return;
+  }
+  const currentScroll = $('.gallery-scroll');
+  if (currentScroll?.dataset.virtual === '1') {
+    scheduleGalleryVirtualRender({ forceHydrate: true, node, generation });
+  }
+  galleryScrollDelta = 0;
+  scheduleGalleryHydrationFlush();
+  scheduleGalleryTaskCardSyncFrame();
+  scheduleDeferredRender();
+}
+function finishGalleryScrollForNode(force, node, generation) {
+  return finishGalleryScroll(force, node, generation);
 }
 function scheduleGalleryScrollRender() {
-  if (galleryVirtualWindowNeedsImmediateRefresh()) scheduleGalleryVirtualRender();
-  else if (galleryVirtualWindowNeedsRefresh()) scheduleGalleryVirtualRender({ delay: 48 });
-  clearTimeout(galleryScrollIdleTimer);
-  galleryScrollIdleTimer = setTimeout(() => {
-    galleryScrollIdleTimer = 0;
-    setGalleryScrollActivity(false);
-    scheduleGalleryVirtualRender({ forceHydrate: true });
-  }, VIRTUAL_SCROLL_IDLE_DELAY);
+  const options = arguments[0] || {};
+  galleryScrollLastAt = Date.now();
+  const scroll = options.node || $('.gallery-scroll');
+  const generation = options.generation === undefined ? galleryScrollGeneration : Number(options.generation);
+  if (!isCurrentGalleryScroll(scroll, generation)) return;
+  syncGalleryScrollPosition();
+  setGalleryScrollActivity(true);
+  inspectGalleryScrollPosition();
+  galleryScrollIdleNode = scroll;
+  galleryScrollIdleGeneration = generation;
+  if (!galleryScrollIdleTimer) galleryScrollIdleTimer = setTimeout(finishGalleryScroll, SCROLL_END_FALLBACK_DELAY);
 }
 
 function renderProWorkbench() {
@@ -3556,7 +5062,7 @@ function renderProTaskPreview(task) {
   return `
     <div class="pro-task-preview ${esc(task.status)}">
       <div class="pro-preview-media">
-        ${image ? `<img data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(image.url || image.remoteUrl || '')}" alt="">` : '<div class="progress-ring"></div>'}
+        ${image ? `<img data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(storedImageSource(image))}" alt="">` : '<div class="progress-ring"></div>'}
       </div>
       <div>
         <div class="detail-section-label">执行状态</div>
@@ -3651,19 +5157,24 @@ function renderOptionGroup(field, label, options) {
 }
 function filteredTasks() {
   const q = String(state.promptQuery || '').trim().toLowerCase();
+  const signature = `${state.tasks.length}:${state.tasks[0]?.id || ''}:${state.tasks[0]?.status || ''}:${state.tasks.at(-1)?.id || ''}`;
+  if (filteredTasksCache?.source === state.tasks && filteredTasksCache.query === q && filteredTasksCache.signature === signature) {
+    return filteredTasksCache.items;
+  }
   const tasks = [...state.tasks].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-  if (!q) return tasks;
-  return tasks.filter((task) => {
+  const items = !q ? tasks : tasks.filter((task) => {
     const hay = [task.prompt, task.returnedPrompt, task.model, task.profileName, task.status, task.sizeLabel, task.quality, task.tags, task.note, task.workflowName, task.batchLabel, task.workflowId, task.workflowRunId].join(' ').toLowerCase();
     return hay.includes(q);
   });
+  filteredTasksCache = { source: state.tasks, query: q, signature, items };
+  return items;
 }
 function renderTaskStreamPreviewImage(task, outputIndex = 0, extra = '') {
   const preview = taskStreamPreviewRecord(task, outputIndex);
   if (!preview) return '';
   const common = `data-image-kind="stream-preview" data-task-id="${esc(task.id)}" data-stream-output-index="${esc(outputIndex)}"`;
-  if (preview.url) return `<img ${common} src="${esc(preview.url)}" class="${esc(extra)}" alt="流式预览">`;
-  return `<img ${common} data-blob-id="${esc(preview.blobId || '')}" class="${esc(extra)}" alt="流式预览">`;
+  if (preview.url) return `<img ${common} src="${esc(preview.url)}" class="${esc(extra)}" alt="流式预览" decoding="async">`;
+  return `<img ${common} data-blob-id="${esc(preview.blobId || '')}" class="${esc(extra)}" alt="流式预览" decoding="async">`;
 }
 function renderAssetCard(task) {
   const image = (task.images || [])[0];
@@ -3680,7 +5191,7 @@ function renderAssetCard(task) {
     <article class="asset-card ${selected ? 'selected' : ''}" data-task-id="${esc(task.id)}" data-card-signature="${esc(assetCardSignature(task))}">
       <button class="asset-check" title="选择" data-action="toggle-select" data-id="${esc(task.id)}"></button>
       <div class="asset-media" data-action="open-detail" data-id="${esc(task.id)}">
-        ${image ? `<img data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="0" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(image.url || image.remoteUrl || '')}" alt="">` : streamPreviewHtml || placeholder}
+        ${image ? `<img data-image-kind="task-image" data-gallery-preview="1" data-task-id="${esc(task.id)}" data-index="0" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(storedImageSource(image))}" loading="lazy" decoding="async" fetchpriority="low" alt="">` : streamPreviewHtml || placeholder}
         ${!image && streamPreviewHtml ? '<span class="stream-preview-badge">预览</span>' : ''}
         ${renderReferenceBadge(task)}
         <div class="asset-badges">
@@ -3809,7 +5320,7 @@ function renderEntryAdvancedFields(entry, profile) {
 }
 function renderEntryAdvancedModal(entry) {
   const profile = entry === 'pro' ? proImageProfile() : entry === 'agent' ? agentImageProfile() : imageProfile();
-  const advanced = effectiveAdvanced(entry, profile);
+  const advanced = effectiveAdvanced(entry, profile, options.advanced);
   const title = entry === 'gallery' ? '画廊高级配置' : entry === 'workflow' ? '工作流高级配置' : entry === 'agent' ? 'Agent 生图高级配置' : '专业工作台高级配置';
   const modelName = profile.name || profile.model || profileId(profile) || '未选择模型';
   return `
@@ -4149,8 +5660,11 @@ async function removeAgentAttachment(id) {
   const attachments = Array.isArray(state.agent.attachments) ? state.agent.attachments : [];
   const item = attachments.find((attachment) => attachment.id === id);
   state.agent.attachments = attachments.filter((attachment) => attachment.id !== id);
-  if (item?.blobId) await deleteBlob(item.blobId).catch(() => {});
-  persistRender();
+  const persisted = persistRender();
+  if (item?.blobId) {
+    if (persisted === true) await deleteUnreferencedBlobIds([item.blobId]);
+    else queuePendingBlobRelease([item.blobId], false);
+  }
 }
 function agentAttachmentSummary(attachments = []) {
   return attachments.map((item, index) => {
@@ -4246,6 +5760,7 @@ function newAgentThreadTitle(now = new Date()) {
 }
 function createAgentThread(agentStateOrProjectId = state.agent, projectIdOrTitle = '', maybeTitle = '') {
   const useGlobal = typeof agentStateOrProjectId === 'string';
+  if (useGlobal && state.mode === 'agent') captureAgentScrollState();
   const agentState = useGlobal ? state.agent : agentStateOrProjectId;
   const projectId = useGlobal ? agentStateOrProjectId : projectIdOrTitle;
   const title = useGlobal ? projectIdOrTitle : maybeTitle;
@@ -4668,7 +6183,7 @@ function renderAgentTaskCard(task) {
   const progressText = `${actual}/${expected}`;
   return `<button class="agent-task-card ${esc(statusClass)}" data-action="open-detail" data-id="${esc(task.id)}" title="点击查看完整生图详情">
     <div class="agent-task-preview">
-      ${image ? `<img data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="0" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(image.url || image.remoteUrl || '')}" alt="">` : streamPreviewHtml || '<span class="spinner"></span>'}
+      ${image ? `<img data-image-kind="task-image" data-gallery-preview="1" data-task-id="${esc(task.id)}" data-index="0" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(storedImageSource(image))}" loading="lazy" decoding="async" fetchpriority="low" alt="">` : streamPreviewHtml || '<span class="spinner"></span>'}
       ${!image && streamPreviewHtml ? '<span class="stream-preview-badge compact">预览</span>' : ''}
     </div>
     <div class="agent-task-meta">
@@ -4678,30 +6193,77 @@ function renderAgentTaskCard(task) {
     </div>
   </button>`;
 }
-function syncAgentTaskCardDom(task) {
+function scheduleGalleryTaskCardSyncFrame() {
+  if (galleryScrollActivity || $('.gallery-scroll')?.classList?.contains('is-scrolling')) return;
+  if (galleryTaskCardSyncFrame || !galleryTaskCardSyncQueue.size) return;
+  galleryTaskCardSyncFrame = requestRenderFrame(() => {
+    galleryTaskCardSyncFrame = 0;
+    const pending = [...galleryTaskCardSyncQueue.values()];
+    galleryTaskCardSyncQueue.clear();
+    pending.forEach(syncGalleryTaskCardDom);
+  });
+}
+function syncGalleryTaskCardDom(task) {
   if (!task?.id) return false;
-  const selector = `.agent-task-card[data-id="${cssEscape(task.id)}"]`;
-  const cards = $$(selector);
+  const cards = $$(`.asset-card[data-task-id="${cssEscape(task.id)}"]`);
   if (!cards.length) return false;
+  if (galleryScrollActivity || $('.gallery-scroll')?.classList?.contains('is-scrolling')) {
+    galleryTaskCardSyncQueue.set(String(task.id), task);
+    return true;
+  }
   for (const card of cards) {
-    const nextCard = createElementFromHtml(renderAgentTaskCard(task));
+    const nextCard = createElementFromHtml(renderAssetCard(task));
     if (!nextCard) continue;
+    releaseGalleryImageWork(card);
+    $$('.asset-media img', card).forEach(unobserveGalleryImage);
     card.replaceWith(nextCard);
     const image = nextCard.querySelector('img[data-blob-id]');
-    if (image) void hydrateBlobImage(image, image.dataset.blobId, image.dataset.remoteUrl);
+    if (image) void hydrateGalleryPreviewImage(image, image.dataset.blobId, image.dataset.remoteUrl);
   }
   return true;
 }
-function scheduleAgentTaskCardSync(task) {
-  if (!task?.id || !$$(`.agent-task-card[data-id="${cssEscape(task.id)}"]`).length) return false;
-  agentTaskCardSyncQueue.set(String(task.id), task);
-  if (agentTaskCardSyncFrame) return true;
+function scheduleGalleryTaskCardSync(task) {
+  if (!task?.id || !$$(`.asset-card[data-task-id="${cssEscape(task.id)}"]`).length) return false;
+  galleryTaskCardSyncQueue.set(String(task.id), task);
+  scheduleGalleryTaskCardSyncFrame();
+  return true;
+}
+function scheduleAgentTaskCardSyncFrame() {
+  if (agentScrollActivity || $('.agent-log')?.classList?.contains('is-scrolling')) return;
+  if (agentTaskCardSyncFrame || !agentTaskCardSyncQueue.size) return;
   agentTaskCardSyncFrame = requestRenderFrame(() => {
     agentTaskCardSyncFrame = 0;
     const pending = [...agentTaskCardSyncQueue.values()];
     agentTaskCardSyncQueue.clear();
     pending.forEach(syncAgentTaskCardDom);
   });
+}
+function syncAgentTaskCardDom(task) {
+  if (!task?.id) return false;
+  const selector = `.agent-task-card[data-id="${cssEscape(task.id)}"]`;
+  const cards = $$(selector);
+  if (!cards.length) return false;
+  if (agentScrollActivity || $('.agent-log')?.classList?.contains('is-scrolling')) {
+    agentTaskCardSyncQueue.set(String(task.id), task);
+    return true;
+  }
+  for (const card of cards) {
+    const nextCard = createElementFromHtml(renderAgentTaskCard(task));
+    if (!nextCard) continue;
+    releaseGalleryImageWork(card);
+    card.replaceWith(nextCard);
+    const image = nextCard.querySelector('img[data-blob-id]');
+    if (image) {
+      galleryDeferredHydrations.set(image, hydrateGalleryPreviewImage);
+      scheduleGalleryHydrationFlush();
+    }
+  }
+  return true;
+}
+function scheduleAgentTaskCardSync(task) {
+  if (!task?.id || !$$(`.agent-task-card[data-id="${cssEscape(task.id)}"]`).length) return false;
+  agentTaskCardSyncQueue.set(String(task.id), task);
+  scheduleAgentTaskCardSyncFrame();
   return true;
 }
 
@@ -4971,7 +6533,7 @@ function renderDetailModal(taskId) {
               <span>${esc(imageRatioLabel || requested.aspectRatio || 'auto')}</span>
               <span>${esc(imageSizeLabel || requested.resolution || 'auto')}</span>
             </div>
-            ${image ? `<img data-action="open-viewer" role="button" tabindex="0" aria-label="查看生成图片大图" data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="${esc(imageIndex)}" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(image.url || image.remoteUrl || '')}" alt="">` : streamPreviewHtml || '<div class="asset-placeholder"><div class="progress-ring"></div></div>'}
+            ${image ? `<img data-action="open-viewer" role="button" tabindex="0" aria-label="查看生成图片大图" data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="${esc(imageIndex)}" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(storedImageSource(image))}" alt="">` : streamPreviewHtml || '<div class="asset-placeholder"><div class="progress-ring"></div></div>'}
             ${streamPreview ? '<span class="stream-preview-badge detail">流式预览</span>' : ''}
             ${streamPreview?.blobId ? `<button class="detail-download preview" data-action="download-stream-preview" data-task-id="${esc(task.id)}" data-index="${esc(imageIndex)}">下载预览</button>` : ''}
             ${isTransparentPng && image ? `<button class="detail-download original" data-action="download-image" data-task-id="${esc(task.id)}" data-index="${esc(imageIndex)}">下载原图</button><button class="detail-download orig" data-action="download-image" data-task-id="${esc(task.id)}" data-index="${esc(imageIndex)}" data-original="true">ORIG</button>` : ''}
@@ -4984,7 +6546,7 @@ function renderDetailModal(taskId) {
           </div>
           ${mediaCount > 1 ? `<div class="detail-thumbs">${Array.from({ length: mediaCount }, (_, idx) => {
             const img = images[idx];
-            return `<button class="${idx === imageIndex ? 'active' : ''}" data-action="detail-image-select" data-id="${esc(task.id)}" data-index="${esc(idx)}">${img ? `<img data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="${esc(idx)}" data-blob-id="${esc(img.blobId || '')}" data-remote-url="${esc(img.url || img.remoteUrl || '')}" alt="">` : renderTaskStreamPreviewImage(task, idx)}</button>`;
+            return `<button class="${idx === imageIndex ? 'active' : ''}" data-action="detail-image-select" data-id="${esc(task.id)}" data-index="${esc(idx)}">${img ? `<img data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="${esc(idx)}" data-blob-id="${esc(img.blobId || '')}" data-remote-url="${esc(storedImageSource(img))}" alt="">` : renderTaskStreamPreviewImage(task, idx)}</button>`;
           }).join('')}</div>` : ''}
         </div>
         <div class="detail-info">
@@ -5030,7 +6592,7 @@ function renderViewer(viewer) {
         <button class="viewer-close" aria-label="关闭大图" data-modal-autofocus data-action="close-viewer">×</button>
         <div class="viewer-index">${esc(viewer.name || '参考图原图')}</div>
         <div class="viewer-stage" data-action="viewer-stage">
-          <img class="viewer-image" data-action="viewer-image" data-image-kind="task-reference-original" data-blob-id="${esc(viewer.blobId || '')}" alt="${esc(viewer.name || '参考图原图')}">
+          <img class="viewer-image" data-action="viewer-image" data-image-kind="task-reference-original" data-task-ref-task-id="${esc(viewer.taskId || '')}" data-task-ref-index="${esc(viewer.refIndex || 0)}" data-blob-id="${esc(viewer.blobId || '')}" alt="${esc(viewer.name || '参考图原图')}">
         </div>
       </div>
     `;
@@ -5047,7 +6609,7 @@ function renderViewer(viewer) {
       <button class="viewer-close" aria-label="关闭大图" data-modal-autofocus data-action="close-viewer">×</button>
       <div class="viewer-stage" data-action="viewer-stage">
         ${images.length > 1 ? `<button class="viewer-nav prev" data-action="viewer-prev" aria-label="上一张">‹</button><button class="viewer-nav next" data-action="viewer-next" aria-label="下一张">›</button>` : ''}
-        <img class="viewer-image" data-action="viewer-image" data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="${esc(safeIndex)}" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(image.url || image.remoteUrl || '')}" alt="生成图片 ${esc(safeIndex + 1)}">
+        <img class="viewer-image" data-action="viewer-image" data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="${esc(safeIndex)}" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(storedImageSource(image))}" alt="生成图片 ${esc(safeIndex + 1)}">
         ${images.length > 1 ? `<div class="viewer-index">${esc(safeIndex + 1)} / ${esc(images.length)}</div>` : ''}
       </div>
     </div>
@@ -5073,14 +6635,34 @@ function setDetailImage(taskId, value, isDelta = false) {
 }
 
 function renderImageContextMenu(menu) {
-  const x = Math.max(12, Math.min(Number(menu.x) || 12, (window.innerWidth || 1280) - 190));
-  const y = Math.max(12, Math.min(Number(menu.y) || 12, (window.innerHeight || 720) - 154));
+  const viewportWidth = window.innerWidth || 1280;
+  const viewportHeight = window.innerHeight || 720;
+  const menuWidth = 190;
+  const canEdit = !menu.kind || ['task-image', 'task-reference', 'task-reference-original'].includes(menu.kind);
+  const menuHeight = canEdit ? 154 : 108;
+  let x = Math.max(12, Math.min(Number(menu.x) || 12, viewportWidth - menuWidth));
+  let y = Math.max(12, Math.min(Number(menu.y) || 12, viewportHeight - menuHeight));
+  if (state.viewer) {
+    const closeRect = { left: viewportWidth - 46, right: viewportWidth - 18, top: 16, bottom: 44 };
+    const overlapsClose = x < closeRect.right
+      && x + menuWidth > closeRect.left
+      && y < closeRect.bottom
+      && y + menuHeight > closeRect.top;
+    if (overlapsClose) {
+      const belowClose = closeRect.bottom + 8;
+      const aboveClose = closeRect.top - menuHeight - 8;
+      if (belowClose + menuHeight <= viewportHeight - 12) y = belowClose;
+      else if (aboveClose >= 12) y = aboveClose;
+      else x = Math.max(12, closeRect.left - menuWidth - 8);
+    }
+  }
+  const copyDisabled = menu.copyState === 'loading';
   return `
     <div class="image-menu-layer" data-action="close-image-menu">
       <div class="image-context-menu" role="menu" aria-label="图片操作" tabindex="-1" style="left:${esc(x)}px;top:${esc(y)}px" data-stop>
-        <button data-modal-autofocus data-action="copy-image" ${menu.copyState === 'loading' ? 'disabled' : ''}>${menu.copyState === 'loading' ? '准备复制...' : '复制'}</button>
-        <button data-action="download-image">下载</button>
-        <button data-action="edit-image-source">编辑</button>
+        <button role="menuitem" tabindex="${copyDisabled ? '-1' : '0'}" data-modal-autofocus data-action="copy-image" ${copyDisabled ? 'disabled' : ''}>${copyDisabled ? '准备复制...' : '复制'}</button>
+        <button role="menuitem" tabindex="${copyDisabled ? '0' : '-1'}" data-action="download-image">下载</button>
+        ${canEdit ? '<button role="menuitem" tabindex="-1" data-action="edit-image-source">编辑</button>' : ''}
       </div>
     </div>
   `;
@@ -5088,12 +6670,50 @@ function renderImageContextMenu(menu) {
 function syncImageContextMenu() {
   const mount = $('#imageMenuMount');
   if (!mount) return;
+  const activeAction = mount.querySelector?.('.image-context-menu')?.contains(document.activeElement)
+    ? document.activeElement?.dataset?.action
+    : '';
+  const hadMenu = !!mount.querySelector?.('.image-context-menu');
   mount.innerHTML = state.imageContextMenu ? renderImageContextMenu(state.imageContextMenu) : '';
+  if (state.imageContextMenu) {
+    const focusFirst = () => {
+      const preferred = activeAction && mount.querySelector?.(`.image-context-menu [data-action="${activeAction}"]:not([disabled])`);
+      (preferred || mount.querySelector?.('.image-context-menu [role="menuitem"]:not([disabled])'))?.focus?.({ preventScroll: true });
+    };
+    if (!hadMenu || activeAction) {
+    if (typeof queueMicrotask === 'function') queueMicrotask(focusFirst);
+    else setTimeout(focusFirst, 0);
+    }
+  }
+}
+function moveImageContextMenuFocus(key) {
+  const items = $$('.image-context-menu [role="menuitem"]:not([disabled])');
+  if (!items.length) return false;
+  const currentIndex = items.indexOf(document.activeElement);
+  const nextIndex = key === 'Home'
+    ? 0
+    : key === 'End'
+      ? items.length - 1
+      : currentIndex < 0
+        ? (key === 'ArrowUp' ? items.length - 1 : 0)
+        : (currentIndex + (key === 'ArrowUp' ? -1 : 1) + items.length) % items.length;
+  items.forEach((item, index) => { item.tabIndex = index === nextIndex ? 0 : -1; });
+  items[nextIndex].focus?.({ preventScroll: true });
+  return true;
 }
 function closeImageContextMenu() {
   if (!state.imageContextMenu && !$('.image-menu-layer')) return;
+  const opener = imageContextMenuOpener;
+  imageContextMenuOpener = null;
   state.imageContextMenu = null;
   syncImageContextMenu();
+  if (opener?.isConnected && opener.matches?.('button, [href], [tabindex]:not([tabindex="-1"])')) {
+    try { opener.focus({ preventScroll: true }); } catch {}
+  }
+}
+function closeImageContextMenuIfCurrent(menu) {
+  if (!menu || state.imageContextMenu?.copyRequestId !== menu.copyRequestId) return;
+  closeImageContextMenu();
 }
 function imageContextFromElement(img, event) {
   const kind = img.dataset.imageKind || (img.dataset.taskRefTaskId ? 'task-reference' : img.dataset.taskId ? 'task-image' : '');
@@ -5113,9 +6733,10 @@ function currentImageMenuSource(menu = state.imageContextMenu) {
   if (menu.kind === 'task-reference' || menu.kind === 'task-reference-original') {
     const task = state.tasks.find((item) => item.id === menu.taskId);
     const ref = taskReferenceSnapshots(task || {})[menu.index];
+    if (!ref && menu.blobId) return { blobId: menu.blobId, remoteUrl: menu.remoteUrl || '', name: menu.name || 'reference.png' };
     if (!ref) return {};
     return {
-      blobId: taskReferenceOriginalBlobId(ref),
+      blobId: menu.blobId || taskReferenceOriginalBlobId(ref),
       displayBlobId: taskReferenceDisplayBlobId(ref),
       name: ref.name || `${task?.id || 'reference'}-ref-${menu.index + 1}.png`,
       task,
@@ -5154,6 +6775,10 @@ async function blobFromImageSource(source) {
     if (response?.ok) return response.blob();
   }
   return null;
+}
+async function imageCopyFallbackText(source) {
+  const candidates = [source?.remoteUrl, state.imageUrls.get(source?.blobId) || ''];
+  return candidates.find((value) => value && !/^blob:/i.test(String(value))) || '';
 }
 async function detectImageBlobType(blob) {
   if (!(blob instanceof Blob) || !blob.size) return '';
@@ -5220,8 +6845,20 @@ async function prepareImageContextMenuCopy(menu) {
 }
 async function copyImageFromMenu(target = null) {
   const source = target?.dataset?.taskId ? taskImageSourceFromTarget(target) : currentImageMenuSource();
-  if (!navigator.clipboard?.write || !window.ClipboardItem) {
-    openCopyLinkDialog({ title: '复制图片', message: '当前浏览器不支持直接复制图片，请手动复制链接。', value: state.imageUrls.get(source.blobId) || source.remoteUrl || '' });
+  let supportsImageClipboard = !!navigator.clipboard?.write && !!window.ClipboardItem && window.isSecureContext !== false;
+  if (supportsImageClipboard && typeof window.ClipboardItem.supports === 'function') {
+    try { supportsImageClipboard = window.ClipboardItem.supports('image/png') !== false; } catch { supportsImageClipboard = false; }
+  }
+  if (!supportsImageClipboard) {
+    const fallbackText = await imageCopyFallbackText(source).catch(() => '');
+    if (fallbackText && navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(fallbackText);
+        toast('图片链接已复制');
+        return;
+      } catch {}
+    }
+    toast('当前浏览器不支持直接复制图片，请使用下载功能');
     return;
   }
   try {
@@ -5241,10 +6878,19 @@ async function copyImageFromMenu(target = null) {
     toast('图片已复制');
   } catch (error) {
     console.warn('[home-v3] image clipboard write failed', error);
-    toast(`复制失败：${error?.message || '浏览器拒绝写入剪贴板'}`);
+    const fallbackText = await imageCopyFallbackText(source).catch(() => '');
+    if (fallbackText && navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(fallbackText);
+        toast('图片复制受浏览器限制，已复制图片链接');
+        return;
+      } catch {}
+    }
+    toast(fallbackText ? `复制失败：${error?.message || '浏览器拒绝写入剪贴板'}` : '当前浏览器不支持直接复制图片，请使用下载功能');
   }
 }
 async function downloadImageFromMenuOrTarget(target = null) {
+  const activeMenu = state.imageContextMenu;
   let source;
   if (target?.dataset?.taskId) {
     const wantsOriginal = target.dataset.original === 'true';
@@ -5255,6 +6901,7 @@ async function downloadImageFromMenuOrTarget(target = null) {
   const blob = await blobFromImageSource(source);
   if (!blob) return toast('当前图片无法下载');
   const ext = (blob.type?.split('/')[1] || 'png').replace('jpeg', 'jpg');
+  closeImageContextMenuIfCurrent(activeMenu);
   downloadBlob(blob, String(source.name || `image-${Date.now()}.${ext}`).replace(/\.[a-z0-9]+$/i, `.${ext}`));
 }
 async function downloadStreamPreview(taskId, outputIndex = 0) {
@@ -5267,10 +6914,15 @@ async function downloadStreamPreview(taskId, outputIndex = 0) {
   downloadBlob(blob, `stream-preview-${taskId}-${Number(outputIndex) + 1}.${ext}`);
 }
 async function editImageFromMenu() {
+  const activeMenu = state.imageContextMenu;
   const source = currentImageMenuSource();
   if (source.task?.id && state.imageContextMenu?.kind === 'task-image') {
-    closeImageContextMenu();
-    await editOutput(source.task.id);
+    const index = state.imageContextMenu.index;
+    closeImageContextMenuIfCurrent(activeMenu);
+    await editOutput(source.task.id, {
+      index,
+      blobId: source.blobId
+    });
     return;
   }
   if (source.ref) {
@@ -5279,7 +6931,7 @@ async function editImageFromMenu() {
     const blobId = await putBlob(blob);
     const ref = { id: uid('ref'), blobId, originalBlobId: blobId, name: source.name, type: blob.type || 'image/png' };
     state.references = [ref, ...state.references].slice(0, referenceLimit());
-    closeImageContextMenu();
+    closeImageContextMenuIfCurrent(activeMenu);
     writeStore();
     await openMaskEditor(ref.id);
     return;
@@ -5309,7 +6961,7 @@ async function addFilesAsProReferences(files, slot = 'base') {
     return;
   }
   const replacing = (state.pro.refs || []).filter((ref) => ref.slot === slot || (slot === 'base' && !ref.slot && state.pro.refs.indexOf(ref) === 0));
-  await Promise.all(replacing.map((ref) => deleteBlob(ref.blobId).catch(() => {})));
+  const replacingBlobIds = replacing.flatMap((ref) => [ref.blobId, ref.originalBlobId, ref.compositedBlobId, ref.maskBlobId]);
   state.pro.refs = (state.pro.refs || []).filter((ref) => !replacing.includes(ref));
   for (const file of imageFiles.slice(0, 1)) {
     if (state.pro.refs.length >= limit && !state.pro.refs.some((ref) => ref.slot === slot)) break;
@@ -5321,19 +6973,20 @@ async function addFilesAsProReferences(files, slot = 'base') {
     ? ['base', 'style'].map((name) => state.pro.refs.find((ref) => ref.slot === name)).filter(Boolean)
     : state.pro.refs.filter((ref) => ref.slot === 'base').slice(0, 1);
   state.pro.analysis = null;
-  persistRender();
+  const persisted = persistRender();
+  if (persisted === true) await deleteUnreferencedBlobIds(replacingBlobIds);
+  else queuePendingBlobRelease(replacingBlobIds, false);
 }
 async function removeProReference(id) {
   const ref = (state.pro.refs || []).find((item) => item.id === id);
   if (!ref) return;
-  await deleteBlob(ref.blobId).catch(() => {});
-  if (ref.originalBlobId && ref.originalBlobId !== ref.blobId) await deleteBlob(ref.originalBlobId).catch(() => {});
-  if (ref.compositedBlobId && ref.compositedBlobId !== ref.blobId) await deleteBlob(ref.compositedBlobId).catch(() => {});
-  if (ref.maskBlobId) await deleteBlob(ref.maskBlobId).catch(() => {});
+  const blobIds = [ref.blobId, ref.originalBlobId, ref.compositedBlobId, ref.maskBlobId];
   revokeMapEntry(state.refUrls, `pro:${id}`);
   state.pro.refs = (state.pro.refs || []).filter((item) => item.id !== id);
   state.pro.analysis = null;
-  persistRender();
+  const persisted = persistRender();
+  if (persisted === true) await deleteUnreferencedBlobIds(blobIds);
+  else queuePendingBlobRelease(blobIds, false);
 }
 function setProMode(mode) {
   if (!PRO_WORKBENCH_MODES[mode]) return;
@@ -5770,25 +7423,31 @@ function renderPromptRepoListContents(promptWindow, promptItems, options = {}) {
   state.promptRepo.renderedStartIndex = promptWindow.startIndex;
   state.promptRepo.renderedEndIndex = promptWindow.endIndex;
   return `
-    ${promptWindow.topPad ? `<div class="prompt-spacer" style="height:${esc(promptWindow.topPad)}px"></div>` : ''}
+    <div class="prompt-spacer" data-prompt-spacer="top" style="height:${esc(promptWindow.topPad || 0)}px"></div>
     ${options.isInitialLoading ? `<div class="prompt-status-row">${esc(options.loadingLabel || '')}</div>${renderPromptSkeletonCards()}` : promptItems.map((item, index) => renderPromptCard(item, promptWindow.startIndex + index)).join('')}
     ${options.isAppending ? '<div class="prompt-loading-row">继续加载提示词...</div>' : ''}
     ${(!state.promptRepo.loading && !state.promptRepo.items.length) ? '<div class="prompt-empty">没有匹配的提示词</div>' : ''}
-    ${promptWindow.bottomPad ? `<div class="prompt-spacer" style="height:${esc(promptWindow.bottomPad)}px"></div>` : ''}
+    <div class="prompt-spacer" data-prompt-spacer="bottom" style="height:${esc(promptWindow.bottomPad || 0)}px"></div>
   `;
 }
 function renderPromptRepoOverlays() {
   return `
     ${state.promptRepo.detail ? renderPromptDetail(state.promptRepo.detail) : ''}
-    ${state.promptRepo.imageViewer ? `<div class="viewer-layer" role="dialog" aria-modal="true" aria-label="提示词大图" tabindex="-1" data-modal-key="prompt-viewer" data-action="prompt-image-close"><button class="viewer-close" aria-label="关闭提示词大图" data-modal-autofocus data-action="prompt-image-close">×</button><img class="viewer-image" src="${esc(state.promptRepo.imageViewer)}" alt=""></div>` : ''}
+    ${state.promptRepo.imageViewer ? `<div class="viewer-layer" role="dialog" aria-modal="true" aria-label="提示词大图" tabindex="-1" data-modal-key="prompt-viewer" data-action="prompt-image-close"><button class="viewer-close" aria-label="关闭提示词大图" data-modal-autofocus data-action="prompt-image-close">×</button><img class="viewer-image" data-action="prompt-image-viewer-image" src="${esc(state.promptRepo.imageViewer)}" alt=""></div>` : ''}
   `;
 }
 function syncPromptRepoView() {
   if (!state.promptRepo?.open) return false;
+  if (promptRepoScrollIsActive()) {
+    deferredRenderPending = true;
+    scheduleDeferredRender();
+    return false;
+  }
   const mount = $('#promptRepoMount');
   if (!mount) return false;
   const focusState = captureFocusState();
   const viewportSnapshot = capturePromptRepoViewportSnapshot();
+  cancelPromptRepoVirtualRender({ preserveActivity: true });
   mount.innerHTML = renderPromptRepo();
   bindPromptRepoTransientEvents();
   syncModalAccessibility();
@@ -5828,7 +7487,7 @@ function promptRepoVirtualWindow(totalItems) {
     && Number(measured.columns) > 0
     && Number(measured.rowPitch) > 0
     && Math.abs(Number(measured.viewportWidth || width) - width) < 80);
-  const fallbackColumns = width <= 760 ? 1 : width <= 1100 ? 2 : width <= 1500 ? 3 : 4;
+  const fallbackColumns = width <= 760 ? 1 : 3;
   const columns = hasReliableMeasurement ? Number(measured.columns) : fallbackColumns;
   const rowHeight = hasReliableMeasurement ? Number(measured.rowPitch) : 370;
   const rowGap = hasReliableMeasurement ? Math.max(0, Number(measured.rowGap) || 0) : 10;
@@ -5856,6 +7515,10 @@ function promptRepoVirtualRangeChanged(windowState) {
 function syncPromptRepoListOnly(options = {}) {
   const promptList = $('#promptList');
   if (!promptList || !state.promptRepo?.open) return false;
+  if (promptRepoScrollIsActive() && options.allowDuringScroll !== true) {
+    promptRepoSyncPending = true;
+    return false;
+  }
   const promptWindow = promptRepoVirtualWindow(state.promptRepo.items.length);
   if (options.virtualScroll && !promptRepoVirtualRangeChanged(promptWindow)) return false;
   const scrollTop = promptList.scrollTop;
@@ -5875,13 +7538,18 @@ function syncPromptRepoListOnly(options = {}) {
       loadingLabel: state.promptRepo.loadingLabel || (state.promptRepo.query ? '搜索提示词中...' : '加载提示词中...')
     });
   }
-  if (promptList.scrollTop !== scrollTop) promptList.scrollTop = scrollTop;
+  setScrollTopIfNeeded(promptList, scrollTop);
   if (focusedCardId) {
     const restoredCard = promptList.querySelector(`.prompt-card[data-id="${cssEscape(focusedCardId)}"]`);
     if (restoredCard) {
       try { restoredCard.focus({ preventScroll: true }); } catch { restoredCard.focus(); }
     }
   }
+  if (promptRepoSyncPending) nextRenderFrame(() => {
+    if (promptRepoScrollIsActive()) return;
+    promptRepoSyncPending = false;
+    syncPromptRepoListOnly({ virtualScroll: true, allowDuringScroll: true });
+  });
   return true;
 }
 function patchPromptRepoVirtualDom(promptList, promptWindow, promptItems) {
@@ -5915,9 +7583,22 @@ function patchPromptRepoVirtualDom(promptList, promptWindow, promptItems) {
   for (const child of [...promptList.children]) {
     if (!desiredSet.has(child)) child.remove();
   }
-  desiredNodes.forEach((node, index) => {
-    if (promptList.children[index] !== node) promptList.insertBefore(node, promptList.children[index] || null);
-  });
+  const currentOrder = [...promptList.children];
+  const needsReorder = desiredNodes.length !== currentOrder.length
+    || desiredNodes.some((node, index) => node !== currentOrder[index]);
+  if (needsReorder) {
+    const fragment = promptList.ownerDocument?.createDocumentFragment?.();
+    if (fragment) {
+      desiredNodes.forEach((node) => fragment.appendChild(node));
+      promptList.appendChild(fragment);
+    } else {
+      let cursor = promptList.firstElementChild;
+      for (const node of desiredNodes) {
+        if (node !== cursor) promptList.insertBefore(node, cursor);
+        cursor = node.nextElementSibling;
+      }
+    }
+  }
   state.promptRepo.renderedStartIndex = promptWindow.startIndex;
   state.promptRepo.renderedEndIndex = promptWindow.endIndex;
   return true;
@@ -5934,11 +7615,14 @@ function promptRepoVirtualWindowRefreshMode(totalItems = state.promptRepo.items.
   const scrollTop = Math.max(0, Number(virtualState.scrollTop) || 0);
   const viewportHeight = Math.max(320, Number(virtualState.viewportHeight) || 620);
   const safetyRows = Math.max(2, Math.floor(PROMPT_VIRTUAL_BUFFER_ROWS / 2));
-  const outside = scrollTop < startRow * rowPitch
-    || scrollTop + viewportHeight > endRow * rowPitch;
+  const topDistance = Math.max(0, startRow * rowPitch - scrollTop);
+  const bottomDistance = Math.max(0, scrollTop + viewportHeight - endRow * rowPitch);
+  const outside = topDistance > 0 || bottomDistance > 0;
   const nearStart = startRow > 0 && scrollTop < (startRow + safetyRows) * rowPitch;
   const nearEnd = endRow < totalRows && scrollTop + viewportHeight > Math.max(0, endRow - safetyRows) * rowPitch;
-  return { needed: outside || nearStart || nearEnd, immediate: outside };
+  const largeJump = promptRepoScrollDelta > viewportHeight * 1.5;
+  const immediate = largeJump || outside;
+  return { needed: outside || nearStart || nearEnd, immediate };
 }
 function promptRepoVirtualWindowNeedsRefresh(totalItems = state.promptRepo.items.length) {
   return promptRepoVirtualWindowRefreshMode(totalItems).needed;
@@ -5947,22 +7631,31 @@ function promptRepoVirtualWindowNeedsImmediateRefresh(totalItems = state.promptR
   return promptRepoVirtualWindowRefreshMode(totalItems).immediate;
 }
 function cancelPromptRepoVirtualRender(options = {}) {
-  const preserveActivity = options.preserveActivity === true;
+  const preservePending = options.preserveActivity === true;
+  const promptList = promptRepoScrollNode || $('#promptList');
   promptRepoVirtualRenderToken += 1;
   promptRepoEdgeCheckToken += 1;
+  promptRepoScrollRestoreToken += 1;
   clearTimeout(promptRepoVirtualRenderTimer);
   cancelRenderFrame(promptRepoVirtualRenderFrame);
   cancelRenderFrame(promptRepoEdgeCheckFrame);
+  clearTimeout(promptRepoEdgeCheckTimer);
   clearTimeout(promptRepoScrollIdleTimer);
   promptRepoVirtualRenderTimer = 0;
   promptRepoVirtualRenderFrame = 0;
   promptRepoEdgeCheckFrame = 0;
+  promptRepoEdgeCheckTimer = 0;
+  promptRepoEdgeCheckLastAt = 0;
   promptRepoScrollIdleTimer = 0;
-  if (!preserveActivity) {
-    promptRepoScrollActivity = false;
-    $('#promptList')?.classList?.remove('is-scrolling');
-    $('#promptList')?.closest?.('.prompt-repo-layer')?.classList?.remove('is-scrolling');
-  }
+  promptRepoScrollIdleNode = null;
+  promptRepoScrollIdleGeneration = 0;
+  promptRepoScrollDelta = 0;
+  if (!preservePending) promptRepoSyncPending = false;
+  promptRepoScrollGeneration += 1;
+  promptRepoScrollNode = null;
+  promptRepoScrollActivity = false;
+  promptList?.classList?.remove('is-scrolling');
+  syncWorkspaceScrollActivity();
   state.promptRepo.virtualRenderScheduled = false;
 }
 function schedulePromptRepoVirtualRender(options = {}) {
@@ -5976,15 +7669,21 @@ function schedulePromptRepoVirtualRender(options = {}) {
   }
   state.promptRepo.virtualRenderScheduled = true;
   const token = ++promptRepoVirtualRenderToken;
+  const allowDuringScroll = options.allowDuringScroll === true || options.lightweightDuringScroll === true;
+  const scrollNode = options.node || (options.lightweightDuringScroll === true ? promptRepoScrollNode : null);
+  const scrollGeneration = options.generation === undefined
+    ? (scrollNode ? promptRepoScrollGeneration : null)
+    : Number(options.generation);
+  const isValidScrollRun = () => !scrollNode || isCurrentPromptRepoScroll(scrollNode, scrollGeneration);
   const run = () => {
-    if (token !== promptRepoVirtualRenderToken) return;
+    if (token !== promptRepoVirtualRenderToken || !isValidScrollRun()) return;
     promptRepoVirtualRenderTimer = 0;
     promptRepoVirtualRenderFrame = 0;
     state.promptRepo.virtualRenderScheduled = false;
-    syncPromptRepoListOnly({ virtualScroll: true });
+    syncPromptRepoListOnly({ virtualScroll: true, allowDuringScroll });
   };
   const enqueue = () => {
-    if (token !== promptRepoVirtualRenderToken) return;
+    if (token !== promptRepoVirtualRenderToken || !isValidScrollRun()) return;
     promptRepoVirtualRenderFrame = requestRenderFrame(run);
   };
   if (delay > 0) {
@@ -5996,30 +7695,113 @@ function schedulePromptRepoVirtualRender(options = {}) {
     enqueue();
   }
 }
-function setPromptRepoScrollActivity(active) {
-  promptRepoScrollActivity = !!active;
+function promptRepoScrollIsActive() {
+  return promptRepoScrollActivity || $('#promptList')?.classList?.contains('is-scrolling') === true;
+}
+function setPromptRepoScrollActivity(active, node = $('#promptList'), generation = promptRepoScrollGeneration) {
+  const list = node;
+  const next = !!active;
+  if (next && list && !isCurrentPromptRepoScroll(list, generation)) return false;
+  const classMismatch = list?.classList?.contains('is-scrolling') !== next;
+  if (promptRepoScrollActivity === next && !classMismatch) return true;
+  promptRepoScrollActivity = next;
+  if (list?.classList && list.classList.contains('is-scrolling') !== next) list.classList.toggle('is-scrolling', next);
+  syncWorkspaceScrollActivity();
+  return true;
+}
+function syncPromptRepoScrollPosition() {
   const list = $('#promptList');
-  const layer = list?.closest?.('.prompt-repo-layer');
-  list?.classList?.toggle('is-scrolling', !!active);
-  layer?.classList?.toggle('is-scrolling', !!active);
+  if (!list) return;
+  const nextScrollTop = Number(list.scrollTop) || 0;
+  promptRepoScrollDelta = Math.abs(nextScrollTop - (Number(state.promptRepo.scrollTop) || 0));
+  state.promptRepo.scrollTop = nextScrollTop;
+  state.promptRepo.viewportHeight = list.clientHeight || state.promptRepo.viewportHeight || 620;
+}
+function inspectPromptRepoScrollPosition() {
+  const currentList = $('#promptList');
+  if (!isCurrentPromptRepoScroll(currentList)) return;
+  if (!currentList || currentList.dataset.virtual !== '1') return;
+  if (!promptRepoVirtualWindowNeedsRefresh()) return;
+  promptRepoSyncPending = true;
+  const refreshMode = promptRepoVirtualWindowRefreshMode();
+  if (refreshMode.immediate) {
+    schedulePromptRepoVirtualRender({
+      lightweightDuringScroll: true,
+      node: currentList,
+      generation: promptRepoScrollGeneration
+    });
+  }
+}
+function finishPromptRepoScroll(force = false, node = promptRepoScrollIdleNode || promptRepoScrollNode, generation = promptRepoScrollIdleGeneration || promptRepoScrollGeneration) {
+  if (!isCurrentPromptRepoScroll(node, generation)) return;
+  clearTimeout(promptRepoScrollIdleTimer);
+  promptRepoScrollIdleTimer = 0;
+  const remaining = SCROLL_END_FALLBACK_DELAY - (Date.now() - promptRepoScrollLastAt);
+  if (!force && remaining > 0) {
+    promptRepoScrollIdleNode = node;
+    promptRepoScrollIdleGeneration = generation;
+    promptRepoScrollIdleTimer = setTimeout(finishPromptRepoScroll, remaining);
+    return;
+  }
+  syncPromptRepoScrollPosition();
+  inspectPromptRepoScrollPosition();
+  setPromptRepoScrollActivity(false);
+  promptRepoScrollIdleNode = null;
+  promptRepoScrollIdleGeneration = 0;
+  if (deferredRenderPending) {
+    scheduleDeferredRender();
+    promptRepoScrollDelta = 0;
+    return;
+  }
+  const currentList = $('#promptList');
+  if (currentList?.dataset.virtual === '1') {
+    promptRepoSyncPending = false;
+    schedulePromptRepoVirtualRender();
+  }
+  promptRepoScrollDelta = 0;
+  if (currentList) schedulePromptRepoEdgeCheck(currentList, generation);
+  scheduleDeferredRender();
+}
+function finishPromptRepoScrollForNode(force, node, generation) {
+  return finishPromptRepoScroll(force, node, generation);
 }
 function schedulePromptRepoScrollRender() {
-  if (promptRepoVirtualWindowNeedsImmediateRefresh()) schedulePromptRepoVirtualRender();
-  else if (promptRepoVirtualWindowNeedsRefresh()) schedulePromptRepoVirtualRender({ delay: 48 });
-  clearTimeout(promptRepoScrollIdleTimer);
-  promptRepoScrollIdleTimer = setTimeout(() => {
-    promptRepoScrollIdleTimer = 0;
-    setPromptRepoScrollActivity(false);
-    schedulePromptRepoVirtualRender();
-  }, VIRTUAL_SCROLL_IDLE_DELAY);
+  const options = arguments[0] || {};
+  promptRepoScrollLastAt = Date.now();
+  const promptList = options.node || $('#promptList');
+  const generation = options.generation === undefined ? promptRepoScrollGeneration : Number(options.generation);
+  if (!isCurrentPromptRepoScroll(promptList, generation)) return;
+  setPromptRepoScrollActivity(true);
+  syncPromptRepoScrollPosition();
+  inspectPromptRepoScrollPosition();
+  promptRepoScrollIdleNode = promptList;
+  promptRepoScrollIdleGeneration = generation;
+  if (!promptRepoScrollIdleTimer) promptRepoScrollIdleTimer = setTimeout(finishPromptRepoScroll, SCROLL_END_FALLBACK_DELAY);
 }
 function schedulePromptRepoEdgeCheck(promptList) {
-  if (!promptList || promptRepoEdgeCheckFrame) return;
+  const generation = arguments[1] === undefined ? promptRepoScrollGeneration : Number(arguments[1]);
+  if (!isCurrentPromptRepoScroll(promptList, generation) || promptRepoEdgeCheckFrame || promptRepoEdgeCheckTimer) return;
+  const elapsed = Date.now() - promptRepoEdgeCheckLastAt;
+  if (elapsed < 120) {
+    promptRepoEdgeCheckTimer = setTimeout(() => {
+      promptRepoEdgeCheckTimer = 0;
+      schedulePromptRepoEdgeCheck(promptList, generation);
+    }, 120 - elapsed);
+    return;
+  }
   const token = ++promptRepoEdgeCheckToken;
   promptRepoEdgeCheckFrame = requestRenderFrame(() => {
     promptRepoEdgeCheckFrame = 0;
-    if (token !== promptRepoEdgeCheckToken || !promptList.isConnected) return;
-    if (Date.now() < (state.promptRepo.scrollLockUntil || 0)) return;
+    if (token !== promptRepoEdgeCheckToken || !isCurrentPromptRepoScroll(promptList, generation)) return;
+    const remaining = Number(state.promptRepo.scrollLockUntil || 0) - Date.now();
+    if (remaining > 0) {
+      promptRepoEdgeCheckTimer = setTimeout(() => {
+        promptRepoEdgeCheckTimer = 0;
+        schedulePromptRepoEdgeCheck(promptList, generation);
+      }, remaining);
+      return;
+    }
+    promptRepoEdgeCheckLastAt = Date.now();
     const bottom = Number(promptList.scrollTop) + Number(promptList.clientHeight);
     if (bottom > Number(promptList.scrollHeight) - 320) void loadPromptPage();
   });
@@ -6256,6 +8038,7 @@ function bindTransientEvents() {
   }
   const galleryScroll = $('.gallery-scroll');
   if (galleryScroll) {
+    const galleryGeneration = adoptGalleryScrollNode(galleryScroll);
     galleryResizeObserver?.disconnect();
     state.galleryVirtual = {
       ...(state.galleryVirtual || {}),
@@ -6272,21 +8055,33 @@ function bindTransientEvents() {
       galleryResizeObserver.observe(galleryScroll);
     }
     galleryScroll.addEventListener('scroll', () => {
+      if (!isCurrentGalleryScroll(galleryScroll, galleryGeneration)) return;
       if (state.imageContextMenu) {
         closeImageContextMenu();
       }
       galleryScrollRestoreToken += 1;
-      state.galleryVirtual = {
-        ...(state.galleryVirtual || {}),
-        scrollTop: Number(galleryScroll.scrollTop) || 0
-      };
-      if (galleryScroll.dataset.virtual === '1') {
-        setGalleryScrollActivity(true);
-        scheduleGalleryScrollRender();
-      } else {
-        setGalleryScrollActivity(false);
-      }
+      scheduleGalleryScrollRender({ node: galleryScroll, generation: galleryGeneration });
     }, { passive: true });
+    bindScrollActivityPrimers(galleryScroll, () => scheduleGalleryScrollRender({ node: galleryScroll, generation: galleryGeneration }));
+    if (supportsNativeScrollEnd(galleryScroll)) {
+      const finishGalleryScroll = () => {
+        if (!isCurrentGalleryScroll(galleryScroll, galleryGeneration)) return;
+        finishGalleryScrollForNode(false, galleryScroll, galleryGeneration);
+      };
+      galleryScroll.addEventListener('scrollend', () => finishGalleryScroll(), { passive: true });
+    }
+  }
+  const workflowScroll = $('.workflow-manager-scroll');
+  if (workflowScroll) {
+    workflowScroll.addEventListener('scroll', () => {
+      workflowScrollRestoreToken += 1;
+      setWorkflowScrollActivity(true);
+      scheduleWorkflowScrollCapture();
+    }, { passive: true });
+    bindScrollActivityPrimers(workflowScroll, scheduleWorkflowScrollCapture);
+    if (supportsNativeScrollEnd(workflowScroll)) {
+      workflowScroll.addEventListener('scrollend', () => finishWorkflowScroll(), { passive: true });
+    }
   }
   if (state.maskEditor) setupMaskCanvas();
   const agentInput = $('#agentInput');
@@ -6328,16 +8123,19 @@ function bindTransientEvents() {
   const agentLog = $('.agent-log');
   if (agentLog) {
     agentLog.addEventListener('scroll', () => {
-      agentScrollActivity = true;
       agentScrollRestoreToken += 1;
       state.agentScrollIntent = '';
-      captureAgentScrollState({ positionOnly: true });
       scheduleAgentScrollStateCapture();
     }, { passive: true });
+    bindScrollActivityPrimers(agentLog, scheduleAgentScrollStateCapture);
+    if (supportsNativeScrollEnd(agentLog)) {
+      agentLog.addEventListener('scrollend', () => finishAgentScroll(), { passive: true });
+    }
   }
 }
 function bindPromptRepoTransientEvents() {
   const promptList = $('#promptList');
+  const promptGeneration = promptList ? adoptPromptRepoScrollNode(promptList) : promptRepoScrollGeneration;
   if (promptList && !promptList.dataset.boundPromptRepo) {
     measurePromptRepoVirtualLayout(promptList);
     if (typeof ResizeObserver === 'function') {
@@ -6365,12 +8163,18 @@ function bindPromptRepoTransientEvents() {
       event.preventDefault();
     });
     promptList.addEventListener('scroll', () => {
-      state.promptRepo.scrollTop = promptList.scrollTop;
-      state.promptRepo.viewportHeight = promptList.clientHeight || state.promptRepo.viewportHeight || 620;
-      setPromptRepoScrollActivity(true);
-      schedulePromptRepoScrollRender();
-      schedulePromptRepoEdgeCheck(promptList);
+      if (!isCurrentPromptRepoScroll(promptList, promptGeneration)) return;
+      promptRepoScrollRestoreToken += 1;
+      schedulePromptRepoScrollRender({ node: promptList, generation: promptGeneration });
     }, { passive: true });
+    bindScrollActivityPrimers(promptList, () => schedulePromptRepoScrollRender({ node: promptList, generation: promptGeneration }));
+    if (supportsNativeScrollEnd(promptList)) {
+      const finishPromptRepoScroll = () => {
+        if (!isCurrentPromptRepoScroll(promptList, promptGeneration)) return;
+        finishPromptRepoScrollForNode(false, promptList, promptGeneration);
+      };
+      promptList.addEventListener('scrollend', () => finishPromptRepoScroll(), { passive: true });
+    }
   }
   const promptCategories = $('#promptCategories');
   if (promptCategories) {
@@ -6385,6 +8189,7 @@ function bindPromptRepoTransientEvents() {
       promptCategories.addEventListener('pointerdown', captureCategoryScroll, { passive: true });
       promptCategories.addEventListener('mousedown', captureCategoryScroll, { passive: true });
       promptCategories.addEventListener('scroll', () => {
+        promptRepoScrollRestoreToken += 1;
         state.promptRepo.categoryScrollTop = promptCategories.scrollTop;
       }, { passive: true });
     }
@@ -6406,19 +8211,42 @@ function bindPromptRepoTransientEvents() {
 
 document.addEventListener('contextmenu', (event) => {
   const img = event.target.closest?.('img[data-image-kind], img[data-task-ref-task-id]');
-  if (!img) return;
+  if (state.imageContextMenu || state.viewer || img) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+  if (!img) {
+    if (state.imageContextMenu) {
+      closeImageContextMenu();
+    }
+    return;
+  }
   const menu = imageContextFromElement(img, event);
   if (!menu) return;
   event.preventDefault();
+  imageContextMenuOpener = img;
   state.imageContextMenu = { ...menu, copyRequestId: uid('copy'), copyState: 'loading' };
   syncImageContextMenu();
   prepareImageContextMenuCopy(state.imageContextMenu);
 });
+document.addEventListener('click', (event) => {
+  if (!state.imageContextMenu) return;
+  if (event.target.closest?.('.image-context-menu')) return;
+  const actionTarget = event.target.closest?.('[data-action]');
+  const keepsViewerClick = event.target.closest?.('.viewer-close')
+    || ['close-viewer', 'close-modal', 'close-modal-bg'].includes(actionTarget?.dataset?.action);
+  closeImageContextMenu();
+  if (keepsViewerClick) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}, true);
+document.addEventListener('error', handleManagedImageLoadError, true);
+document.addEventListener('load', handleManagedImageLoad, true);
 if (typeof window !== 'undefined' && window.addEventListener) {
-  window.addEventListener('scroll', () => {
+  document.addEventListener('scroll', () => {
     if (!state.imageContextMenu) return;
     closeImageContextMenu();
-  }, { passive: true });
+  }, { passive: true, capture: true });
   window.addEventListener('resize', () => {
     if (!state.imageContextMenu) return;
     closeImageContextMenu();
@@ -6426,6 +8254,7 @@ if (typeof window !== 'undefined' && window.addEventListener) {
 }
 
 document.addEventListener('click', async (event) => {
+  markUserInteractionRender();
   const target = event.target.closest('[data-action]');
   if (!target) {
     if (state.imageContextMenu && !event.target.closest('.image-context-menu')) closeImageContextMenu();
@@ -6443,12 +8272,17 @@ document.addEventListener('click', async (event) => {
   if (target.dataset.action === 'close-entry-advanced' && target.classList?.contains('modal-layer') && event.target.closest?.('[data-stop]')) return;
   const action = target.dataset.action;
   if (state.imageContextMenu && !['copy-image', 'download-image', 'edit-image-source', 'close-image-menu'].includes(action)) {
+    if (action !== 'close-viewer') {
+      closeImageContextMenu();
+      event.preventDefault();
+      return;
+    }
     closeImageContextMenu();
   }
-  if (action === 'close-image-menu') { closeImageContextMenu(); return; }
-  if (action === 'copy-image') { await copyImageFromMenu(); closeImageContextMenu(); return; }
-  if (action === 'download-image') { await downloadImageFromMenuOrTarget(target); closeImageContextMenu(); return; }
-  if (action === 'edit-image-source') { await editImageFromMenu(); return; }
+  if (action === 'close-image-menu') { event.preventDefault(); closeImageContextMenu(); return; }
+  if (action === 'copy-image') { event.preventDefault(); const menu = state.imageContextMenu; await copyImageFromMenu(); closeImageContextMenuIfCurrent(menu); return; }
+  if (action === 'download-image') { event.preventDefault(); const menu = state.imageContextMenu; await downloadImageFromMenuOrTarget(target); closeImageContextMenuIfCurrent(menu); return; }
+  if (action === 'edit-image-source') { event.preventDefault(); await editImageFromMenu(); return; }
   if (action === 'set-mode') { state.mode = target.dataset.mode; if (state.mode === 'workflow') state.agent.view = 'workflows'; persistRender(); return; }
   if (action === 'agent-view') { state.agent.view = target.dataset.view || 'chat'; persistRender(); return; }
   if (action === 'toggle-project-prompt') { state.agent.promptOpen = !state.agent.promptOpen; persistRender(); return; }
@@ -6458,10 +8292,11 @@ document.addEventListener('click', async (event) => {
     return;
   }
   if (action === 'agent-project-switch') {
+    captureAgentScrollState();
     state.agent.activeProjectId = target.dataset.id;
     ensureAgentProjectThread(target.dataset.id);
     state.popover = null;
-    state.agentScrollIntent = 'force-bottom';
+    state.agentScrollIntent = '';
     persistRender();
     return;
   }
@@ -6493,7 +8328,7 @@ document.addEventListener('click', async (event) => {
   if (action === 'agent-thread-select') {
     setActiveAgentThread(state.agent.activeProjectId, target.dataset.id);
     state.popover = null;
-    state.agentScrollIntent = 'force-bottom';
+    state.agentScrollIntent = '';
     persistRender();
     return;
   }
@@ -6511,7 +8346,7 @@ document.addEventListener('click', async (event) => {
   }
   if (action === 'switch-agent-thread') {
     setActiveAgentThread(state.agent.activeProjectId, target.value);
-    state.agentScrollIntent = 'force-bottom';
+    state.agentScrollIntent = '';
     persistRender();
     return;
   }
@@ -6548,9 +8383,10 @@ document.addEventListener('click', async (event) => {
   if (action === 'open-entry-advanced') { state.entryAdvancedModal = target.dataset.entry || currentEntryKey(); render(); return; }
   if (action === 'close-entry-advanced') { state.entryAdvancedModal = null; render(); return; }
   if (action === 'switch-project') {
+    captureAgentScrollState();
     state.agent.activeProjectId = target.value;
     ensureAgentProjectThread(target.value);
-    state.agentScrollIntent = 'force-bottom';
+    state.agentScrollIntent = '';
     persistRender();
     return;
   }
@@ -6626,6 +8462,7 @@ document.addEventListener('click', async (event) => {
   if (action === 'set-google-ratio') { state.settings.googleAspectRatio = target.dataset.value; state.popover = null; writeComposerSessionSettings(); persistRender(); return; }
   if (action === 'set-xai-resolution') { state.settings.xaiResolution = target.dataset.value; state.popover = null; writeComposerSessionSettings(); persistRender(); return; }
   if (action === 'set-xai-ratio') { state.settings.xaiAspectRatio = target.dataset.value; state.popover = null; writeComposerSessionSettings(); persistRender(); return; }
+  if (action === 'retry-task-history') { await retryTaskHistory(); return; }
   if (action === 'open-model-config') { state.popover = { type: 'model-config', rect: target.getBoundingClientRect() }; render(); return; }
   if (action === 'open-agent-model-config') { state.popover = { type: 'agent-model-config', rect: target.getBoundingClientRect() }; render(); return; }
   if (action === 'generate') { await generateImageTask(); return; }
@@ -6663,7 +8500,7 @@ document.addEventListener('click', async (event) => {
   if (action === 'open-viewer') { state.viewer = { taskId: target.dataset.taskId, index: Number(target.dataset.index) || 0 }; render(); return; }
   if (action === 'viewer-image' || action === 'viewer-stage') { return; }
   if (action === 'viewer-prev' || action === 'viewer-next') { setViewerImage(action === 'viewer-next' ? 1 : -1); return; }
-  if (action === 'close-viewer') { state.viewer = null; state.imageContextMenu = null; render(); return; }
+  if (action === 'close-viewer') { closeImageContextMenu(); state.viewer = null; render(); return; }
   if (action === 'reuse-task') { reuseTask(target.dataset.id); return; }
   if (action === 'retry-task') { await retryTask(target.dataset.id); return; }
   if (action === 'top-up-task') { await topUpTask(target.dataset.id); return; }
@@ -6705,6 +8542,7 @@ document.addEventListener('click', async (event) => {
     if (!syncPromptRepoOverlays()) render();
     return;
   }
+  if (action === 'prompt-image-viewer-image') return;
   if (action === 'prompt-image-close') { closePromptRepoImageViewerOverlay(); return; }
   if (action === 'agent-pick-attachment') { $('#agentAttachmentInput')?.click(); return; }
   if (action === 'agent-remove-attachment') { await removeAgentAttachment(target.dataset.id); return; }
@@ -6847,6 +8685,7 @@ document.addEventListener('input', (event) => {
     if (task) {
       if (action === 'task-tags-input') task.tags = event.target.value;
       if (action === 'task-note-input') task.note = event.target.value;
+      touchTaskPersistence(task);
       writeStore();
     }
   }
@@ -6862,6 +8701,26 @@ document.addEventListener('focusin', (event) => {
   focusTopModal(topDialog);
 });
 document.addEventListener('keydown', (event) => {
+  markUserInteractionRender();
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    if (state.imageContextMenu) { closeImageContextMenu(); return; }
+    if (state.viewer) { state.viewer = null; render(); return; }
+    if (state.popover) { state.popover = null; render(); return; }
+    if (state.promptRepo.imageViewer) { closePromptRepoImageViewerOverlay(); return; }
+    if (state.promptRepo.detail) { closePromptRepoDetailOverlay(); return; }
+    if (state.modal) { state.modal = null; render(); return; }
+    if (state.workflowInvoke) { state.workflowInvoke = null; render(); return; }
+    if (state.workflowDraft) { state.workflowDraft = null; render(); return; }
+    if (state.entryAdvancedModal) { state.entryAdvancedModal = null; render(); return; }
+    if (state.maskEditor) { state.maskEditor = null; render(); return; }
+    if (state.promptRepo.open) { state.promptRepo.open = false; render(); return; }
+  }
+  if (state.imageContextMenu && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+    event.preventDefault();
+    moveImageContextMenuFocus(event.key);
+    return;
+  }
   const keyboardScope = state.imageContextMenu ? $('.image-context-menu') : topVisibleModal();
   if (event.key === 'Tab' && keyboardScope) {
     const focusable = modalFocusableNodes(keyboardScope);
@@ -6873,20 +8732,6 @@ document.addEventListener('keydown', (event) => {
       (event.shiftKey ? last : first).focus();
     }
   }
-  if (event.key === 'Escape') {
-    event.preventDefault();
-    if (state.viewer) { state.viewer = null; state.imageContextMenu = null; render(); return; }
-    if (state.imageContextMenu) { closeImageContextMenu(); return; }
-    if (state.popover) { state.popover = null; render(); return; }
-    if (state.promptRepo.imageViewer) { closePromptRepoImageViewerOverlay(); return; }
-    if (state.promptRepo.detail) { closePromptRepoDetailOverlay(); return; }
-    if (state.modal) { state.modal = null; render(); return; }
-    if (state.workflowInvoke) { state.workflowInvoke = null; render(); return; }
-    if (state.workflowDraft) { state.workflowDraft = null; render(); return; }
-    if (state.entryAdvancedModal) { state.entryAdvancedModal = null; render(); return; }
-    if (state.maskEditor) { state.maskEditor = null; render(); return; }
-    if (state.promptRepo.open) { state.promptRepo.open = false; render(); return; }
-  }
   if (!state.viewer) return;
   if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
     event.preventDefault();
@@ -6894,7 +8739,11 @@ document.addEventListener('keydown', (event) => {
   }
 });
 
-function persistRender() { writeStore(); render(); }
+function persistRender() {
+  const persisted = writeStore();
+  render();
+  return persisted;
+}
 function autoGrow(el) {
   el.style.height = 'auto';
   el.style.height = `${Math.min(el.scrollHeight, window.innerHeight * .48)}px`;
@@ -7011,7 +8860,9 @@ function watchSystemTheme() {
   else media.addListener?.(onChange);
 }
 function toast(message) {
-  const stack = $('#toastStack') || document.body.appendChild(Object.assign(document.createElement('div'), { className: 'toast-stack', id: 'toastStack' }));
+  const stack = $('#toastStack') || document.body.appendChild(Object.assign(document.createElement('div'), { className: 'toast-stack', id: 'toastStack', ariaLive: 'polite' }));
+  stack.setAttribute?.('aria-live', 'polite');
+  stack.setAttribute?.('aria-atomic', 'false');
   const node = document.createElement('div');
   node.className = 'toast';
   node.textContent = message;
@@ -7238,9 +9089,11 @@ async function consumeImageHttpResponse(response, options = {}) {
   const startedAt = Date.now();
   let readableResponse = response;
   const contentType = response?.headers?.get?.('Content-Type') || '';
+  const proxyProbed = response?.headers?.get?.('X-GPT-Image-Proxy-Probed') === '1';
   let responseMode = classifyImageResponse(contentType);
   if (isImageContentType(contentType)) responseMode = 'binary';
-  if (responseMode !== 'binary' && response?.body?.tee) {
+  if (proxyProbed && responseMode === 'undetermined') responseMode = 'json';
+  if (!proxyProbed && responseMode !== 'binary' && response?.body?.tee) {
     const [probeBody, replayBody] = response.body.tee();
     const probeReader = probeBody.getReader();
     const decoder = new TextDecoder();
@@ -7608,9 +9461,64 @@ async function saveActiveProfile() {
 }
 
 let galleryImageObserver = null;
+const galleryImageObservers = new Map();
+function usableImageSource(value) {
+  const source = String(value || '').trim();
+  return /^(?:https?:\/\/|blob:|data:image\/)/i.test(source) ? source : '';
+}
+function storedImageSource(image) {
+  return usableImageSource(image?.url || image?.remoteUrl || image?.dataUrl || image?.imageUrl || '');
+}
+function markImageCacheMissing(img, blobId, reason = 'cache') {
+  if (!img) return;
+  img.dataset.imageMissing = '1';
+  img.dataset.imageMissingReason = reason === 'load' ? 'load' : 'cache';
+  if (blobId) img.dataset.missingBlobId = String(blobId);
+  img.alt = reason === 'load' ? '图片加载失败，请重试或重新生成' : '本地图片缓存已丢失，请重新生成';
+}
+function clearImageCacheMissing(img) {
+  if (!img) return;
+  delete img.dataset.imageMissing;
+  delete img.dataset.imageMissingReason;
+  delete img.dataset.missingBlobId;
+  delete img.dataset.imageFallbackTried;
+}
+function isManagedImageElement(img) {
+  return img?.tagName === 'IMG' && !!(
+    img.dataset?.imageKind
+    || img.dataset?.blobId
+    || img.dataset?.remoteUrl
+    || img.dataset?.refId
+    || img.dataset?.proRefId
+    || img.dataset?.workflowRefId
+    || img.dataset?.agentAttachmentId
+  );
+}
+function handleManagedImageLoadError(event) {
+  const img = event?.target;
+  if (!isManagedImageElement(img)) return;
+  const fallbackUrl = usableImageSource(img.dataset.remoteUrl);
+  const currentUrl = String(img.currentSrc || img.src || '');
+  if (fallbackUrl && img.dataset.imageFallbackTried !== '1' && currentUrl !== fallbackUrl) {
+    clearImageCacheMissing(img);
+    img.dataset.imageFallbackTried = '1';
+    img.src = fallbackUrl;
+    return;
+  }
+  markImageCacheMissing(img, img.dataset.blobId || '', 'load');
+}
+function handleManagedImageLoad(event) {
+  const img = event?.target;
+  if (!isManagedImageElement(img)) return;
+  clearImageCacheMissing(img);
+}
 async function hydrateBlobImage(img, blobId, remoteUrl = '') {
-  if (!blobId && remoteUrl) { img.src = remoteUrl; return; }
-  if (!blobId) return;
+  const fallbackUrl = usableImageSource(remoteUrl);
+  if (!blobId) {
+    if (fallbackUrl && img?.isConnected !== false) img.src = fallbackUrl;
+    else if (img?.isConnected !== false) markImageCacheMissing(img, '');
+    return;
+  }
   const targetMatches = () => img?.isConnected !== false && String(img?.dataset?.blobId || '') === String(blobId);
   let cachedUrl = touchObjectUrl(state.imageUrls, blobId);
   if (!cachedUrl) {
@@ -7621,37 +9529,279 @@ async function hydrateBlobImage(img, blobId, remoteUrl = '') {
       cachedUrl = rememberObjectUrl(state.imageUrls, blobId, URL.createObjectURL(blob), IMAGE_OBJECT_URL_CACHE_LIMIT);
     }
   }
-  if (cachedUrl && targetMatches()) img.src = cachedUrl;
+  if (cachedUrl && targetMatches()) {
+    clearImageCacheMissing(img);
+    img.src = cachedUrl;
+  } else if (!cachedUrl && fallbackUrl && targetMatches()) {
+    clearImageCacheMissing(img);
+    img.src = fallbackUrl;
+  } else if (!cachedUrl && targetMatches()) {
+    markImageCacheMissing(img, blobId);
+  }
+}
+async function buildGalleryPreviewBlob(blob) {
+  if (!blob?.size) return null;
+  const info = await fastImageSizeFromBlob(blob).catch(() => ({}));
+  const sourceWidth = Number(info.width || 0);
+  const sourceHeight = Number(info.height || 0);
+  const sourceEdge = Math.max(sourceWidth, sourceHeight);
+  if (!sourceEdge || sourceEdge <= GALLERY_PREVIEW_MAX_EDGE || typeof createImageBitmap !== 'function') return blob;
+  const scale = GALLERY_PREVIEW_MAX_EDGE / sourceEdge;
+  const width = Math.max(1, Math.round(sourceWidth * scale));
+  const height = Math.max(1, Math.round(sourceHeight * scale));
+  let bitmap = null;
+  try {
+    bitmap = await createImageBitmap(blob);
+    const canvas = typeof OffscreenCanvas !== 'undefined'
+      ? new OffscreenCanvas(width, height)
+      : typeof document !== 'undefined'
+        ? Object.assign(document.createElement('canvas'), { width, height })
+        : null;
+    const context = canvas?.getContext?.('2d', { alpha: true });
+    if (!canvas || !context) return blob;
+    context.drawImage(bitmap, 0, 0, width, height);
+    const preview = typeof canvas.convertToBlob === 'function'
+      ? await canvas.convertToBlob({ type: 'image/webp', quality: .82 })
+      : await new Promise((resolve) => canvas.toBlob(resolve, 'image/webp', .82));
+    return preview?.size && preview.size < blob.size ? preview : blob;
+  } catch {
+    return blob;
+  } finally {
+    bitmap?.close?.();
+  }
+}
+function acquireGalleryPreviewSlot() {
+  if (galleryPreviewActive < GALLERY_PREVIEW_CONCURRENCY) {
+    galleryPreviewActive += 1;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => galleryPreviewQueue.push(resolve));
+}
+function releaseGalleryPreviewSlot() {
+  const next = galleryPreviewQueue.shift();
+  if (next) {
+    next();
+    return;
+  }
+  galleryPreviewActive = Math.max(0, galleryPreviewActive - 1);
+}
+function pruneGalleryPreviewConsumers(job) {
+  if (!job?.consumers?.size && !job?.settled) {
+    job.cancelled = true;
+    if (galleryPreviewPromises.get(job.key) === job) galleryPreviewPromises.delete(job.key);
+  }
+}
+function releaseGalleryImageWork(card) {
+  if (!card) return;
+  const job = galleryPreviewConsumers.get(card);
+  if (job) {
+    job.consumers.delete(card);
+    galleryPreviewConsumers.delete(card);
+    pruneGalleryPreviewConsumers(job);
+  }
+  for (const img of $$('img[data-gallery-preview="1"]', card)) galleryDeferredHydrations.delete(img);
+}
+async function hydrateGalleryPreviewImage(img, blobId, remoteUrl = '') {
+  if (!img || !blobId) return hydrateBlobImage(img, blobId, remoteUrl);
+  if (imageHydrationScrollActive(img)) {
+    galleryDeferredHydrations.set(img, hydrateGalleryPreviewImage);
+    scheduleGalleryHydrationFlush();
+    return;
+  }
+  const key = String(blobId);
+  const targetMatches = () => img?.isConnected !== false && String(img?.dataset?.blobId || '') === key;
+  const cachedUrl = touchObjectUrl(state.galleryPreviewUrls, key);
+  if (cachedUrl) {
+    if (targetMatches()) {
+      clearImageCacheMissing(img);
+      img.src = cachedUrl;
+    }
+    return;
+  }
+  const consumer = img.closest?.('.asset-card, .agent-task-card') || img;
+  let job = galleryPreviewPromises.get(key);
+  if (job?.cancelled) {
+    if (galleryPreviewPromises.get(key) === job) galleryPreviewPromises.delete(key);
+    job = null;
+  }
+  if (!job) {
+    job = {
+      key,
+      consumers: new Set(),
+      cancelled: false,
+      settled: false,
+      promise: null
+    };
+    job.promise = (async () => {
+      await acquireGalleryPreviewSlot();
+      try {
+        if (job.cancelled) return '';
+        const blob = await getBlob(blobId).catch(() => null);
+        if (job.cancelled || !blob) return '';
+        const previewBlob = await buildGalleryPreviewBlob(blob);
+        if (job.cancelled || !previewBlob) return '';
+        return rememberObjectUrl(
+          state.galleryPreviewUrls,
+          key,
+          URL.createObjectURL(previewBlob),
+          GALLERY_PREVIEW_URL_CACHE_LIMIT
+        );
+      } finally {
+        releaseGalleryPreviewSlot();
+        job.settled = true;
+        if (galleryPreviewPromises.get(key) === job) galleryPreviewPromises.delete(key);
+      }
+    })();
+    galleryPreviewPromises.set(key, job);
+  }
+  const previousJob = galleryPreviewConsumers.get(consumer);
+  if (previousJob && previousJob !== job) {
+    previousJob.consumers.delete(consumer);
+    pruneGalleryPreviewConsumers(previousJob);
+  }
+  job.consumers.add(consumer);
+  galleryPreviewConsumers.set(consumer, job);
+  const previewUrl = await job.promise;
+  const fallbackUrl = usableImageSource(remoteUrl);
+  if (previewUrl && targetMatches()) {
+    clearImageCacheMissing(img);
+    img.src = previewUrl;
+  } else if (!previewUrl && fallbackUrl && targetMatches()) {
+    clearImageCacheMissing(img);
+    img.src = fallbackUrl;
+  } else if (!previewUrl && targetMatches()) {
+    markImageCacheMissing(img, blobId);
+  }
+}
+function imageHydrationScrollActive(img = null) {
+  const root = img?.closest?.('.gallery-scroll, .agent-log');
+  return galleryScrollActivity
+    || agentScrollActivity
+    || root?.classList?.contains('is-scrolling') === true
+    || galleryHydrationDeferUntil > Date.now();
+}
+function imageNearScrollViewport(img, margin = 160) {
+  const root = img?.closest?.('.gallery-scroll, .agent-log');
+  if (!root || typeof img.getBoundingClientRect !== 'function' || typeof root.getBoundingClientRect !== 'function') return true;
+  const imageRect = img.getBoundingClientRect();
+  const rootRect = root.getBoundingClientRect();
+  const safeMargin = Math.max(0, Number(margin) || 0);
+  return imageRect.bottom >= rootRect.top - safeMargin && imageRect.top <= rootRect.bottom + safeMargin;
+}
+async function flushDeferredGalleryHydrations(limit = 1) {
+  if (galleryScrollActivity || agentScrollActivity || galleryHydrationFlushRunning || !galleryDeferredHydrations.size) return;
+  galleryHydrationFlushRunning = true;
+  let processed = 0;
+  try {
+    for (const [img, hydrate] of galleryDeferredHydrations) {
+      galleryDeferredHydrations.delete(img);
+      if (img?.isConnected === false || !img?.closest?.('.gallery-scroll, .agent-log')) continue;
+      if (!imageNearScrollViewport(img) && typeof IntersectionObserver === 'function') {
+        observeGalleryImage(img);
+        continue;
+      }
+      try {
+        await hydrate(img, img.dataset.blobId, img.dataset.remoteUrl);
+      } catch {
+        // 单张图片恢复失败时跳过当前项，不能阻塞后续空闲队列。
+      }
+      processed += 1;
+      if (processed >= Math.max(1, Number(limit) || 1) || galleryScrollActivity || agentScrollActivity) break;
+    }
+  } finally {
+    galleryHydrationFlushRunning = false;
+  }
+  if (!galleryScrollActivity && !agentScrollActivity && galleryDeferredHydrations.size) scheduleGalleryHydrationFlush();
+}
+function deferredGalleryHydrationLimit() {
+  for (const img of galleryDeferredHydrations.keys()) {
+    if (img?.closest?.('.agent-log')) return 4;
+  }
+  return 1;
+}
+function scheduleGalleryHydrationFlush() {
+  if (galleryScrollActivity || agentScrollActivity || galleryHydrationFlushScheduled || galleryHydrationFlushRunning || !galleryDeferredHydrations.size) return;
+  galleryHydrationFlushScheduled = true;
+  const run = () => {
+    galleryHydrationFlushScheduled = false;
+    if (galleryScrollActivity || agentScrollActivity) return;
+    void flushDeferredGalleryHydrations(deferredGalleryHydrationLimit());
+  };
+  const delay = Math.max(0, galleryHydrationDeferUntil - Date.now());
+  if (delay > 0) setTimeout(run, delay);
+  else if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 250 });
+  else setTimeout(run, 0);
+}
+function unobserveGalleryImage(img) {
+  const root = img?.closest?.('.gallery-scroll, .agent-log');
+  galleryImageObservers.get(root)?.unobserve?.(img);
+}
+function disconnectGalleryImageObservers() {
+  for (const observer of galleryImageObservers.values()) observer.disconnect?.();
+  galleryImageObservers.clear();
+  galleryImageObserver = null;
 }
 function observeGalleryImage(img) {
-  if (typeof IntersectionObserver === 'undefined' || !img.closest('.gallery-scroll')) return false;
-  const root = $('.gallery-scroll');
-  if (!galleryImageObserver || galleryImageObserver.rootNode !== root) {
-    if (galleryImageObserver) galleryImageObserver.disconnect();
-    galleryImageObserver = new IntersectionObserver((entries) => {
+  const root = img.closest?.('.gallery-scroll, .agent-log');
+  if (typeof IntersectionObserver === 'undefined' || !root) return false;
+  let observer = galleryImageObservers.get(root);
+  if (!observer) {
+    observer = new IntersectionObserver((entries) => {
       entries.forEach((entry) => {
         if (!entry.isIntersecting) return;
-        galleryImageObserver.unobserve(entry.target);
-        hydrateBlobImage(entry.target, entry.target.dataset.blobId, entry.target.dataset.remoteUrl);
+        observer.unobserve(entry.target);
+        const hydrate = entry.target.dataset.galleryPreview === '1' ? hydrateGalleryPreviewImage : hydrateBlobImage;
+        if (imageHydrationScrollActive(entry.target)) {
+          galleryDeferredHydrations.set(entry.target, hydrate);
+          scheduleGalleryHydrationFlush();
+          return;
+        }
+        void hydrate(entry.target, entry.target.dataset.blobId, entry.target.dataset.remoteUrl);
       });
-    }, { root, rootMargin: '360px 0px' });
-    galleryImageObserver.rootNode = root;
+    }, { root, rootMargin: '160px 0px' });
+    observer.rootNode = root;
+    galleryImageObservers.set(root, observer);
   }
-  galleryImageObserver.observe(img);
+  galleryImageObserver = observer;
+  observer.observe(img);
   return true;
+}
+async function hydrateAgentAttachmentImage(img) {
+  const attachment = (state.agent.attachments || []).find((item) => item.id === img?.dataset?.agentAttachmentId);
+  if (!attachment?.blobId) return;
+  const key = `agent:${attachment.id}:${attachment.blobId}`;
+  if (!state.refUrls.has(key)) {
+    const blob = await getBlob(attachment.blobId).catch(() => null);
+    if (blob) rememberObjectUrl(state.refUrls, key, URL.createObjectURL(blob), REFERENCE_OBJECT_URL_CACHE_LIMIT);
+  }
+  if (state.refUrls.has(key) && img?.isConnected !== false) img.src = touchObjectUrl(state.refUrls, key);
 }
 async function hydrateImages(options = {}) {
   const galleryOnly = options.galleryOnly === true;
   const skipReferenceImages = options.skipReferenceImages === true;
-  for (const img of $$('img[data-blob-id]')) {
+  for (const img of $$('img[data-blob-id], img[data-remote-url]')) {
     if (galleryOnly && !img.closest('.gallery-scroll')) continue;
+    if (img.complete && img.naturalWidth > 0) continue;
+    if (img.complete && img.getAttribute('src')) img.removeAttribute('src');
     const blobId = img.dataset.blobId;
-    if (observeGalleryImage(img)) continue;
-    await hydrateBlobImage(img, blobId, img.dataset.remoteUrl);
+    if (img.closest?.('.agent-log') && options.deferAgentHydration !== false) {
+      galleryDeferredHydrations.set(img, img.dataset.galleryPreview === '1' ? hydrateGalleryPreviewImage : hydrateBlobImage);
+      scheduleGalleryHydrationFlush();
+      continue;
+    }
+    const shouldObserve = !imageNearScrollViewport(img) && observeGalleryImage(img);
+    if (shouldObserve) continue;
+    unobserveGalleryImage(img);
+    if (imageHydrationScrollActive(img)) {
+      galleryDeferredHydrations.set(img, img.dataset.galleryPreview === '1' ? hydrateGalleryPreviewImage : hydrateBlobImage);
+      scheduleGalleryHydrationFlush();
+      continue;
+    }
+    await (img.dataset.galleryPreview === '1' ? hydrateGalleryPreviewImage : hydrateBlobImage)(img, blobId, img.dataset.remoteUrl);
   }
   if (galleryOnly && skipReferenceImages) return;
   if (galleryOnly) {
-    for (const img of $$('img[data-task-ref-task-id]')) {
+    for (const img of $$('img[data-task-ref-task-id]:not([src])')) {
       const task = state.tasks.find((item) => item.id === img.dataset.taskRefTaskId);
       const refs = task ? taskReferenceSnapshots(task) : [];
       const ref = refs[Number(img.dataset.taskRefIndex) || 0];
@@ -7666,7 +9816,7 @@ async function hydrateImages(options = {}) {
     }
     return;
   }
-  for (const img of $$('img[data-ref-id]')) {
+  for (const img of $$('img[data-ref-id]:not([src])')) {
     const ref = state.references.find((r) => r.id === img.dataset.refId);
     if (!ref) continue;
     if (!state.refUrls.has(ref.id)) {
@@ -7675,7 +9825,7 @@ async function hydrateImages(options = {}) {
     }
     if (state.refUrls.has(ref.id)) img.src = touchObjectUrl(state.refUrls, ref.id);
   }
-  for (const img of $$('img[data-pro-ref-id]')) {
+  for (const img of $$('img[data-pro-ref-id]:not([src])')) {
     const ref = (state.pro.refs || []).find((r) => r.id === img.dataset.proRefId);
     if (!ref) continue;
     const key = `pro:${ref.id}`;
@@ -7685,7 +9835,7 @@ async function hydrateImages(options = {}) {
     }
     if (state.refUrls.has(key)) img.src = touchObjectUrl(state.refUrls, key);
   }
-  for (const img of $$('img[data-workflow-ref-id]')) {
+  for (const img of $$('img[data-workflow-ref-id]:not([src])')) {
     const ref = (state.workflowInvoke?.references || []).find((r) => r.id === img.dataset.workflowRefId);
     if (!ref) continue;
     const key = `workflow:${ref.id}`;
@@ -7695,17 +9845,15 @@ async function hydrateImages(options = {}) {
     }
     if (state.refUrls.has(key)) img.src = touchObjectUrl(state.refUrls, key);
   }
-  for (const img of $$('img[data-agent-attachment-id]')) {
-    const attachment = (state.agent.attachments || []).find((item) => item.id === img.dataset.agentAttachmentId);
-    if (!attachment?.blobId) continue;
-    const key = `agent:${attachment.id}:${attachment.blobId}`;
-    if (!state.refUrls.has(key)) {
-      const blob = await getBlob(attachment.blobId).catch(() => null);
-      if (blob) rememberObjectUrl(state.refUrls, key, URL.createObjectURL(blob), REFERENCE_OBJECT_URL_CACHE_LIMIT);
+  for (const img of $$('img[data-agent-attachment-id]:not([src])')) {
+    if (options.deferAgentHydration !== false) {
+      galleryDeferredHydrations.set(img, hydrateAgentAttachmentImage);
+      continue;
     }
-    if (state.refUrls.has(key)) img.src = touchObjectUrl(state.refUrls, key);
+    await hydrateAgentAttachmentImage(img);
   }
-  for (const img of $$('img[data-task-ref-task-id]')) {
+  if (galleryDeferredHydrations.size) scheduleGalleryHydrationFlush();
+  for (const img of $$('img[data-task-ref-task-id]:not([src])')) {
     const task = state.tasks.find((item) => item.id === img.dataset.taskRefTaskId);
     const refs = task ? taskReferenceSnapshots(task) : [];
     const ref = refs[Number(img.dataset.taskRefIndex) || 0];
@@ -7753,15 +9901,12 @@ async function handlePaste(event) {
 }
 async function removeReference(id) {
   const ref = state.references.find((r) => r.id === id);
-  if (ref) {
-    await deleteBlob(ref.blobId).catch(() => {});
-    if (ref.originalBlobId && ref.originalBlobId !== ref.blobId) await deleteBlob(ref.originalBlobId).catch(() => {});
-    if (ref.compositedBlobId && ref.compositedBlobId !== ref.blobId) await deleteBlob(ref.compositedBlobId).catch(() => {});
-    if (ref.maskBlobId) await deleteBlob(ref.maskBlobId).catch(() => {});
-  }
+  const blobIds = ref ? [ref.blobId, ref.originalBlobId, ref.compositedBlobId, ref.maskBlobId] : [];
   state.references = state.references.filter((r) => r.id !== id);
   revokeMapEntry(state.refUrls, id);
-  persistRender();
+  const persisted = persistRender();
+  if (persisted === true) await deleteUnreferencedBlobIds(blobIds);
+  else queuePendingBlobRelease(blobIds, false);
 }
 async function addTaskReferenceToComposer(taskId, index = 0) {
   const task = state.tasks.find((item) => item.id === taskId);
@@ -7827,13 +9972,12 @@ async function addFilesAsWorkflowReferences(files) {
 }
 async function removeWorkflowReference(id) {
   const ref = (state.workflowInvoke?.references || []).find((item) => item.id === id);
-  if (ref) await deleteBlob(ref.blobId).catch(() => {});
-  if (ref?.originalBlobId && ref.originalBlobId !== ref.blobId) await deleteBlob(ref.originalBlobId).catch(() => {});
-  if (ref?.compositedBlobId && ref.compositedBlobId !== ref.blobId) await deleteBlob(ref.compositedBlobId).catch(() => {});
-  if (ref?.maskBlobId) await deleteBlob(ref.maskBlobId).catch(() => {});
+  const blobIds = ref ? [ref.blobId, ref.originalBlobId, ref.compositedBlobId, ref.maskBlobId] : [];
   if (state.workflowInvoke) state.workflowInvoke.references = (state.workflowInvoke.references || []).filter((item) => item.id !== id);
   revokeMapEntry(state.refUrls, `workflow:${id}`);
-  persistRender();
+  const persisted = persistRender();
+  if (persisted === true) await deleteUnreferencedBlobIds(blobIds);
+  else queuePendingBlobRelease(blobIds, false);
 }
 
 function validateReferenceCountForProfile(profile, refs = []) {
@@ -7885,6 +10029,8 @@ async function generateImageTask(seedTask = null) {
     batchLabel: meta.batchLabel || seedTask?.batchLabel || '',
     workflowName: meta.workflowName || seedTask?.workflowName || '',
     agentMessageId: meta.agentMessageId || seedTask?.agentMessageId || '',
+    agentProjectId: meta.agentProjectId || seedTask?.agentProjectId || '',
+    agentThreadId: meta.agentThreadId || seedTask?.agentThreadId || '',
     agentOption: meta.agentOption || seedTask?.agentOption || '',
     agentOptionTitle: meta.agentOptionTitle || seedTask?.agentOptionTitle || '',
     editedFromOption: meta.editedFromOption || seedTask?.editedFromOption || '',
@@ -7901,9 +10047,11 @@ async function generateImageTask(seedTask = null) {
     error: ''
   };
   state.tasks.unshift(task);
+  const taskGeneration = beginTaskGeneration(task);
+  const taskGenerationActive = () => isTaskGenerationActive(task, taskGeneration.version);
   writeStore();
-  const preserveAgentScroll = shouldPreserveAgentScrollForTask(task);
-  if (preserveAgentScroll) renderPreservingAgentScroll();
+  const preserveAgentScroll = () => shouldPreserveAgentScrollForTask(task);
+  if (preserveAgentScroll()) renderPreservingAgentScroll();
   else render();
   if (meta.onCreated) meta.onCreated(task);
   try {
@@ -7911,9 +10059,13 @@ async function generateImageTask(seedTask = null) {
     const result = await collectGenerationResult(prompt, effectiveParams, {
       profile,
       references,
+      signal: taskGeneration.signal,
+      isActive: taskGenerationActive,
       entry: meta.entry || 'gallery',
+      advanced: seedTask?.advanced || meta.advanced,
       transparentOutput: transparentRequested,
       onPartialImage: (candidate) => {
+        if (!taskGenerationActive()) return;
         const resolved = streamCandidateObjectUrl(candidate);
         if (!resolved) return;
         const outputIndex = Number(candidate.outputIndex || candidate.output_index || 0);
@@ -7935,18 +10087,22 @@ async function generateImageTask(seedTask = null) {
           }
         };
         if (outputIndex === 0) task.streamPreviewUrl = resolved.url;
-        queueTaskStreamPartialPersist(task, candidate);
-        if (!scheduleAgentTaskCardSync(task) && state.mode !== 'agent') renderGalleryListOnly();
+        touchTaskPersistence(task);
+        queueTaskStreamPartialPersist(task, candidate, taskGeneration.version);
+        if (!scheduleAgentTaskCardSync(task) && state.mode !== 'agent' && !galleryScrollActivity) renderGalleryListOnly();
       },
       onPersistedImages: (batch, snapshot) => {
+        if (!taskGenerationActive()) return;
         task.images = snapshot.images;
         task.expectedCount = snapshot.expectedCount;
         task.actualCount = snapshot.actualCount;
         task.failedCount = snapshot.failedCount;
-        writeStore();
-        if (!scheduleAgentTaskCardSync(task) && state.mode !== 'agent') renderGalleryListOnly();
+        touchTaskPersistence(task);
+        scheduleStoreWrite();
+        if (!scheduleAgentTaskCardSync(task) && state.mode !== 'agent' && !galleryScrollActivity) renderGalleryListOnly();
       }
     });
+    if (!taskGenerationActive()) return task;
     const apiFinishedAt = Date.now();
     const response = result.response;
     const images = result.images;
@@ -7993,11 +10149,20 @@ async function generateImageTask(seedTask = null) {
     task.streamState = 'completed';
     clearTaskStreamPreviewUrls(task);
     await waitForTaskStreamPartialPersistence(task.id);
-    await clearTaskStreamPartialImages(task);
-    writeStore();
+    if (!taskGenerationActive()) return task;
+    const previousPartialImages = Array.isArray(task.streamPartialImages) ? [...task.streamPartialImages] : [];
+    const completedPartialIds = await clearTaskStreamPartialImages(task);
+    const persisted = writeStore();
+    if (persisted === false) {
+      task.streamPartialImages = previousPartialImages;
+      task.streamPersistError = '任务状态写入失败，中间帧暂不清理';
+    } else {
+      queuePendingBlobRelease(completedPartialIds, persisted === true);
+    }
     if (!seedTask && state.preferences?.clearInputAfterSubmit) state.composerPrompt = '';
     notifyTaskComplete(task);
   } catch (err) {
+    if (!taskGenerationActive()) return task;
     const normalized = normalizeError(err, '生成失败');
     task.finishedAt = Date.now();
     task.elapsedMs = task.finishedAt - task.startedAt;
@@ -8013,9 +10178,10 @@ async function generateImageTask(seedTask = null) {
     task.streamPartialCount = Number(err?.partialCount || task.streamPartialCount || 0);
     task.lastStreamEventType = err?.lastStreamEventType || task.lastStreamEventType || '';
     if (!(task.streamPartialImages || []).length && Array.isArray(err?.partialCandidates)) {
-      for (const candidate of err.partialCandidates) queueTaskStreamPartialPersist(task, candidate);
+      for (const candidate of err.partialCandidates) queueTaskStreamPartialPersist(task, candidate, taskGeneration.version);
     }
     await waitForTaskStreamPartialPersistence(task.id);
+    if (!taskGenerationActive()) return task;
     if ((task.images || []).length) {
       const expected = Number(task.expectedCount || effectiveParams.count || task.images.length);
       task.actualCount = task.images.length;
@@ -8039,14 +10205,26 @@ async function generateImageTask(seedTask = null) {
       task.status = 'error';
       task.streamState = err?.code === 'IMAGE_STREAM_UPSTREAM_FAILED' ? 'failed' : 'interrupted';
     }
+    if ((task.images || []).length) {
+      const previousPartialImages = Array.isArray(task.streamPartialImages) ? [...task.streamPartialImages] : [];
+      const completedPartialIds = await clearTaskStreamPartialImages(task);
+      const persisted = writeStore();
+      if (persisted === false) task.streamPartialImages = previousPartialImages;
+      else queuePendingBlobRelease(completedPartialIds, persisted === true);
+    }
     clearTaskStreamPreviewUrls(task);
     if (task.status === 'error') toast(`生成失败：${task.error}`);
     else if (task.status === 'partial_success') toast(`部分图片已保存：${task.error}`);
     notifyTaskComplete(task);
   }
+  if (!taskGenerationActive()) return task;
+  finishTaskGeneration(task.id, taskGeneration.version);
+  touchTaskPersistence(task);
   writeStore();
-  if (preserveAgentScroll) {
+  if (preserveAgentScroll()) {
     if (!syncAgentTaskCardDom(task)) renderPreservingAgentScroll();
+  } else if (state.mode === 'gallery' && syncGalleryTaskCardDom(task)) {
+    updateRunningTimers();
   } else {
     render();
   }
@@ -8056,7 +10234,7 @@ async function collectGenerationResult(prompt, params, options = {}) {
   const expected = Math.max(1, Number(params.count || state.settings.n) || 1);
   const profile = options.profile || imageProfile();
   const provider = providerKey(profile);
-  const advanced = effectiveAdvanced(options.entry || currentEntryKey(), profile);
+  const advanced = effectiveAdvanced(options.entry || currentEntryKey(), profile, options.advanced);
   const splitRequests = expected > 1 && (
     profile.codexCli === true
     || provider === 'google'
@@ -8076,12 +10254,22 @@ async function collectGenerationResult(prompt, params, options = {}) {
   let transparentFailedCount = 0;
   const transparentPostProcessErrors = [];
   const requestCount = splitRequests ? expected : 1;
+  const discardImageBatchBlobs = async (batch = []) => {
+    const ids = new Set();
+    for (const image of Array.isArray(batch) ? batch : []) {
+      [image?.blobId, image?.originalBlobId, image?.compositedBlobId, image?.maskBlobId]
+        .filter(Boolean)
+        .forEach((id) => ids.add(id));
+    }
+    await releaseBlobIdsSafely([...ids]);
+  };
   const runRequest = async (requestIndex) => {
     const requestParams = splitRequests ? { ...params, count: 1 } : params;
     const apiStartedAt = Date.now();
     const response = await sendGenerationRequest(prompt, requestParams, {
       ...options,
       profile,
+      advanced: options.advanced,
       onPartialImage: typeof options.onPartialImage === 'function'
         ? (candidate) => {
           const sourceOutputIndex = Number(candidate?.outputIndex ?? candidate?.output_index ?? 0);
@@ -8120,6 +10308,10 @@ async function collectGenerationResult(prompt, params, options = {}) {
       outputQuality: firstDefined(params.outputQuality, params.output_quality),
       outputCompression: firstDefined(params.output_compression, params.outputCompression)
     });
+    if (typeof options.isActive === 'function' && !options.isActive()) {
+      await discardImageBatchBlobs(batch);
+      throw imageResponseError('图片任务已删除，已丢弃未挂载的结果', 'IMAGE_REQUEST_ABORTED', 'request-cancelled');
+    }
     const persistElapsed = Date.now() - persistStartedAt;
     let postProcessElapsed = 0;
     let processedCount = 0;
@@ -8133,6 +10325,10 @@ async function collectGenerationResult(prompt, params, options = {}) {
       processedCount = transparentResult.processedCount;
       failedCount = transparentResult.failedCount;
       postProcessErrors.push(...transparentResult.errors);
+    }
+    if (typeof options.isActive === 'function' && !options.isActive()) {
+      await discardImageBatchBlobs(batch);
+      throw imageResponseError('图片任务已删除，已丢弃未挂载的结果', 'IMAGE_REQUEST_ABORTED', 'request-cancelled');
     }
     return {
       requestIndex,
@@ -8301,7 +10497,7 @@ async function sendGenerationRequest(prompt, params = {}, options = {}) {
   const hasRefs = refs.some((item) => item.blob);
   const endpoint = hasRefs ? '/api-proxy/images/edits' : '/api-proxy/images/generations';
   const provider = providerKey(profile);
-  const advanced = effectiveAdvanced(entry, profile);
+  const advanced = effectiveAdvanced(entry, profile, options.advanced);
   const responseOptions = {
     streamRequested: advanced.streamImages && streamSupported(profile),
     onPartialImage: options.onPartialImage,
@@ -8346,7 +10542,7 @@ async function sendGenerationRequest(prompt, params = {}, options = {}) {
         }
         const count = Number(requestParams.count || state.settings.n) || 1;
         if (count > 1) fd.append('n', String(count));
-        appendAdvancedToFormData(fd, entry, profile);
+        appendAdvancedToFormData(fd, entry, profile, options.advanced);
         appendNegativePromptParams(fd, requestParams);
       } else {
         appendProviderParams(fd, provider, requestParams);
@@ -8356,11 +10552,12 @@ async function sendGenerationRequest(prompt, params = {}, options = {}) {
       }
       prepared.refs.forEach(({ ref, blob }, idx) => fd.append(imageFieldName, blob, ref.name || `reference-${idx + 1}.png`));
       if (prepared.mask) fd.append('mask', prepared.mask, 'mask.png');
-      if (provider !== 'openai') appendAdvancedToFormData(fd, entry, profile);
+      if (provider !== 'openai') appendAdvancedToFormData(fd, entry, profile, options.advanced);
       return fetchImageHttpResponse(endpoint, {
         method: 'POST',
-        headers: appendAdvancedHeaders({}, entry, profile),
-        body: fd
+        headers: appendAdvancedHeaders({}, entry, profile, options.advanced),
+        body: fd,
+        signal: options.signal
       }, responseOptions);
     };
     const imageFieldName = defaultEditImageField(provider);
@@ -8381,11 +10578,11 @@ async function sendGenerationRequest(prompt, params = {}, options = {}) {
   Object.assign(body, providerPayload(provider, requestParams));
   const count = Number(requestParams.count || state.settings.n) || 1;
   if (provider !== 'google' && count > 1) body.n = count;
-  applyAdvancedToJsonBody(body, entry, profile);
-  const headers = appendAdvancedHeaders({ 'Content-Type': 'application/json' }, entry, profile);
+  applyAdvancedToJsonBody(body, entry, profile, options.advanced);
+  const headers = appendAdvancedHeaders({ 'Content-Type': 'application/json' }, entry, profile, options.advanced);
   let response;
   try {
-    response = await fetchImageHttpResponse(endpoint, { method: 'POST', headers, body: JSON.stringify(body) }, responseOptions);
+    response = await fetchImageHttpResponse(endpoint, { method: 'POST', headers, body: JSON.stringify(body), signal: options.signal }, responseOptions);
   } catch (err) {
     const message = `${err?.message || ''}\n${err?.detail || ''}`;
     const canLegacyRetry = provider === 'google' && body.response_format && typeof body.response_format === 'object' && /response_format|unmarshal|object|string/i.test(message);
@@ -8396,7 +10593,7 @@ async function sendGenerationRequest(prompt, params = {}, options = {}) {
       googleCompatResponseFormatFallback: true,
       googleResponseFormatFallbackReason: 'object-response-format-rejected'
     };
-    response = await fetchImageHttpResponse(endpoint, { method: 'POST', headers, body: JSON.stringify(legacyBody) }, responseOptions);
+    response = await fetchImageHttpResponse(endpoint, { method: 'POST', headers, body: JSON.stringify(legacyBody), signal: options.signal }, responseOptions);
     if (response && typeof response === 'object') {
       response.googleCompatResponseFormatFallback = true;
       response.googleResponseFormatFallbackReason = 'object-response-format-rejected';
@@ -8526,6 +10723,43 @@ async function normalizeEditImageBlob(blob, label = '图片') {
   }
   return { blob: output, info: { ...info, type: 'image/png' } };
 }
+function maskWorkingSize(width, height) {
+  const maxEdge = 1920;
+  const multiple = 16;
+  const longestEdge = Math.max(Number(width) || 0, Number(height) || 0);
+  if (!longestEdge || longestEdge <= maxEdge) return { width, height };
+  const scale = maxEdge / longestEdge;
+  const floorToMultiple = (value) => Math.max(multiple, Math.floor(value / multiple) * multiple);
+  return { width: floorToMultiple(width * scale), height: floorToMultiple(height * scale) };
+}
+async function resizeMaskImageBlobToPng(blob, width, height, label) {
+  if (!blob?.size || !width || !height) {
+    throw imageResponseError(`${label}无法读取工作尺寸`, 'IMAGE_EDIT_INPUT_DIMENSIONS', 'request-validation');
+  }
+  const objectUrl = URL.createObjectURL(blob);
+  const image = new Image();
+  image.decoding = 'async';
+  try {
+    await new Promise((resolve, reject) => {
+      image.onload = resolve;
+      image.onerror = reject;
+      image.src = objectUrl;
+    });
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('当前浏览器不支持 Canvas');
+    context.drawImage(image, 0, 0, width, height);
+    const output = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+    if (!output) throw new Error('图片导出失败');
+    return output;
+  } catch (error) {
+    throw imageResponseError(`${label}无法缩放为遮罩工作尺寸`, 'IMAGE_EDIT_INPUT_DECODE_FAILED', 'request-validation', error?.message || '图片解码失败');
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
 async function prepareEditReferenceFiles(validRefs = []) {
   const refs = Array.isArray(validRefs) ? validRefs : [];
   const maskIndexes = refs
@@ -8558,7 +10792,17 @@ async function prepareEditReferenceFiles(validRefs = []) {
           `主图：${normalizedOriginal.info.width}x${normalizedOriginal.info.height}；遮罩：${normalizedMask.info.width}x${normalizedMask.info.height}。`
         );
       }
-      mask = normalizedMask.blob;
+      const workingSize = maskWorkingSize(normalizedOriginal.info.width, normalizedOriginal.info.height);
+      if (workingSize.width !== normalizedOriginal.info.width || workingSize.height !== normalizedOriginal.info.height) {
+        const [workingOriginal, workingMask] = await Promise.all([
+          resizeMaskImageBlobToPng(normalizedOriginal.blob, workingSize.width, workingSize.height, '遮罩主图'),
+          resizeMaskImageBlobToPng(normalizedMask.blob, workingSize.width, workingSize.height, '遮罩')
+        ]);
+        blob = workingOriginal;
+        mask = workingMask;
+      } else {
+        mask = normalizedMask.blob;
+      }
     }
     prepared.push({ ...item, blob });
   }
@@ -8777,7 +11021,7 @@ function collectImageCandidates(response) {
   const out = [];
   const seenObjects = new Set();
   const stack = [{ value: response, key: '', depth: 0 }];
-  const maxDepth = 8;
+  const maxDepth = 12;
   const maxNodes = 20000;
   let scannedNodes = 0;
   const imageValueKeys = new Set([
@@ -8911,13 +11155,54 @@ function taskStreamMediaCount(task) {
   ].filter(Number.isFinite);
   return indexes.length ? Math.max(...indexes) + 1 : 0;
 }
-function clearTaskStreamPreviewUrls(task) {
-  for (const slot of Object.values(task?.streamPreviewSlots || {})) {
-    if (slot?.temporary && slot.url) revokeTransientObjectUrl(slot.url);
+function clearTaskStreamPreviewUrls(task, options = {}) {
+  if (options.revoke !== false) {
+    for (const slot of Object.values(task?.streamPreviewSlots || {})) {
+      if (slot?.temporary && slot.url) revokeTransientObjectUrl(slot.url);
+    }
   }
   task.streamPreviewSlots = {};
   task.streamPreviewUrl = '';
   task.streamPreviewRemoteUrl = '';
+}
+function resetTaskStreamPreviewSlotsForHydration(task) {
+  if (!task?.streamPreviewSlots || typeof task.streamPreviewSlots !== 'object') return false;
+  const entries = Object.entries(task.streamPreviewSlots);
+  if (!entries.length) return false;
+  const retained = {};
+  let changed = false;
+  for (const [key, slot] of entries) {
+    if (slot?.temporary) {
+      const hasPersistedPartial = (task.streamPartialImages || [])
+        .some((item) => Number(item?.outputIndex || 0) === Number(slot?.outputIndex ?? key));
+      if (hasPersistedPartial) {
+        if (slot.url) revokeTransientObjectUrl(slot.url);
+        changed = true;
+      } else {
+        retained[key] = slot;
+      }
+      continue;
+    }
+    retained[key] = slot;
+  }
+  task.streamPreviewSlots = retained;
+  const first = retained['0'];
+  task.streamPreviewUrl = first?.url || '';
+  task.streamPreviewRemoteUrl = first?.url && !first.temporary ? first.url : '';
+  return changed;
+}
+async function restoreStreamPreviewsAfterBfcache() {
+  const tasks = (state.tasks || []).filter((task) => Object.keys(task?.streamPreviewSlots || {}).length);
+  await Promise.all(tasks.map((task) => waitForTaskStreamPartialPersistence(task.id)));
+  let rerender = false;
+  for (const task of tasks) {
+    if (!state.tasks.some((item) => item === task || item?.id === task?.id)) continue;
+    rerender = resetTaskStreamPreviewSlotsForHydration(task) || rerender;
+    if (Object.keys(task.streamPreviewSlots || {}).length) rerender = true;
+  }
+  if (rerender) render({ allowDuringScroll: true });
+  await hydrateImages();
+  return rerender;
 }
 async function candidateToBlob(candidate) {
   const source = streamCandidateSource(candidate);
@@ -8925,14 +11210,19 @@ async function candidateToBlob(candidate) {
   if (/^data:/i.test(source)) return dataUrlToBlob(source);
   return fetchRemoteImageBlob(source);
 }
-async function persistTaskStreamPartialCandidate(task, candidate) {
-  if (!task || !candidate || !state.tasks.some((item) => item.id === task.id)) return;
+async function persistTaskStreamPartialCandidate(task, candidate, generation = taskGenerationVersions.get(task?.id)) {
+  if (!task || !candidate || !isTaskGenerationActive(task, generation)) return false;
   const blob = await candidateToBlob(candidate);
-  if (!blob?.size) return;
+  if (!blob?.size || !isTaskGenerationActive(task, generation)) return false;
   const blobId = await putBlob(blob);
+  if (!isTaskGenerationActive(task, generation)) {
+    await releaseBlobIdsSafely([blobId]);
+    return false;
+  }
   const outputIndex = Number(candidate.outputIndex || candidate.output_index || 0);
   const receivedAt = Number(candidate.receivedAt || Date.now());
-  const current = Array.isArray(task.streamPartialImages) ? [...task.streamPartialImages] : [];
+  const previous = Array.isArray(task.streamPartialImages) ? [...task.streamPartialImages] : [];
+  const current = [...previous];
   const sameOutput = current
     .filter((item) => Number(item.outputIndex || 0) === outputIndex)
     .sort((a, b) => Number(a.receivedAt || 0) - Number(b.receivedAt || 0));
@@ -8962,11 +11252,25 @@ async function persistTaskStreamPartialCandidate(task, candidate) {
     if (evicted?.blobId) removeIds.push(evicted.blobId);
   }
   task.streamPartialImages = current;
-  writeStore();
-  await Promise.all(removeIds.filter((id) => id && id !== blobId).map((id) => deleteBlob(id).catch(() => {})));
+  touchTaskPersistence(task);
+  const persisted = writeStore();
+  const taskPersistenceCommitted = persisted === 'idb' ? await flushTaskPersistence() : persisted;
+  if (taskPersistenceCommitted === false) {
+    task.streamPartialImages = previous;
+    // 回滚快照必须拥有更高版本，避免 IDB 合并逻辑继续保留失败写入的 partial 引用。
+    touchTaskPersistence(task);
+    await scheduleTaskPersistence(state.tasks).catch(() => {});
+    await flushTaskPersistence().catch(() => {});
+    await releaseBlobIdsSafely([blobId]);
+    return false;
+  }
+  queuePendingBlobRelease(removeIds.filter((id) => id && id !== blobId), persisted === true);
+  if (persisted === true) releaseBlobReservation(blobId);
+  else if (persisted === undefined) pendingBlobReservationReleases.add(blobId);
+  return true;
 }
-function queueTaskStreamPartialPersist(task, candidate) {
-  if (!task || !candidate) return Promise.resolve();
+function queueTaskStreamPartialPersist(task, candidate, generation = taskGenerationVersions.get(task?.id)) {
+  if (!task || !candidate || !isTaskGenerationActive(task, generation)) return Promise.resolve();
   const taskId = task.id;
   const outputIndex = Number(candidate.outputIndex || candidate.output_index || 0);
   let pendingState = streamPartialPersistPending.get(taskId);
@@ -8986,13 +11290,14 @@ function queueTaskStreamPartialPersist(task, candidate) {
     const next = (async () => {
       try {
         while (pendingState.pending.size) {
+          await new Promise((resolve) => setTimeout(resolve, STREAM_PARTIAL_PERSIST_DELAY_MS));
           const batch = [...pendingState.pending.values()];
           pendingState.pending.clear();
           for (const item of batch) {
-            if (!state.tasks.some((entry) => entry.id === taskId)) continue;
-            if (item.first) await persistTaskStreamPartialCandidate(task, item.first);
+            if (!isTaskGenerationActive(task, generation)) continue;
+            if (item.first) await persistTaskStreamPartialCandidate(task, item.first, generation);
             if (item.latest && item.latest !== item.first) {
-              await persistTaskStreamPartialCandidate(task, item.latest);
+              await persistTaskStreamPartialCandidate(task, item.latest, generation);
             }
           }
         }
@@ -9014,13 +11319,26 @@ async function waitForTaskStreamPartialPersistence(taskId) {
 async function clearTaskStreamPartialImages(task) {
   const ids = (task?.streamPartialImages || []).map((item) => item.blobId).filter(Boolean);
   task.streamPartialImages = [];
-  await Promise.all(ids.map((id) => deleteBlob(id).catch(() => {})));
+  return ids;
+}
+function enrichProxyStreamError(error) {
+  const message = String(error?.message || '');
+  const code = message.match(/\b(?:PROXY|PRO_WORKBENCH)_[A-Z0-9_]+\b/i)?.[0];
+  const stage = message.match(/阶段：([a-z0-9-]+)/i)?.[1];
+  if (code) error.code = code.toUpperCase();
+  if (stage) error.stage = stage;
+  return error;
 }
 async function consumeImageStream(response, onPartialImage) {
   if (!IMAGE_STREAM_RUNTIME?.consumeImageStream) {
     throw imageResponseError('图片流运行时未加载', 'IMAGE_STREAM_RUNTIME_MISSING', 'stream-open');
   }
-  const payload = await IMAGE_STREAM_RUNTIME.consumeImageStream(response, { onPartialImage });
+  let payload;
+  try {
+    payload = await IMAGE_STREAM_RUNTIME.consumeImageStream(response, { onPartialImage });
+  } catch (error) {
+    throw enrichProxyStreamError(error);
+  }
   const streamObjectUrls = [];
   const data = (payload.data || []).map((candidate) => {
     const resolved = streamCandidateObjectUrl(candidate);
@@ -9101,6 +11419,12 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     taskStreamPreviewRecord,
     taskStreamMediaCount,
     renderTaskStreamPreviewImage,
+    resetTaskStreamPreviewSlotsForHydration,
+    restoreStreamPreviewsAfterBfcache,
+    renderTaskRecoveryNotice,
+    renderGalleryStage,
+    retryTaskHistory,
+    persistTaskStreamPartialCandidate,
     queueTaskStreamPartialPersist,
     waitForTaskStreamPartialPersistence,
     clearTaskStreamPartialImages,
@@ -9153,9 +11477,15 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     removeKeyedBackgroundFromBlob,
     postProcessTransparentImages,
     putBlob,
+    readStore,
+    collectReferencedBlobIds,
+    deleteUnreferencedBlobIds,
+    performDeleteTask,
     cleanupOrphanBlobs,
     persistAgentHistorySnapshots,
     hydrateAgentHistoryFromDb,
+    flushTaskPersistence,
+    hydrateTasksFromDb,
     compactAgentThreadMessages,
     compactAgentMessagesByThreadForStorage,
     mergeGenerationPartialErrors,
@@ -9166,6 +11496,8 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     rememberObjectUrl,
     revokeAllObjectUrls,
     hydrateBlobImage,
+    buildGalleryPreviewBlob,
+    hydrateGalleryPreviewImage,
     readBlobReservations,
     reserveBlobId,
     releaseBlobReservation,
@@ -9191,6 +11523,7 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     agentTextProfileInvalidReason,
     agentWebSearchSupported,
     agentRequestTimeoutSeconds,
+    agentResponsesStreamEnabled,
     agentFailureDetail,
     activeAgentHasPending,
     buildAgentRequestPayload,
@@ -9202,6 +11535,7 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     buildWorkflowAgentRequestPayload,
     postAgentResponsesRequest,
     workflowImageParams,
+    workflowAdvancedSettings,
     extractImagePromptFromAgentText,
     extractAgentImagePrompts,
     cleanAgentImagePrompt,
@@ -9232,7 +11566,12 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     runtimeRenderSignature,
     updateRunningTimers,
     writeStore,
-    setTestTasks: (tasks) => { state.tasks = Array.isArray(tasks) ? tasks : []; },
+    mergeCrossTabStoreDomains,
+    setGalleryScrollActivity,
+    setTestTasks: (tasks) => { state.tasks = Array.isArray(tasks) ? tasks : []; filteredTasksCache = null; },
+    setTestPersistedStoreBaseline: (snapshot) => {
+      persistedStoreBaseline = snapshot && typeof snapshot === 'object' ? JSON.parse(JSON.stringify(snapshot)) : null;
+    },
     setTestState: (patch = {}) => {
       if (patch.profiles) state.profiles = patch.profiles;
       if (patch.activeProfileId !== undefined) state.activeProfileId = patch.activeProfileId;
@@ -9246,6 +11585,8 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
       if (patch.workflowInvoke !== undefined) state.workflowInvoke = patch.workflowInvoke;
       if (patch.mode !== undefined) state.mode = patch.mode;
       if (patch.references) state.references = patch.references;
+      if (patch.taskStore !== undefined) state.taskStore = patch.taskStore;
+      if (patch.taskRecovery !== undefined) state.taskRecovery = patch.taskRecovery;
       if (patch.composerPrompt !== undefined) state.composerPrompt = patch.composerPrompt;
       if (patch.galleryVirtual) state.galleryVirtual = { ...state.galleryVirtual, ...patch.galleryVirtual };
       if (patch.promptRepo) state.promptRepo = { ...state.promptRepo, ...patch.promptRepo };
@@ -9261,6 +11602,8 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
       settings: state.settings,
       runtime: state.runtime,
       tasks: state.tasks,
+      taskStore: state.taskStore,
+      taskRecovery: state.taskRecovery,
       references: state.references,
       composerPrompt: state.composerPrompt,
       galleryVirtual: state.galleryVirtual,
@@ -9305,7 +11648,7 @@ function summarizeResponse(response) {
       continue;
     }
     if (typeof value === 'string') {
-      parent[key] = value.startsWith('data:image/') || value.length > 2000 ? `[text:${value.length}]` : value;
+      parent[key] = /^(?:blob:|data:image\/)/i.test(value) || value.length > 2000 ? `[text:${value.length}]` : value;
       continue;
     }
     if (typeof value !== 'object') {
@@ -9387,23 +11730,25 @@ async function deleteTask(id) {
 async function performDeleteTask(id) {
   const task = state.tasks.find((t) => t.id === id);
   if (!task) return;
+  const taskBlobIdsToDelete = taskBlobIds(task);
+  const taskReferences = taskReferenceSnapshots(task);
   clearTaskStreamPreviewUrls(task);
-  await waitForTaskStreamPartialPersistence(task.id);
-  await clearTaskStreamPartialImages(task);
-  await Promise.all((task.images || []).map((img) => deleteBlob(img.blobId).catch(() => {})));
-  for (const img of task.images || []) revokeMapEntry(state.imageUrls, img.blobId);
-  await Promise.all(taskReferenceSnapshots(task).map(async (ref) => {
-    await deleteBlob(ref.blobId).catch(() => {});
-    if (ref.originalBlobId && ref.originalBlobId !== ref.blobId) await deleteBlob(ref.originalBlobId).catch(() => {});
-    if (ref.compositedBlobId && ref.compositedBlobId !== ref.blobId) await deleteBlob(ref.compositedBlobId).catch(() => {});
-    if (ref.maskBlobId) await deleteBlob(ref.maskBlobId).catch(() => {});
-    for (const key of [...state.refUrls.keys()].filter((item) => item.includes(`:${id}:`) || item.includes(`:${ref.id}:`))) revokeMapEntry(state.refUrls, key);
-  }));
+  invalidateTaskGeneration(task.id);
   state.tasks = state.tasks.filter((t) => t.id !== id);
   delete state.favorites[id];
   state.selectedTaskIds = state.selectedTaskIds.filter((tid) => tid !== id);
   if (state.modal === id) state.modal = null;
-  persistRender();
+  const persisted = writeStore({ deletedTaskIds: [id], forceTaskPersistence: true });
+  await waitForTaskStreamPartialPersistence(task.id);
+  const partialIds = await clearTaskStreamPartialImages(task);
+  const candidates = [...new Set([...taskBlobIdsToDelete, ...partialIds])];
+  const taskPersistenceCommitted = await flushTaskPersistence();
+  if (taskPersistenceCommitted === true) await deleteUnreferencedBlobIds(candidates);
+  else queuePendingBlobRelease(candidates, false);
+  await Promise.all(taskReferences.map(async (ref) => {
+    for (const key of [...state.refUrls.keys()].filter((item) => item.includes(`:${id}:`) || item.includes(`:${ref.id}:`))) revokeMapEntry(state.refUrls, key);
+  }));
+  render();
 }
 async function deleteSelected() {
   if (!state.selectedTaskIds.length) return toast('未选择任务');
@@ -9420,27 +11765,32 @@ async function deleteSelected() {
 }
 async function performDeleteSelected(ids = []) {
   const deleteIds = ids.length ? ids : [...state.selectedTaskIds];
-  for (const id of deleteIds) {
-    const task = state.tasks.find((t) => t.id === id);
-    if (task) {
-      clearTaskStreamPreviewUrls(task);
-      await waitForTaskStreamPartialPersistence(task.id);
-      await clearTaskStreamPartialImages(task);
-      await Promise.all((task.images || []).map((img) => deleteBlob(img.blobId).catch(() => {})));
-      for (const img of task.images || []) revokeMapEntry(state.imageUrls, img.blobId);
-      await Promise.all(taskReferenceSnapshots(task).map(async (ref) => {
-        await deleteBlob(ref.blobId).catch(() => {});
-        if (ref.originalBlobId && ref.originalBlobId !== ref.blobId) await deleteBlob(ref.originalBlobId).catch(() => {});
-        if (ref.compositedBlobId && ref.compositedBlobId !== ref.blobId) await deleteBlob(ref.compositedBlobId).catch(() => {});
-        if (ref.maskBlobId) await deleteBlob(ref.maskBlobId).catch(() => {});
-        for (const key of [...state.refUrls.keys()].filter((item) => item.includes(`:${id}:`) || item.includes(`:${ref.id}:`))) revokeMapEntry(state.refUrls, key);
-      }));
-    }
-  }
+  const records = deleteIds
+    .map((id) => state.tasks.find((task) => task.id === id))
+    .filter(Boolean)
+    .map((task) => ({ task, references: taskReferenceSnapshots(task), blobIds: taskBlobIds(task) }));
+  const candidates = new Set();
+  records.forEach(({ task, blobIds }) => {
+    clearTaskStreamPreviewUrls(task);
+    invalidateTaskGeneration(task.id);
+    blobIds.forEach((id) => candidates.add(id));
+  });
   state.tasks = state.tasks.filter((task) => !deleteIds.includes(task.id));
   state.selectedTaskIds = state.selectedTaskIds.filter((id) => !deleteIds.includes(id));
   if (deleteIds.includes(state.modal)) state.modal = null;
-  persistRender();
+  const persisted = writeStore({ deletedTaskIds: deleteIds, forceTaskPersistence: true });
+  await Promise.all(records.map(async ({ task, references }) => {
+    await waitForTaskStreamPartialPersistence(task.id);
+    const partialIds = await clearTaskStreamPartialImages(task);
+    partialIds.forEach((id) => candidates.add(id));
+    await Promise.all(references.map(async (ref) => {
+      for (const key of [...state.refUrls.keys()].filter((item) => item.includes(`:${task.id}:`) || item.includes(`:${ref.id}:`))) revokeMapEntry(state.refUrls, key);
+    }));
+  }));
+  const taskPersistenceCommitted = await flushTaskPersistence();
+  if (taskPersistenceCommitted === true) await deleteUnreferencedBlobIds([...candidates]);
+  else queuePendingBlobRelease([...candidates], false);
+  render();
 }
 async function runConfirmDialog() {
   const dialog = state.confirmDialog;
@@ -9613,11 +11963,13 @@ function favoriteTask(id) {
   const detailButton = $(`.detail-actions [data-action="favorite-task"][data-id="${cssEscape(id)}"]`);
   if (detailButton) detailButton.classList.toggle('active', !!state.favorites[id]);
 }
-async function editOutput(id) {
+async function editOutput(id, options = {}) {
   const task = state.tasks.find((t) => t.id === id);
-  const image = task && (task.images || [])[0];
+  const images = task?.images || [];
+  const index = Math.max(0, Math.min(Number(options.index) || 0, Math.max(0, images.length - 1)));
+  const image = task && images[index];
   if (!image) return toast('当前任务没有可编辑图片');
-  const blob = await getBlob(image.blobId);
+  const blob = await getBlob(options.blobId || image.blobId);
   if (!blob) return toast('原图不在当前浏览器本地，无法编辑');
   const blobId = await putBlob(blob);
   const ref = {
@@ -9625,7 +11977,7 @@ async function editOutput(id) {
     blobId,
     originalBlobId: blobId,
     compositedBlobId: blobId,
-    name: `edit-${task.id}.png`,
+    name: `edit-${task.id}-${index + 1}.png`,
     type: blob.type,
     width: image.width,
     height: image.height
@@ -9975,20 +12327,25 @@ function applyPromptBootstrapToRepo(data, requestSeq) {
 }
 function restorePromptRepoScroll(scrollTop) {
   if (scrollTop === null || scrollTop === undefined) return;
+  if (promptRepoScrollIsActive()) return;
+  const restoreToken = ++promptRepoScrollRestoreToken;
   state.promptRepo.scrollLockUntil = Date.now() + 240;
   requestAnimationFrame(() => {
+    if (restoreToken !== promptRepoScrollRestoreToken || promptRepoScrollIsActive()) return;
     const nextList = $('#promptList');
     if (!nextList) return;
-    nextList.scrollTop = Math.min(scrollTop, Math.max(0, nextList.scrollHeight - nextList.clientHeight));
+    setScrollTopIfNeeded(nextList, Math.min(scrollTop, Math.max(0, nextList.scrollHeight - nextList.clientHeight)));
     state.promptRepo.scrollTop = nextList.scrollTop;
   });
 }
 function restorePromptCategoryScroll(scrollTop) {
   if (scrollTop === null || scrollTop === undefined) return;
+  const restoreToken = ++promptRepoScrollRestoreToken;
   const restore = () => {
+    if (restoreToken !== promptRepoScrollRestoreToken) return;
     const categories = $('#promptCategories');
     if (!categories) return;
-    categories.scrollTop = Math.min(scrollTop, Math.max(0, categories.scrollHeight - categories.clientHeight));
+    setScrollTopIfNeeded(categories, Math.min(scrollTop, Math.max(0, categories.scrollHeight - categories.clientHeight)));
     state.promptRepo.categoryScrollTop = categories.scrollTop;
   };
   requestAnimationFrame(() => {
@@ -10029,19 +12386,21 @@ function capturePromptRepoViewportSnapshot() {
 }
 function restorePromptRepoViewportSnapshot(snapshot) {
   if (!snapshot) return;
+  const restoreToken = ++promptRepoScrollRestoreToken;
   state.promptRepo.scrollLockUntil = Date.now() + 240;
   requestAnimationFrame(() => {
+    if (restoreToken !== promptRepoScrollRestoreToken || promptRepoScrollIsActive()) return;
     const nextList = $('#promptList');
     if (nextList) {
       const maxTop = Math.max(0, nextList.scrollHeight - nextList.clientHeight);
-      nextList.scrollTop = Math.min(snapshot.scrollTop || 0, maxTop);
+      setScrollTopIfNeeded(nextList, Math.min(snapshot.scrollTop || 0, maxTop));
       if (snapshot.anchorIndex) {
         const anchor = nextList.querySelector(`.prompt-card[data-index="${snapshot.anchorIndex}"]`);
         if (anchor) {
           const listTop = nextList.getBoundingClientRect().top;
           const delta = (anchor.getBoundingClientRect().top - listTop) - (snapshot.anchorOffset || 0);
           if (Math.abs(delta) > 1) {
-            nextList.scrollTop = Math.min(Math.max(0, nextList.scrollTop + delta), Math.max(0, nextList.scrollHeight - nextList.clientHeight));
+            setScrollTopIfNeeded(nextList, Math.min(Math.max(0, nextList.scrollTop + delta), Math.max(0, nextList.scrollHeight - nextList.clientHeight)));
           }
         }
       }
@@ -10049,7 +12408,7 @@ function restorePromptRepoViewportSnapshot(snapshot) {
     }
     const categories = $('#promptCategories');
     if (categories) {
-      categories.scrollTop = Math.min(snapshot.categoryScrollTop || 0, Math.max(0, categories.scrollHeight - categories.clientHeight));
+      setScrollTopIfNeeded(categories, Math.min(snapshot.categoryScrollTop || 0, Math.max(0, categories.scrollHeight - categories.clientHeight)));
       state.promptRepo.categoryScrollTop = categories.scrollTop;
     }
   });
@@ -10417,7 +12776,7 @@ function buildAgentRequestPayload(input, options = {}) {
   const imageParts = Array.isArray(options.attachmentImageParts) ? options.attachmentImageParts : [];
   const payload = {
     model: currentModelSlug,
-    stream: true,
+    stream: agentResponsesStreamEnabled(textProfile),
     instructions: [
       '你是当前项目的 Agent，负责直接、清晰地回答用户问题。',
       '不要生成 workflow JSON，除非用户明确要求。',
@@ -10454,7 +12813,7 @@ function buildWorkflowAgentRequestPayload(input, options = {}) {
   const webSearchEnabled = agentWebSearchEnabled(textProfile);
   const payload = {
     model: currentModelSlug,
-    stream: true,
+    stream: agentResponsesStreamEnabled(textProfile),
     instructions: mode === 'rewrite'
       ? [
         '你是 NexGen 工作流的提示词改写器。只输出最终生图提示词，不要解释。',
@@ -10496,10 +12855,13 @@ async function postAgentResponsesRequest(payload, textProfile) {
   const timeoutId = setTimeout(() => controller.abort(), timeoutSeconds * 1000);
   try {
     const { currentBeijingTime, currentModelSlug, webSearchEnabled, ...requestBody } = payload || {};
+    const requestBodyWithStream = agentResponsesStreamEnabled(textProfile)
+      ? { ...requestBody, stream: true }
+      : { ...requestBody, stream: false };
     const responsePayload = await fetchJson('/api-proxy/responses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-GPT-Image-Profile-Id': profileId(textProfile) },
-      body: JSON.stringify({ ...requestBody, stream: true }),
+      body: JSON.stringify(requestBodyWithStream),
       signal: controller.signal
     });
     return await resolveResponsePayload(responsePayload?.__stream ? { ...responsePayload, signal: controller.signal } : responsePayload);
@@ -10549,9 +12911,7 @@ async function sendAgentChat() {
   state.agentScrollIntent = (state.agentConfig?.scrollAfterSubmit ?? true) ? 'force-bottom' : '';
   writeStore();
   render();
-  const controller = new AbortController();
   const timeoutSeconds = agentRequestTimeoutSeconds(textProfile);
-  const timeoutId = setTimeout(() => controller.abort(), timeoutSeconds * 1000);
   const requestStartedAt = Date.now();
   try {
     const payload = buildAgentRequestPayload(effectiveInput, {
@@ -10562,14 +12922,7 @@ async function sendAgentChat() {
       attachmentText: attachmentPayload.textNote,
       attachmentImageParts: attachmentPayload.imageParts
     });
-    const { currentBeijingTime, currentModelSlug, webSearchEnabled, ...requestBody } = payload;
-    const responsePayload = await fetchJson('/api-proxy/responses', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-GPT-Image-Profile-Id': profileId(textProfile) },
-      body: JSON.stringify(requestBody),
-      signal: controller.signal
-    });
-    const data = await resolveResponsePayload(responsePayload?.__stream ? { ...responsePayload, signal: controller.signal } : responsePayload);
+    const data = await postAgentResponsesRequest(payload, textProfile);
     const text = extractResponseText(data, 'Agent 已返回，但没有可显示文本。');
     const promptOptions = extractAgentPromptOptions(text);
     const recommendedOption = recommendedAgentPromptOption(promptOptions);
@@ -10596,10 +12949,9 @@ async function sendAgentChat() {
     });
     const currentMessages = Array.isArray(state.agent.messagesByThread?.[thread.id]) ? state.agent.messagesByThread[thread.id] : messages;
     state.agent.messagesByThread[thread.id] = currentMessages.map((msg) => msg.id === pendingId ? { ...msg, pending: false, text: `对话失败：${normalized.summary}`, errorDetail: detail, retryInput: effectiveInput, profileId: profileId(textProfile), model: textProfile.model || '', requestMs: Date.now() - requestStartedAt, upstreamStatus: err?.upstreamStatus || err?.status || err?.raw?.upstreamStatus } : msg);
-  } finally {
-    clearTimeout(timeoutId);
   }
-  persistRender();
+  if (isActiveAgentContext(project.id, thread.id)) persistRender();
+  else writeStore();
 }
 async function retryAgentMessage(messageId) {
   const messages = agentMessages();
@@ -10626,6 +12978,7 @@ function agentMessageImagePrompt(message, fallback = '') {
 }
 async function generateAgentImageFromMessage(messageId, prompt = '', options = {}) {
   const project = activeProject();
+  const projectId = project?.id || '';
   const thread = activeAgentThread(project?.id);
   const threadId = thread?.id;
   const messages = Array.isArray(state.agent.messagesByThread?.[threadId]) ? state.agent.messagesByThread[threadId] : [];
@@ -10652,11 +13005,17 @@ async function generateAgentImageFromMessage(messageId, prompt = '', options = {
     editedFromOption: options.editedFromOption || '',
     workflowMeta: {
       entry: 'agent',
+      agentProjectId: projectId,
+      agentThreadId: threadId,
       agentMessageId: messageId,
       agentOption: option?.index || '',
       agentOptionTitle: option?.title || '',
       editedFromOption: options.editedFromOption || '',
       onCreated: (createdTask) => {
+        if (!isActiveAgentContext(projectId, threadId)) {
+          state.agentScrollLock = null;
+          return;
+        }
         attachAgentTaskToMessage(threadId, messageId, createdTask.id, cleanPrompt, { renderNow: true, option });
         releaseAgentScrollFreezeAfterRender();
       }
@@ -10666,8 +13025,10 @@ async function generateAgentImageFromMessage(messageId, prompt = '', options = {
     state.agentScrollLock = null;
     return;
   }
-  attachAgentTaskToMessage(threadId, messageId, task.id, cleanPrompt, { option });
-  if (scrollAnchor?.id) state.agentScrollState = { ...(state.agentScrollState || {}), nearBottom: false, anchor: scrollAnchor };
+  if (isActiveAgentContext(projectId, threadId)) {
+    attachAgentTaskToMessage(threadId, messageId, task.id, cleanPrompt, { option });
+    if (scrollAnchor?.id) state.agentScrollState = { ...(state.agentScrollState || {}), nearBottom: false, anchor: scrollAnchor };
+  }
   persistRender();
 }
 function attachAgentTaskToMessage(threadId, messageId, taskId, imagePrompt, options = {}) {
@@ -10868,9 +13229,9 @@ function workflowImageParams(workflow, profile, countPerRow) {
   const params = { ...requestedParams(profile), count: Math.max(1, Number(countPerRow) || Number(config.count) || 1) };
   const quality = String(config.quality || '').trim();
   const outputFormat = String(config.outputFormat || config.output_format || '').trim().toLowerCase();
-  const outputCompression = String(config.outputCompression || config.output_compression || '').trim();
+  const outputCompression = String(firstDefined(config.outputCompression, config.output_compression) ?? '').trim();
   const negativePrompt = cleanNegativeAgentPrompt(config.negativePrompt || config.negative_prompt || config.negative || '');
-  if (quality) params.quality = quality;
+  if (quality) params.quality = normalizeImageQuality(quality);
   if (outputFormat) {
     params.format = outputFormat;
     params.output_format = outputFormat;
@@ -10880,10 +13241,26 @@ function workflowImageParams(workflow, profile, countPerRow) {
     params.outputCompression = outputCompression;
     params.output_compression = outputCompression;
   }
+  const transparent = config.transparent ?? config.transparentOutput ?? config.transparent_output;
+  if (transparent !== undefined) {
+    params.transparent = !!transparent;
+    params.transparent_background = !!transparent;
+  }
+  const moderation = String(config.moderation || '').trim();
+  if (moderation) params.moderation = moderation;
   if (negativePrompt) {
     Object.assign(params, { negativePrompt, negative_prompt: negativePrompt });
   }
   return params;
+}
+function workflowAdvancedSettings(workflow, profile) {
+  const config = workflow?.config || {};
+  return {
+    responseFormatB64Json: config.responseFormatB64Json ?? config.response_format_b64_json,
+    streamImages: config.streamImages ?? config.stream,
+    streamPartialImages: config.streamPartialImages ?? config.partialImages ?? config.partial_images,
+    timeout: config.timeout
+  };
 }
 function newWorkflowDraft() {
   rememberModalOpener('workflow-editor');
@@ -11090,7 +13467,7 @@ function openWorkflowInvoke(id) {
     workflow: JSON.parse(JSON.stringify(workflow)),
     rows: JSON.parse(JSON.stringify(workflow.variables?.rows || [])),
     columns: [...(workflow.variables?.columns || [])],
-    countPerRow: 1,
+    countPerRow: Math.max(1, Number(workflow.config?.count) || 1),
     concurrency: DEFAULT_AGENT_BUDGET.concurrency || 2,
     maxSteps: DEFAULT_AGENT_BUDGET.maxSteps || 5,
     maxImages: DEFAULT_AGENT_BUDGET.maxImages || 8,
@@ -11227,15 +13604,11 @@ async function runAgent() {
   state.agent.logs.push({ id: uid('log'), projectId, role: 'assistant', text: '已开始自动规划：将进行提示词改写与生图回填。', createdAt: Date.now(), pending: true });
   persistRender();
   try {
-    const data = await resolveResponsePayload(await fetchJson('/api-proxy/responses', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-GPT-Image-Profile-Id': profileId(textProfile) },
-      body: JSON.stringify({
-        input: `项目专属提示词：${(state.agent.projects.find((p) => p.id === projectId)?.prompt || '无')}\n请规划并改写适合生图的提示词。任务：${input}`,
-        model: textProfile.model,
-        stream: true
-      })
-    }));
+    const data = await postAgentResponsesRequest({
+      input: `项目专属提示词：${(state.agent.projects.find((p) => p.id === projectId)?.prompt || '无')}\n请规划并改写适合生图的提示词。任务：${input}`,
+      model: textProfile.model,
+      stream: agentResponsesStreamEnabled(textProfile)
+    }, textProfile);
     const text = data.output_text || data.text || JSON.stringify(data).slice(0, 1200);
     state.agent.logs = state.agent.logs.map((log) => log.pending ? { ...log, pending: false, text } : log);
     state.composerPrompt = text;
@@ -11297,7 +13670,9 @@ async function executeWorkflowInvoke() {
     startedAt: Date.now(),
     finishedAt: null,
     elapsedMs: 0,
-    error: ''
+    error: '',
+    errorDetail: '',
+    failedRowCount: 0
   };
   state.agent.workflowRuns.unshift(run);
   workflow.lastRunAt = Date.now();
@@ -11349,20 +13724,41 @@ async function runWorkflowBatches(run) {
   const queue = run.rows.map((row, index) => ({ row, index }));
   let active = 0;
   let failed = false;
+  let hasRowFailures = false;
+  const recordFailure = (failure, item) => {
+    hasRowFailures = true;
+    run.failedRowCount = Number(run.failedRowCount || 0) + 1;
+    const rowIndex = Number.isFinite(Number(failure?.rowIndex)) ? Number(failure.rowIndex) : Number(item?.index || 0);
+    const label = failure?.batchLabel || item?.row?.values?.subject || item?.row?.values?.product_name || item?.row?.values?.name || `第 ${rowIndex + 1} 行`;
+    const summary = failure?.summary || '工作流行执行失败';
+    const detail = failure?.detail && failure.detail !== summary ? `：${failure.detail}` : '';
+    run.error = run.error || '部分工作流行执行失败';
+    run.errorDetail = [run.errorDetail, `第 ${rowIndex + 1} 行（${label}）：${summary}${detail}`].filter(Boolean).join('\n');
+  };
   await new Promise((resolve) => {
     const pump = () => {
-      if ((!queue.length && active === 0) || failed) return resolve();
+      if (failed) {
+        if (active === 0) resolve();
+        return;
+      }
+      if (!queue.length && active === 0) return resolve();
       while (active < run.concurrency && queue.length && !failed) {
         const item = queue.shift();
         active++;
         executeWorkflowRow(run, item.row, item.index)
+          .then((result) => {
+            if (result?.failed) recordFailure(result, item);
+          })
           .catch((err) => {
+            const normalized = normalizeError(err, '工作流执行失败');
             if (!run.budget.continueOnStepError) {
-              const normalized = normalizeError(err, '工作流执行失败');
               failed = true;
               run.status = 'error';
               run.error = normalized.summary;
               run.errorDetail = normalized.detail;
+              run.failedRowCount = Number(run.failedRowCount || 0) + 1;
+            } else {
+              recordFailure({ summary: normalized.summary, detail: normalized.detail, rowIndex: item.index }, item);
             }
           })
           .finally(() => {
@@ -11375,7 +13771,7 @@ async function runWorkflowBatches(run) {
     };
     pump();
   });
-  if (run.status === 'running') run.status = failed ? 'error' : 'success';
+  if (run.status === 'running') run.status = failed ? 'error' : hasRowFailures ? 'partial_success' : 'success';
   run.finishedAt = Date.now();
   run.elapsedMs = run.finishedAt - run.startedAt;
   writeStore();
@@ -11404,9 +13800,11 @@ async function executeWorkflowRow(run, row, rowIndex) {
   try {
     const profile = run.profileSnapshot || imageProfile();
     const params = workflowImageParams(workflow, profile, run.budget.countPerRow);
+    const advanced = workflowAdvancedSettings(workflow, profile);
     const taskSeed = {
       prompt,
       requestedParams: params,
+      advanced,
       profile,
       references: run.references || [],
       workflowMeta: {
@@ -11430,7 +13828,9 @@ async function executeWorkflowRow(run, row, rowIndex) {
     const normalized = normalizeError(err, '工作流生图失败');
     finishWorkflowStep(imageStep, 'error', '', normalized.summary);
     if (!run.budget.continueOnStepError) throw err;
+    return { failed: true, rowIndex, batchLabel, summary: normalized.summary, detail: normalized.detail };
   }
+  return { failed: false, rowIndex, batchLabel };
 }
 
 function createWorkflowStep(run, row, rowIndex, type, title, prompt) {
@@ -11679,9 +14079,10 @@ async function maskClear() {
   if (!canvas) return;
   pushMaskHistory();
   canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
-  if (ref.maskBlobId) await deleteBlob(ref.maskBlobId).catch(() => {});
+  const oldMaskBlobId = ref.maskBlobId;
   ref.maskBlobId = '';
   revokeMapEntry(state.refUrls, ref.id);
+  if (oldMaskBlobId) await deleteUnreferencedBlobIds([oldMaskBlobId]);
   toast('已清空当前遮罩');
 }
 async function persistCanvasToRefDraft() {
@@ -11690,59 +14091,72 @@ async function persistCanvasToRefDraft() {
   if (!canvas || !ref) return;
   if (!ref.originalBlobId) ref.originalBlobId = ref.blobId;
   if (!maskCanvasHasPaint(canvas)) {
-    if (ref.maskBlobId) await deleteBlob(ref.maskBlobId).catch(() => {});
+    const oldMaskBlobId = ref.maskBlobId;
     ref.maskBlobId = '';
+    if (oldMaskBlobId) await deleteUnreferencedBlobIds([oldMaskBlobId]);
     return;
   }
   const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
   if (!blob) return;
-  if (ref.maskBlobId) await deleteBlob(ref.maskBlobId).catch(() => {});
-  ref.maskBlobId = await putBlob(blob);
+  const oldMaskBlobId = ref.maskBlobId;
+  const nextMaskBlobId = await putBlob(blob);
+  ref.maskBlobId = nextMaskBlobId;
   ref.type = ref.type || 'image/png';
   const size = await imageSizeFromBlob(blob).catch(() => ({}));
   ref.width = size.width;
   ref.height = size.height;
   revokeMapEntry(state.refUrls, ref.id);
+  if (oldMaskBlobId) await deleteUnreferencedBlobIds([oldMaskBlobId]);
 }
 async function composeReferenceWithMask(ref) {
   if (!ref?.originalBlobId) ref.originalBlobId = ref?.blobId;
   const originalBlob = await getBlob(ref.originalBlobId).catch(() => null);
   if (!originalBlob) return;
   if (!ref.maskBlobId) {
-    if (ref.blobId !== ref.originalBlobId) await deleteBlob(ref.blobId).catch(() => {});
+    const oldBlobId = ref.blobId;
     ref.blobId = ref.originalBlobId;
+    ref.compositedBlobId = ref.originalBlobId;
     ref.type = originalBlob.type || ref.type || 'image/png';
+    if (oldBlobId && oldBlobId !== ref.originalBlobId) await deleteUnreferencedBlobIds([oldBlobId]);
     return;
   }
   const maskBlob = await getBlob(ref.maskBlobId).catch(() => null);
   if (!maskBlob) return;
   const baseImg = new Image();
   const maskImg = new Image();
-  baseImg.src = URL.createObjectURL(originalBlob);
-  maskImg.src = URL.createObjectURL(maskBlob);
-  await Promise.all([
-    new Promise((resolve, reject) => { baseImg.onload = resolve; baseImg.onerror = reject; }),
-    new Promise((resolve, reject) => { maskImg.onload = resolve; maskImg.onerror = reject; })
-  ]);
-  const canvas = document.createElement('canvas');
-  canvas.width = baseImg.naturalWidth;
-  canvas.height = baseImg.naturalHeight;
-  const ctx = canvas.getContext('2d');
-  ctx.drawImage(baseImg, 0, 0, canvas.width, canvas.height);
-  ctx.globalAlpha = .42;
-  ctx.drawImage(maskImg, 0, 0, canvas.width, canvas.height);
-  ctx.globalAlpha = 1;
-  URL.revokeObjectURL(baseImg.src);
-  URL.revokeObjectURL(maskImg.src);
-  const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
-  if (!blob) return;
-  if (ref.blobId && ref.blobId !== ref.originalBlobId) await deleteBlob(ref.blobId).catch(() => {});
-  ref.blobId = await putBlob(blob);
-  ref.compositedBlobId = ref.blobId;
-  ref.type = 'image/png';
-  ref.width = canvas.width;
-  ref.height = canvas.height;
-  revokeMapEntry(state.refUrls, ref.id);
+  const baseObjectUrl = URL.createObjectURL(originalBlob);
+  const maskObjectUrl = URL.createObjectURL(maskBlob);
+  baseImg.src = baseObjectUrl;
+  maskImg.src = maskObjectUrl;
+  try {
+    await Promise.all([
+      new Promise((resolve, reject) => { baseImg.onload = resolve; baseImg.onerror = reject; }),
+      new Promise((resolve, reject) => { maskImg.onload = resolve; maskImg.onerror = reject; })
+    ]);
+    const canvas = document.createElement('canvas');
+    canvas.width = baseImg.naturalWidth;
+    canvas.height = baseImg.naturalHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx || !canvas.width || !canvas.height) return;
+    ctx.drawImage(baseImg, 0, 0, canvas.width, canvas.height);
+    ctx.globalAlpha = .42;
+    ctx.drawImage(maskImg, 0, 0, canvas.width, canvas.height);
+    ctx.globalAlpha = 1;
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+    if (!blob) return;
+    const oldBlobId = ref.blobId;
+    const nextBlobId = await putBlob(blob);
+    ref.blobId = nextBlobId;
+    ref.compositedBlobId = nextBlobId;
+    ref.type = 'image/png';
+    ref.width = canvas.width;
+    ref.height = canvas.height;
+    revokeMapEntry(state.refUrls, ref.id);
+    if (oldBlobId && oldBlobId !== ref.originalBlobId) await deleteUnreferencedBlobIds([oldBlobId]);
+  } finally {
+    URL.revokeObjectURL(baseObjectUrl);
+    URL.revokeObjectURL(maskObjectUrl);
+  }
 }
 async function saveMaskEditor() {
   await persistCanvasToRefDraft();
@@ -11846,16 +14260,37 @@ async function init() {
       render();
     })
     .catch((err) => console.warn('[home-v3] Agent history restore skipped', err));
+  hydrateTasksFromDb()
+    .then((changed) => {
+      if (!changed) return;
+      writeStore();
+      render();
+      void hydrateImages();
+    })
+    .catch((err) => {
+      console.warn('[home-v3] Task history restore skipped', err);
+      setTaskRecoveryError(err);
+      render({ allowDuringScroll: true });
+    });
   setTimeout(warmPromptBootstrap, 300);
   await runGalleryMigrationBridge();
   window.addEventListener('focus', scheduleRuntimeRefresh);
-  window.addEventListener('pageshow', scheduleRuntimeRefresh);
+  window.addEventListener('pageshow', (event) => {
+    scheduleRuntimeRefresh();
+    if (!event.persisted) return;
+    resetManagedImageSourcesForHydration();
+    void restoreStreamPreviewsAfterBfcache().catch((error) => {
+      console.warn('[home-v3] bfcache 流式预览恢复失败', error);
+      void hydrateImages();
+    });
+  });
   document.addEventListener('visibilitychange', () => {
     syncRunningTimerInterval();
     if (!document.hidden) scheduleRuntimeRefresh();
   });
-  window.addEventListener('pagehide', revokeAllObjectUrls);
-  setTimeout(() => cleanupOrphanBlobs().catch((err) => console.warn('[home-v3] blob cleanup skipped', err)), 1200);
+  window.addEventListener('pagehide', (event) => {
+    if (!event.persisted) revokeAllObjectUrls();
+  });
   syncRunningTimerInterval();
 }
 

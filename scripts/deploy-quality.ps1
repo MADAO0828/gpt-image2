@@ -12,13 +12,11 @@
 param(
   [string]$ProjectDir = '',
   [string]$BaseUrl = $env:BASE_URL,
-  [string]$TestUser = $(if ($env:TEST_USER) { $env:TEST_USER } else { 'a691466166' }),
-  [string]$TestPass = $env:TEST_PASS,
+  [string]$TestUser = $env:TEST_USER,
   [string]$PreviewBranch = $(if ($env:PREVIEW_BRANCH) { $env:PREVIEW_BRANCH } else { 'quality-' + (Get-Date -Format 'yyyyMMdd-HHmmss') }),
   [string]$ProductionBranch = $(if ($env:PRODUCTION_BRANCH) { $env:PRODUCTION_BRANCH } else { 'main' }),
-  [string]$D1DatabaseName = $(if ($env:D1_DATABASE_NAME) { $env:D1_DATABASE_NAME } else { 'gpt-image2-db' }),
+  [string]$D1DatabaseName = $env:D1_DATABASE_NAME,
   [switch]$SkipProductionDeploy,
-  [switch]$SkipProductionTest,
   [switch]$InstallBrowsers,
   [switch]$AllowDirtyDeploy
 )
@@ -30,6 +28,7 @@ if (-not $ProjectDir) {
 }
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$testPassword = [string]$env:TEST_PASS
 
 function Write-Step([string]$Message) {
   Write-Host "`n==> $Message" -ForegroundColor Cyan
@@ -38,6 +37,69 @@ function Write-Step([string]$Message) {
 function Require-Command([string]$Name) {
   if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
     throw "Required command not found: $Name"
+  }
+}
+
+function Invoke-SourceSecurityGates {
+  Write-Step 'Check backend security and deployment invariants'
+  $helper = Get-Content -LiteralPath (Join-Path $ProjectDir 'functions\_lib\upstream-url.js') -Raw
+  $auth = Get-Content -LiteralPath (Join-Path $ProjectDir 'functions\_lib\auth.js') -Raw
+  $models = Get-Content -LiteralPath (Join-Path $ProjectDir 'functions\api\models\index.js') -Raw
+  $analyze = Get-Content -LiteralPath (Join-Path $ProjectDir 'functions\api\pro-workbench\analyze.js') -Raw
+  $render = Get-Content -LiteralPath (Join-Path $ProjectDir 'functions\api\pro-workbench\render.js') -Raw
+  $proxy = Get-Content -LiteralPath (Join-Path $ProjectDir 'functions\api-proxy\[[path]].js') -Raw
+  $deploy = Get-Content -LiteralPath (Join-Path $ProjectDir 'scripts\deploy-quality.ps1') -Raw
+  if ($helper -notmatch 'export async function assertPublicUpstreamUrl' -or $helper -notmatch 'export function pinUpstreamFetchInit' -or $helper -notmatch 'UPSTREAM_DNS_REBOUND') {
+    throw 'Security gate failed: public upstream DNS rebinding protection is missing.'
+  }
+  if ($helper -notmatch 'export function bindClientAbort' -or $helper -notmatch 'export function normalizeUpstreamTimeoutSeconds') {
+    throw 'Security gate failed: upstream cancellation or timeout helper is missing.'
+  }
+  foreach ($source in @($models, $analyze, $render)) {
+    if (($source -notmatch 'fetchPinnedUpstream|pinUpstreamFetchInit') -or $source -notmatch 'bindClientAbort' -or $source -notmatch 'signal:\s*controller\.signal') {
+      throw 'Security gate failed: direct upstream endpoint is missing DNS or AbortSignal binding.'
+    }
+    if ($source -notmatch 'clientAbort\.cleanup\(\)') {
+      throw 'Security gate failed: client AbortSignal cleanup is missing.'
+    }
+    if ($source -match '6000\s*\*\s*1000') {
+      throw 'Security gate failed: an upstream timeout still exceeds the Cloudflare hard limit.'
+    }
+  }
+  if ($proxy -notmatch 'fetchPinnedUpstream' -or $proxy -notmatch 'fetchWithPinnedAddress' -or $proxy -notmatch 'bindClientAbort' -or $proxy -notmatch 'PROXY_REQUEST_BODY_LIMIT' -or $proxy -notmatch 'normalizeUpstreamTimeoutSeconds') {
+    throw 'Security gate failed: API proxy is missing DNS, cancellation, or hard timeout protection.'
+  }
+  if ($proxy -match '6000\s*\*\s*1000') {
+    throw 'Security gate failed: API proxy timeout still exceeds the Cloudflare hard limit.'
+  }
+  if ($auth -notmatch 'ALLOW_INSECURE_JWT_FALLBACK' -or $auth -match 'isLocalRequest\s*\(') {
+    throw 'Security gate failed: JWT fallback must use an explicit environment flag, not the request host.'
+  }
+  $parameterBlock = [regex]::Match($deploy, '(?s)param\s*\((.*?)\)').Groups[1].Value
+  $credentialParameterToken = 'Test' + 'Pass'
+  if ($parameterBlock -match [regex]::Escape($credentialParameterToken)) {
+    throw 'Deployment gate failed: password must come from TEST_PASS environment only.'
+  }
+  $productionTestSkipToken = 'Skip' + 'Production' + 'Test'
+  if ($deploy.Contains($productionTestSkipToken)) {
+    throw 'Deployment gate failed: production verification may not be skipped.'
+  }
+  $productionCheck = 'Invoke-QualityTests -Url $productionUrl -Label ' + [char]39 + 'production' + [char]39
+  if (-not $deploy.Contains($productionCheck)) {
+    throw 'Deployment gate failed: production verification is not mandatory.'
+  }
+  if ($deploy -match '\[string\]\$TestUser\s*=.*(?:a691466166|else)') {
+    throw 'Deployment gate failed: test account must be provided explicitly through TEST_USER.'
+  }
+  if ($deploy -match 'Invoke-LoggedCommand\s+-FilePath ''npm''\s+-Arguments @\([^\)]*''install''') {
+    throw 'Deployment gate failed: deployment must not install npm dependencies automatically.'
+  }
+  $packageRunnerToken = 'n' + 'px'
+  if ($deploy -match "(?i)\b$packageRunnerToken\b[^\r\n]*\bwrangler\b" -or $deploy -notmatch "Require-Command 'wrangler'") {
+    throw 'Deployment gate failed: Wrangler must be installed before deployment; npx must not download it implicitly.'
+  }
+  if ($deploy -notmatch 'Invoke-ProductionSecretPreflight' -or $deploy -notmatch 'Invoke-ProductionDatabasePreflight') {
+    throw 'Deployment gate failed: production secret and D1 preflights are mandatory.'
   }
 }
 
@@ -66,7 +128,7 @@ function Ensure-TestDependencies {
   Write-Step 'Ensure Playwright Node test dependencies'
   $nodeModules = Join-Path $ProjectDir 'tests\node_modules\playwright'
   if (-not (Test-Path -LiteralPath $nodeModules)) {
-    Invoke-LoggedCommand -FilePath 'npm' -Arguments @('--prefix', (Join-Path $ProjectDir 'tests'), 'install', '--no-audit', '--no-fund')
+    throw 'Quality gate requires tests/node_modules/playwright. Install test dependencies manually before deployment; this script never runs npm install.'
   } else {
     Write-Host 'Playwright dependency already installed under tests/node_modules.'
   }
@@ -79,6 +141,11 @@ function Ensure-TestDependencies {
 
 function Invoke-StabilityChecks {
   Write-Step 'Run local deliverable quality gates'
+  Invoke-SourceSecurityGates
+  Invoke-LoggedCommand -FilePath 'node' -Arguments @('--check', 'functions/_lib/upstream-url.js')
+  Invoke-LoggedCommand -FilePath 'node' -Arguments @('--check', 'functions/api/models/index.js')
+  Invoke-LoggedCommand -FilePath 'node' -Arguments @('--check', 'functions/api/pro-workbench/analyze.js')
+  Invoke-LoggedCommand -FilePath 'node' -Arguments @('--check', 'functions/api/pro-workbench/render.js')
   Invoke-LoggedCommand -FilePath 'node' -Arguments @('--check', 'assets/homepage-v3.js')
   Invoke-LoggedCommand -FilePath 'node' -Arguments @('--check', 'assets/image-stream-runtime.js')
   Invoke-LoggedCommand -FilePath 'node' -Arguments @('--check', 'assets/shell-ui.js')
@@ -133,7 +200,7 @@ function New-DeployStage {
   }
   New-Item -ItemType Directory -Path $stage | Out-Null
   $excludeDirs = @('.git', '.codegraph', '.agents', '.codex', '.wrangler', '.playwright-cli', '.deploy', '.deploy2', '.deploy_stage', '.deploy_quality_stage', '.tmp-transparent-check', 'node_modules', 'tests', 'tests\node_modules', 'scripts', 'docs', 'migrations')
-  $excludeFiles = @('.git', '.dev.vars', '.tmp-models.json', '*.log', '*.tmp', '*.bak', '*.md', '*.sql', '.env', '.env.local', 'README.md', 'init_db.sql', 'wrangler.toml', 'wrangler.json', 'wrangler.jsonc', 'prompts_data.latest.tmp.json', 'pw-*.txt', 'pw-*.png', 'pw-*.json')
+$excludeFiles = @('.git', '.dev.vars', '.tmp-models.json', '*.log', '*.tmp', '*.bak', '*.md', '*.sql', '*.pem', '*.key', '*.p12', '*.pfx', '*.sqlite', '*.sqlite3', '*.db', '.env', '.env.local', 'README.md', 'init_db.sql', 'wrangler.toml', 'wrangler.json', 'wrangler.jsonc', 'prompts_data.latest.tmp.json', 'pw-*.txt', 'pw-*.png', 'pw-*.json')
   $args = @($ProjectDir, $stage, '/E', '/NFL', '/NDL', '/NJH', '/NJS', '/NP') + @('/XD') + $excludeDirs + @('/XF') + $excludeFiles
   & robocopy @args | Out-Null
   if ($LASTEXITCODE -gt 7) { throw "robocopy failed with exit code $LASTEXITCODE" }
@@ -148,8 +215,49 @@ function New-DeployStage {
   return $stage
 }
 
+function Get-ConfiguredD1DatabaseName {
+  $configPath = Join-Path $ProjectDir 'wrangler.jsonc'
+  if (-not (Test-Path -LiteralPath $configPath)) { throw 'Production D1 gate failed: wrangler.jsonc is missing.' }
+  try {
+    $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+  } catch {
+    throw 'Production D1 gate failed: wrangler.jsonc could not be parsed.'
+  }
+  $entries = @($config.d1_databases | Where-Object { $_.binding -eq 'gpt_image2_db' })
+  if ($entries.Count -ne 1 -or -not $entries[0].database_name) {
+    throw 'Production D1 gate failed: exactly one gpt_image2_db binding is required.'
+  }
+  $configuredName = [string]$entries[0].database_name
+  if ($D1DatabaseName -and $D1DatabaseName -ne $configuredName) {
+    throw "Production D1 gate failed: D1_DATABASE_NAME '$D1DatabaseName' does not match wrangler.jsonc binding '$configuredName'."
+  }
+  return $configuredName
+}
+
+function Invoke-ProductionSecretPreflight {
+  Write-Step 'Run read-only production Pages secret preflight'
+  $output = Invoke-LoggedCommand -FilePath 'wrangler' -Arguments @('pages', 'secret', 'list', '--project-name', 'gpt-image2') -CaptureOutput
+  if ($output -notmatch '(?i)\bJWT_SECRET\b') {
+    throw 'Production blocked: Pages secret JWT_SECRET is not configured.'
+  }
+  if ($output -notmatch '(?i)\bUPSTREAM_ALLOWED_HOSTS\b') {
+    throw 'Production blocked: Pages secret UPSTREAM_ALLOWED_HOSTS is not configured.'
+  }
+  if ($output -match '(?i)\bALLOW_INSECURE_JWT_FALLBACK\b') {
+    throw 'Production blocked: insecure local JWT fallback must not be configured in Pages.'
+  }
+  if ($output -match '(?i)\bLOCAL_JWT_SECRET\b') {
+    throw 'Production blocked: LOCAL_JWT_SECRET must not be configured in Pages.'
+  }
+  if ($output -match '(?i)\bALLOW_SESSION_HEADER_AUTH\b') {
+    throw 'Production blocked: session header authentication must not be configured in Pages.'
+  }
+  Write-Host 'Production Pages secret preflight passed: JWT_SECRET exists and local fallback/header authentication are absent.'
+}
+
 function Invoke-ProductionDatabasePreflight {
   Write-Step 'Run remote read-only production D1 security preflight'
+  $databaseName = Get-ConfiguredD1DatabaseName
   $knownSeedHash = 'BtGs_bI3gUtzS6kpjjJyPE4e6GVrFhqjpCT-zoH3qb0'
   $validAdminPredicate = @'
 password_hash LIKE 'pbkdf2-sha256$%'
@@ -163,7 +271,7 @@ AND length(substr(substr(substr(password_hash, length('pbkdf2-sha256$') + 1), in
 AND substr(substr(substr(password_hash, length('pbkdf2-sha256$') + 1), instr(substr(password_hash, length('pbkdf2-sha256$') + 1), '$') + 1), instr(substr(substr(password_hash, length('pbkdf2-sha256$') + 1), instr(substr(password_hash, length('pbkdf2-sha256$') + 1), '$') + 1), '$') + 1) NOT GLOB '*[^A-Za-z0-9_-]*'
 '@
   $query = "SELECT (SELECT COUNT(*) FROM users WHERE password_hash = '$knownSeedHash') AS seed_hash_count, (SELECT COUNT(*) FROM users WHERE role = 'admin') AS admin_count, (SELECT COUNT(*) FROM users WHERE role = 'admin' AND $validAdminPredicate) AS valid_pbkdf2_admin_count, (SELECT COUNT(*) FROM users WHERE session_version IS NULL OR session_version < 1) AS invalid_session_version_count, (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'auth_rate_limits') AS rate_limit_table_count;"
-  $output = Invoke-LoggedCommand -FilePath 'npx' -Arguments @('--yes', 'wrangler', 'd1', 'execute', $D1DatabaseName, '--remote', '--command', $query, '--json') -CaptureOutput
+  $output = Invoke-LoggedCommand -FilePath 'wrangler' -Arguments @('d1', 'execute', $databaseName, '--remote', '--command', $query, '--json') -CaptureOutput
   $jsonStart = $output.IndexOf('[')
   if ($jsonStart -lt 0) { throw 'Unable to parse remote D1 preflight JSON.' }
   $result = $output.Substring($jsonStart) | ConvertFrom-Json
@@ -174,14 +282,14 @@ AND substr(substr(substr(password_hash, length('pbkdf2-sha256$') + 1), instr(sub
   if ([int]$row.valid_pbkdf2_admin_count -ne [int]$row.admin_count) { throw 'Production blocked: every administrator must have a structurally valid PBKDF2 password.' }
   if ([int]$row.invalid_session_version_count -ne 0) { throw 'Production blocked: one or more users have an invalid session_version.' }
   if ([int]$row.rate_limit_table_count -ne 1) { throw 'Production blocked: auth_rate_limits migration is missing.' }
-  Write-Host "D1 preflight passed: seed_hash_count=0, admin_count=$($row.admin_count), valid_pbkdf2_admin_count=$($row.valid_pbkdf2_admin_count), invalid_session_version_count=0, rate_limit_table_count=1"
+  Write-Host "D1 preflight passed for $databaseName`: seed_hash_count=0, admin_count=$($row.admin_count), valid_pbkdf2_admin_count=$($row.valid_pbkdf2_admin_count), invalid_session_version_count=0, rate_limit_table_count=1"
 }
 
 function Invoke-PagesDeploy([string]$Branch, [string]$Label) {
   Write-Step "Deploy Cloudflare Pages $Label ($Branch)"
   $stage = New-DeployStage
-  $args = @('--yes', 'wrangler', 'pages', 'deploy', $stage, '--project-name', 'gpt-image2', '--branch', $Branch, '--commit-dirty=false')
-  $output = Invoke-LoggedCommand -FilePath 'npx' -Arguments $args -CaptureOutput
+  $args = @('pages', 'deploy', $stage, '--project-name', 'gpt-image2', '--branch', $Branch, '--commit-dirty=false')
+  $output = Invoke-LoggedCommand -FilePath 'wrangler' -Arguments $args -CaptureOutput
   $url = Get-DeployUrl $output
   if (-not $url) { throw "Unable to parse Pages URL from $Label deploy output." }
   Write-Host "$Label URL: $url"
@@ -196,7 +304,7 @@ function Invoke-QualityTests([string]$Url, [string]$Label) {
   try {
     $env:BASE_URL = $Url
     $env:TEST_USER = $TestUser
-    $env:TEST_PASS = $TestPass
+    $env:TEST_PASS = $testPassword
     Write-Host "BASE_URL=$Url"
     Write-Host "TEST_USER=$TestUser"
     Write-Host 'TEST_PASS=<hidden>'
@@ -213,7 +321,7 @@ function Test-PreviewSupportsAuth([string]$Url) {
   $payload = @{
     username = $TestUser
     usernameB64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($TestUser))
-    password = $TestPass
+    password = $testPassword
   } | ConvertTo-Json -Compress
   try {
     $res = Invoke-WebRequest -UseBasicParsing -Uri ($Url.TrimEnd('/') + '/api/auth/login') -Method POST -ContentType 'application/json' -Body $payload -TimeoutSec 30
@@ -231,9 +339,13 @@ function Test-PreviewSupportsAuth([string]$Url) {
 
 function Invoke-StaticDeployChecks([string]$Url, [string]$Label) {
   Write-Step "Run static deploy checks against $Label"
+  $localIndex = Get-Content -LiteralPath (Join-Path $ProjectDir 'index.html') -Raw
+  $localVersions = @([regex]::Matches($localIndex, 'home-v3-[A-Za-z0-9-]+') | ForEach-Object { $_.Value } | Select-Object -Unique)
+  if ($localVersions.Count -ne 1) { throw "Local index.html must contain exactly one asset version marker." }
+  $expectedVersion = $localVersions[0]
   $root = Invoke-WebRequest -UseBasicParsing -Uri ($Url.TrimEnd('/') + '/') -TimeoutSec 45
-  if (-not ($root.Content -match 'home-v3-20260718-scroll-smooth-r112')) {
-    throw "$Label HTML does not contain expected asset version home-v3-20260718-scroll-smooth-r112."
+  if (-not ($root.Content -match [regex]::Escape($expectedVersion))) {
+    throw "$Label HTML does not contain expected asset version $expectedVersion."
   }
   $js = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($Url.TrimEnd('/') + '/assets/homepage-v3.js') -TimeoutSec 45
   $streamRuntime = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($Url.TrimEnd('/') + '/assets/image-stream-runtime.js') -TimeoutSec 45
@@ -241,13 +353,16 @@ function Invoke-StaticDeployChecks([string]$Url, [string]$Label) {
   $jsType = [string]($js.Headers['Content-Type'])
   $streamRuntimeType = [string]($streamRuntime.Headers['Content-Type'])
   $cssType = [string]($css.Headers['Content-Type'])
+  if (-not ($js.Content -match [regex]::Escape($expectedVersion))) {
+    throw "$Label homepage-v3.js does not match index.html asset version $expectedVersion."
+  }
   if ($jsType -notmatch 'javascript|ecmascript|text/plain') { throw "$Label homepage-v3.js has unexpected content type: $jsType" }
   if ($streamRuntimeType -notmatch 'javascript|ecmascript|text/plain') { throw "$Label image-stream-runtime.js has unexpected content type: $streamRuntimeType" }
   if ($streamRuntime.Content -notmatch 'DEFAULT_SCAN_DEPTH') { throw "$Label image-stream-runtime.js does not contain the expected stack-safe r103 runtime." }
   if ($cssType -notmatch 'css|text/plain') { throw "$Label homepage-v3.css has unexpected content type: $cssType" }
-  foreach ($path in @('/init_db.sql', '/schema.sql', '/migrations/20260710_session_version_and_auth_rate_limits.sql', '/scripts/deploy-quality.ps1', '/tests/e2e-quality.js', '/README.md', '/wrangler.toml', '/wrangler.jsonc', '/.dev.vars', '/.env')) {
+  foreach ($path in @('/init_db.sql', '/schema.sql', '/migrations/20260710_session_version_and_auth_rate_limits.sql', '/scripts/deploy-quality.ps1', '/tests/e2e-quality.js', '/README.md', '/wrangler.toml', '/wrangler.jsonc', '/.dev.vars', '/.env', '/.git/config', '/.wrangler/state/foo', '/functions/_lib/auth.js', '/api/settings')) {
     try {
-      $res = Invoke-WebRequest -UseBasicParsing -Method Head -Uri ($Url.TrimEnd('/') + $path) -TimeoutSec 30
+      $res = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($Url.TrimEnd('/') + $path) -TimeoutSec 30
       if ($res.StatusCode -ne 404) { throw "$Label sensitive path should be 404: $path returned $($res.StatusCode)" }
     } catch {
       if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 404) { continue }
@@ -262,17 +377,17 @@ try {
   Require-Command 'git'
   Require-Command 'node'
   Require-Command 'npm'
-  Require-Command 'npx'
+  Require-Command 'wrangler'
 
   Write-Host "ProjectDir=$ProjectDir"
   Write-Host "PreviewBranch=$PreviewBranch"
   Write-Host "ProductionBranch=$ProductionBranch"
   Write-Host "TEST_USER=$TestUser"
   Write-Host 'TEST_PASS=<hidden>'
-  if (-not $TestPass) { throw 'TEST_PASS is required and must be provided via environment or -TestPass. It is never printed.' }
+  if (-not $TestUser) { throw 'TEST_USER is required and must be provided via environment. It is never defaulted by this script.' }
+  if (-not $testPassword) { throw 'TEST_PASS is required and must be provided via environment. It is never printed.' }
   if ($AllowDirtyDeploy) {
     $SkipProductionDeploy = $true
-    $SkipProductionTest = $true
     Write-Host 'AllowDirtyDeploy is preview-only. Production deployment and production tests are forcibly disabled.' -ForegroundColor Yellow
   }
 
@@ -286,22 +401,17 @@ try {
   if ($previewAuth.ok) {
     Invoke-QualityTests -Url $previewUrl -Label 'preview'
   } elseif ($previewAuth.reason -eq 'preview-missing-jwt-secret') {
-    Write-Host 'Preview environment does not expose JWT_SECRET through current Pages direct-upload CLI. Production is blocked because dynamic preview auth did not pass.' -ForegroundColor Yellow
-    $SkipProductionDeploy = $true
-    $SkipProductionTest = $true
+    throw 'Preview environment does not expose JWT_SECRET through current Pages direct-upload CLI. Production is blocked because dynamic preview auth did not pass.'
   } else {
-    Write-Host "Preview auth probe failed: $($previewAuth.reason). Production is blocked." -ForegroundColor Yellow
-    $SkipProductionDeploy = $true
-    $SkipProductionTest = $true
+    throw "Preview auth probe failed: $($previewAuth.reason). Production is blocked."
   }
 
   if (-not $SkipProductionDeploy) {
+    Invoke-ProductionSecretPreflight
     Invoke-ProductionDatabasePreflight
     $productionUrl = Invoke-PagesDeploy -Branch $ProductionBranch -Label 'production'
     Invoke-StaticDeployChecks -Url $productionUrl -Label 'production'
-    if (-not $SkipProductionTest) {
-      Invoke-QualityTests -Url $productionUrl -Label 'production'
-    }
+    Invoke-QualityTests -Url $productionUrl -Label 'production'
   } else {
     Write-Host 'Skipping production deploy by parameter.' -ForegroundColor Yellow
   }

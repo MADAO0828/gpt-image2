@@ -1,4 +1,4 @@
-import { currentUser, decodeUsername, json } from '../../../_lib/auth.js';
+import { currentUser, decodeUsername, json, readJsonBody } from '../../../_lib/auth.js';
 import { hashPassword, validateNewPassword } from '../../../_lib/password.js';
 
 export async function onRequestGet(ctx) {
@@ -26,11 +26,13 @@ export async function onRequestPost(ctx) {
   if (!user) return json({ error: 'Unauthorized' }, 401);
   if (user.role !== 'admin') return json({ error: 'Forbidden' }, 403);
   try {
-    const body = await ctx.request.json();
+    const body = await readJsonBody(ctx.request, 16 * 1024);
     const username = decodeUsername(body);
     const password = String(body.password || '').trim();
     const role = body.role === 'admin' ? 'admin' : 'user';
     if (username.length < 2) return json({ error: 'Username must be at least 2 characters' }, 400);
+    if (username.length > 128) return json({ error: 'Username is too long' }, 400);
+    if (password.length > 256) return json({ error: 'Password is too long' }, 400);
     const passwordError = validateNewPassword(password);
     if (passwordError) return json({ error: passwordError }, 400);
     const exists = await ctx.env.gpt_image2_db
@@ -44,6 +46,6 @@ export async function onRequestPost(ctx) {
       .run();
     return json({ success: true }, 201);
   } catch (error) {
-    return json({ error: 'Create failed: ' + (error.message || '') }, 400);
+    return json({ error: error.message || 'Create failed' }, error?.status === 413 ? 413 : 400);
   }
 }

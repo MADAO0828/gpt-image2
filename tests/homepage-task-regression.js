@@ -4,6 +4,10 @@ const vm = require('vm');
 
 const root = path.resolve(__dirname, '..');
 const source = fs.readFileSync(path.join(root, 'assets', 'homepage-v3.js'), 'utf8');
+const homeCss = fs.readFileSync(path.join(root, 'assets', 'homepage-v3.css'), 'utf8');
+const macosCss = fs.readFileSync(path.join(root, 'assets', 'macos-design.css'), 'utf8');
+const promptPage = fs.readFileSync(path.join(root, 'prompts.html'), 'utf8');
+const indexHtml = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 const streamRuntimeSource = fs.readFileSync(path.join(root, 'assets', 'image-stream-runtime.js'), 'utf8');
 const failures = [];
 const fakeIndexedDbStore = new Map([
@@ -48,6 +52,11 @@ const sandbox = {
   AbortController,
   DOMException,
   window: {},
+  navigator: {
+    locks: {
+      request: async (name, options, callback) => callback({ name, mode: options?.mode || 'exclusive' })
+    }
+  },
   document: {
     documentElement: { dataset: {}, setAttribute: () => {}, appendChild: (node) => node },
     body: { appendChild: (node) => node },
@@ -74,6 +83,12 @@ const sandbox = {
             completed = true;
             if (tx.oncomplete) tx.oncomplete();
           };
+          if (storeName === 'tasks' && sandbox.failTaskStoreWrites) {
+            setTimeout(() => {
+              tx.error = new Error('IndexedDB quota exceeded');
+              if (tx.onerror) tx.onerror();
+            }, 0);
+          }
           setTimeout(complete, 10);
           tx.objectStore = () => {
             const storeData = fakeIndexedDbStores.get(storeName) || new Map();
@@ -123,6 +138,7 @@ const sandbox = {
       return req;
     }
   },
+  failTaskStoreWrites: false,
   localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
   sessionStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
   matchMedia: () => ({ matches: false, addEventListener: () => {}, removeEventListener: () => {} }),
@@ -200,6 +216,10 @@ ok(typeof hooks.expectedProviderResolution === 'function', 'expectedProviderReso
 ok(typeof hooks.isTierResolutionMatch === 'function', 'isTierResolutionMatch hook missing');
 ok(typeof hooks.taskReferenceDisplayBlobId === 'function', 'taskReferenceDisplayBlobId hook missing');
 ok(typeof hooks.taskReferenceOriginalBlobId === 'function', 'taskReferenceOriginalBlobId hook missing');
+ok(typeof hooks.readStore === 'function', 'readStore hook missing');
+ok(typeof hooks.deleteUnreferencedBlobIds === 'function', 'shared Blob reference guard hook missing');
+ok(typeof hooks.persistTaskStreamPartialCandidate === 'function', 'stream partial persistence hook missing');
+ok(typeof hooks.retryTaskHistory === 'function' && typeof hooks.renderTaskRecoveryNotice === 'function', 'task history recovery hooks missing');
 ok(typeof hooks.cardParamSummary === 'function', 'cardParamSummary hook missing');
 ok(typeof hooks.renderImageContextMenu === 'function', 'renderImageContextMenu hook missing');
 ok(typeof hooks.galleryVirtualWindow === 'function', 'galleryVirtualWindow hook missing');
@@ -214,22 +234,178 @@ ok(source.includes('function requestRenderFrame(fn)') && source.includes('functi
 ok(source.includes('galleryVirtualRenderFrame = requestRenderFrame(run)') && source.includes('promptRepoVirtualRenderFrame = requestRenderFrame(run)'), 'virtual renders should be queued on animation frames');
 ok(source.includes('cancelRenderFrame(galleryVirtualRenderFrame)') && source.includes('cancelRenderFrame(promptRepoVirtualRenderFrame)'), 'pending virtual render frames should be cancelled');
 ok(source.includes("setGalleryScrollActivity(true)") && source.includes("setPromptRepoScrollActivity(true)"), 'scroll handlers should enable the low-cost scrolling state');
-ok(source.includes("clearTimeout(galleryScrollIdleTimer)") && source.includes("clearTimeout(promptRepoScrollIdleTimer)"), 'scroll idle timers should be cleared before scheduling a replacement');
-ok(source.includes("} else {\n        setGalleryScrollActivity(false);\n      }"), 'non-virtual gallery scrolling should not leave the low-cost scrolling state enabled');
+ok(source.includes("clearTimeout(galleryScrollIdleTimer)") && source.includes("clearTimeout(promptRepoScrollIdleTimer)"), 'scroll idle timers should be cancellable during lifecycle cleanup');
+ok(source.includes('galleryScrollLastAt = Date.now()')
+  && source.includes('if (!galleryScrollIdleTimer) galleryScrollIdleTimer = setTimeout(finishGalleryScroll, SCROLL_END_FALLBACK_DELAY)')
+  && source.includes('const remaining = SCROLL_END_FALLBACK_DELAY - (Date.now() - galleryScrollLastAt)'), 'gallery scrolling should use native scrollend with a coalesced fallback timer');
+ok(source.includes('promptRepoScrollLastAt = Date.now()')
+  && source.includes('if (!promptRepoScrollIdleTimer) promptRepoScrollIdleTimer = setTimeout(finishPromptRepoScroll, SCROLL_END_FALLBACK_DELAY)')
+  && source.includes('const remaining = SCROLL_END_FALLBACK_DELAY - (Date.now() - promptRepoScrollLastAt)'), 'prompt repository scrolling should use native scrollend with a coalesced fallback timer');
+ok(source.includes('const VIRTUAL_SCROLL_IDLE_DELAY = 220;'), 'scroll idle protection should tolerate discrete Chrome wheel intervals');
+ok(source.includes('const SCROLL_END_FALLBACK_DELAY = 360;')
+  && source.includes('function supportsNativeScrollEnd(node)')
+  && source.includes("addEventListener('scrollend'")
+  && source.includes("galleryScroll.addEventListener('scrollend', () => finishGalleryScroll(), { passive: true })")
+  && source.includes("promptList.addEventListener('scrollend', () => finishPromptRepoScroll(), { passive: true })")
+  && !source.includes("galleryScroll.addEventListener('scrollend', () => finishGalleryScroll(true)")
+  && !source.includes("promptList.addEventListener('scrollend', () => finishPromptRepoScroll(true)"), 'native scrollend should share the bounded fallback instead of ending the low-cost mode per wheel tick');
+ok(!source.includes('galleryScrollFrame') && !source.includes('promptRepoScrollFrame') && !source.includes('agentScrollFrame') && !source.includes('workflowScrollFrame'), 'scroll handlers should not schedule per-frame inspection work');
+ok(source.includes('if (!refreshMode.needed) return refreshMode;')
+  && source.includes('galleryVirtualHydratePending = true;')
+  && source.includes('scheduleGalleryVirtualRender({ allowDuringScroll: true, immediate: refreshMode.immediate })')
+  && source.includes('syncGalleryScrollPosition();\n  setGalleryScrollActivity(true);'), 'gallery scrolling should patch the virtual window on a coalesced animation frame when the visible range is crossed');
+ok(source.includes('if ((galleryScrollActivity || isScrolling) && options.virtualScroll === true && options.allowDuringScroll !== true)')
+  && source.includes('const forceHydrate = options.allowDuringScroll !== true')
+  && source.includes('galleryVirtualHydratePending = true;\n    return false;'), 'gallery virtual patches should stay lightweight while the native scroll gesture is active');
+const promptScrollInspection = source.slice(source.indexOf('function inspectPromptRepoScrollPosition()'), source.indexOf('function finishPromptRepoScroll()'));
+ok(promptScrollInspection.includes('if (!promptRepoVirtualWindowNeedsRefresh()) return;')
+  && promptScrollInspection.includes('promptRepoSyncPending = true;')
+  && !promptScrollInspection.includes('schedulePromptRepoVirtualRender({ allowDuringScroll: true })'), 'prompt scrolling should defer virtual DOM patches until the native gesture is idle');
+ok(source.includes("if (currentScroll.dataset.virtual !== '1') return { needed: false, immediate: false };") && source.includes("if (!currentList || currentList.dataset.virtual !== '1') return;"), 'non-virtual scrolling should skip virtual window work');
+ok(source.includes('setGalleryScrollActivity(true);')
+  && source.includes('scheduleGalleryScrollRender();')
+  && source.includes('setPromptRepoScrollActivity(true);'), 'all gallery scrolling should use the low-cost visual state and shared idle cleanup');
 ok(source.includes('function patchGalleryVirtualDom(') && source.includes('function patchPromptRepoVirtualDom('), 'virtual scroll updates should reuse existing DOM nodes');
 ok(source.includes('patchGalleryVirtualDom(scroll, visibleTasks, windowState)') && source.includes('patchPromptRepoVirtualDom(promptList, promptWindow, promptItems)'), 'virtual scroll paths should use incremental DOM patching');
-ok(source.includes('skipReferenceImages: (options.virtualScroll === true || options.layoutChanged === true || scroll.classList.contains(\'is-scrolling\'))') && source.includes('const forceHydrate = galleryVirtualHydratePending || options.forceHydrate === true'), 'reference image hydration should be deferred during active scrolling and restored after scrolling stops');
+ok(source.includes('grid.ownerDocument?.createDocumentFragment?.()')
+  && source.includes('promptList.ownerDocument?.createDocumentFragment?.()')
+  && source.includes('const needsReorder = desiredCards.length !== currentOrder.length'), 'virtual window patches should batch DOM reordering instead of inserting every card separately');
+ok(source.includes('for (const card of desiredCards)') && source.includes('grid.insertBefore(card, cursor)') && !source.includes('grid.replaceChildren('), 'gallery virtual updates should incrementally reuse and reorder cards without replacing the whole grid');
+ok(source.includes('for (const node of desiredNodes)') && source.includes('promptList.insertBefore(node, cursor)') && !source.includes('promptList.replaceChildren('), 'prompt virtual updates should incrementally reuse and reorder cards without replacing the whole list');
+ok(source.includes('loading="lazy" decoding="async" fetchpriority="low"'), 'gallery and Agent task images should decode asynchronously at low fetch priority');
+ok(source.includes('data-gallery-preview="1"') && source.includes('function buildGalleryPreviewBlob(') && source.includes('function hydrateGalleryPreviewImage('), 'gallery and Agent cards should use bounded preview image hydration instead of decoding full-size originals during scroll');
+ok(source.includes('function imageNearScrollViewport(') && source.includes('observeGalleryImage(img);\n        continue;'), 'deferred image hydration should discard offscreen work after a fast scroll');
+ok(source.includes("rootMargin: '160px 0px'"), 'gallery image hydration should keep a bounded preload margin during scrolling');
+const galleryScrollCss = homeCss.match(/\.gallery-scroll\s*\{([\s\S]*?)\}/)?.[1] || '';
+ok(galleryScrollCss.includes('contain: layout paint;') && !galleryScrollCss.includes('isolation: isolate;') && !galleryScrollCss.includes('will-change: scroll-position') && galleryScrollCss.includes('overflow-anchor: none'), '主滚动容器应隔离布局和绘制，同时保留浏览器原生滚动路径');
+ok(homeCss.includes('.gallery-scroll,\n  .agent-log') && homeCss.includes('-webkit-overflow-scrolling: touch'), '触摸滚动只在粗指针设备启用，桌面端保持原生滚动路径');
+ok(homeCss.includes('.gallery-grid.is-virtual .asset-card') && !homeCss.includes('content-visibility: auto') && !homeCss.includes('contain-intrinsic-size:'), 'virtual gallery cards should rely on the bounded DOM window without activating content-visibility during scroll');
+const assetCardCss = homeCss.match(/(?:^|\r?\n)\.asset-card\s*\{([\s\S]*?)\r?\n\}/)?.[1] || '';
+const promptCardCss = homeCss.match(/(?:^|\r?\n)\.prompt-card\s*\{([\s\S]*?)\r?\n\}/)?.[1] || '';
+ok(!assetCardCss.includes('content-visibility') && !assetCardCss.includes('contain-intrinsic-size'), 'non-virtual gallery cards should keep the browser native paint path');
+ok(!promptCardCss.includes('content-visibility') && !homeCss.includes('.prompt-list.is-virtual .prompt-card'), 'prompt cards should keep the browser native paint path without a second content-visibility layer');
+ok(!homeCss.includes('.gallery-scroll.is-scrolling .gallery-grid.is-virtual .asset-card') && !homeCss.includes('content-visibility: auto'), 'active gallery scrolling should avoid a full-card content-visibility activation pass');
+ok(homeCss.includes('.gallery-scroll.is-scrolling > .gallery-grid > .asset-card') && !homeCss.includes('.gallery-stage.is-scrolling') && !homeCss.includes('.gallery-scroll .asset-media {'), 'scrolling should use a bounded visual downgrade on the actual card layer without nested media content-visibility work');
+ok(homeCss.includes('.gallery-scroll') && homeCss.includes('overscroll-behavior: contain') && homeCss.includes('scroll-behavior: auto'), 'primary scroll containers should keep native scrolling and explicit scroll chaining');
+ok(homeCss.includes('@media (hover: hover), (pointer: fine)')
+  && homeCss.includes('.gallery-scroll,\n  .agent-log,\n  .workflow-stage-scroll,\n  .workflow-manager-scroll,\n  .prompt-list {\n    contain: layout;'), 'desktop scroll containers should avoid paint containment that can force Chromium main-thread scrolling');
+ok(source.includes("galleryDeferredHydrations.set(img, hydrateGalleryPreviewImage);")
+  && source.includes("if (galleryScrollActivity || $('.gallery-scroll')?.classList?.contains('is-scrolling'))"), 'gallery preview conversion should defer while the native gallery scroll gesture is active');
+ok(source.includes('async function flushDeferredGalleryHydrations(limit = 1)')
+  && source.includes('await hydrate(img, img.dataset.blobId, img.dataset.remoteUrl)')
+  && source.includes('galleryHydrationFlushScheduled'), 'gallery hydration should resume from scroll idle in one awaitable idle job at a time');
+ok(homeCss.includes('.agent-log') && homeCss.includes('.workflow-manager-scroll') && homeCss.includes('.prompt-list') && homeCss.includes('contain: layout paint;') && !homeCss.includes('will-change: scroll-position'), 'all long-running scroll containers should isolate layout and paint without permanent will-change promotion');
+ok(homeCss.includes('.prompt-list.is-scrolling > .prompt-card .prompt-skeleton-media::after') && homeCss.includes('animation-play-state: paused'), 'prompt skeleton shimmer should stop repainting while the prompt list is scrolling');
+ok(homeCss.includes('.prompt-list.is-scrolling > .prompt-card')
+  && homeCss.includes('.workflow-manager-scroll.is-scrolling > .workflow-card-grid > .workflow-card')
+  && homeCss.includes('backdrop-filter: none;'), 'homepage scroll surfaces should disable expensive card filters while scrolling');
+ok(promptPage.includes('html.is-scrolling .card')
+  && promptPage.includes('html.is-scrolling .card-img img')
+  && promptPage.includes('animation: none;'), 'standalone prompt repository should have a bounded scrolling visual state');
+ok(!promptPage.includes('content-visibility: visible;')
+  && !promptPage.includes('contain: none;')
+  && !promptPage.includes('contain-intrinsic-size: none;')
+  && promptPage.includes('content-visibility:auto;')
+  && promptPage.includes('contain:layout paint style;'), 'standalone prompt repository should preserve layout containment while scrolling');
+ok(promptPage.includes('html.is-scrolling .card-img img') && promptPage.includes('backdrop-filter: none'), 'standalone prompt repository should disable costly card filters during scroll');
+const macosPromptScrollCss = macosCss.slice(macosCss.lastIndexOf('/* 提示词仓库滚动时优先走浏览器原生布局和合成路径。 */'));
+ok(macosPromptScrollCss.includes('html.is-scrolling .c .grid .card')
+  && !macosPromptScrollCss.includes('content-visibility: visible !important')
+  && !macosPromptScrollCss.includes('contain: none !important')
+  && macosPromptScrollCss.includes('backdrop-filter: none !important'), 'shared macOS CSS must not override the prompt repository native scrolling path');
+ok(promptPage.includes('document.documentElement.classList.add("is-scrolling")')
+  && promptPage.includes('function finishPromptScrolling(force)')
+  && promptPage.includes('scroller.addEventListener("wheel",markPromptScrolling,{passive:true})')
+  && promptPage.includes('scroller.addEventListener("scrollend",function(){finishPromptScrolling()}')
+  && !promptPage.includes('scroller.addEventListener("scrollend",function(){finishPromptScrolling(true)}')
+  && promptPage.includes('if(!scrollingTimer)scrollingTimer=setTimeout(finishPromptScrolling,360)'), 'standalone prompt repository should prime scroll mode before wheel frames and use native scrollend with a fallback timer');
+ok(typeof hooks.buildGalleryPreviewBlob === 'function' && typeof hooks.hydrateGalleryPreviewImage === 'function', 'gallery preview hydration hooks missing');
+ok(source.includes('if (!state.galleryVirtual) state.galleryVirtual = {};') && source.includes('classList.contains(\'is-scrolling\') !== next'), 'scroll handlers should avoid allocating state objects and mutating classes on every event');
+ok(source.includes('if (isScrolling || galleryScrollActivity)') && source.includes('galleryVirtualHydratePending = true') && source.includes('const forceHydrate = galleryVirtualHydratePending || options.forceHydrate === true'), 'reference image hydration should be deferred during active scrolling and restored after scrolling stops');
 ok(source.includes('const isVirtualUpdate = options.virtualScroll === true') && source.includes('if (!isVirtualUpdate) {\n    restoreGalleryScrollState(galleryScrollState);'), 'virtual gallery updates should avoid synchronous scrollHeight reads and scrollTop writes');
-ok(source.includes('galleryImageObserver?.unobserve?.(img)'), 'removed virtual gallery images should be unobserved');
+ok(source.includes('function unobserveGalleryImage(img)')
+  && source.includes('galleryImageObservers.get(root)?.unobserve?.(img)'), 'removed virtual gallery images should be unobserved through their scroll-root observer');
 ok(source.includes('function assetCardSignature(task)') && source.includes('data-card-signature'), 'virtual gallery cards should have stable signatures for incremental updates');
 ok(source.includes("if ((options.virtualScroll === true || options.layoutChanged === true) && !galleryVirtualRangeChanged(windowState))"), 'content updates should not be skipped when the virtual window range is unchanged');
 ok(source.includes("(scroll.dataset.virtual === '1' && windowState.shouldVirtualize)"), 'virtual gallery mode should be recalculated when task count crosses the virtualization threshold');
-ok(source.includes('agentScrollActivity = true') && source.includes('captureAgentScrollState({ positionOnly: true })'), 'Agent scroll handlers should avoid synchronous layout measurement');
+ok(source.includes('setAgentScrollActivity(true)') && source.includes('captureAgentScrollState({ positionOnly: true })'), 'Agent scroll handlers should avoid synchronous layout measurement');
+ok(source.includes("const log = $('.agent-log');")
+  && source.includes("log.classList.contains('is-scrolling') !== next")
+  && homeCss.includes('.agent-log.is-scrolling .agent-task-card'), 'Agent scrolling should expose a local low-cost state and disable card effects in both browsers');
+ok(source.includes('function imageHydrationScrollActive(img = null)')
+  && source.includes('|| agentScrollActivity')
+  && source.includes("img?.closest?.('.gallery-scroll, .agent-log')"), 'gallery and Agent image hydration should share the same scroll guard');
+ok(source.includes('if (galleryPreviewPromises.get(job.key) === job) galleryPreviewPromises.delete(job.key)')
+  && source.includes('if (job?.cancelled)')
+  && source.includes('const previousJob = galleryPreviewConsumers.get(consumer)'), 'cancelled gallery preview jobs should not be reused and stale jobs must not delete replacements');
+ok(source.includes('document.addEventListener(\'error\', handleManagedImageLoadError, true)')
+  && source.includes('img.dataset.imageMissingReason')
+  && homeCss.includes('图片加载失败，请重试或重新生成')
+  && homeCss.includes('.agent-task-preview:has(img[data-image-missing="1"])'), 'managed image load failures should produce an explicit missing-image state');
+ok(source.includes('const galleryImageObservers = new Map()')
+  && source.includes('galleryImageObservers.get(root)')
+  && source.includes('function disconnectGalleryImageObservers()'), 'IntersectionObserver instances should be isolated by scroll root');
+ok(source.includes('document.addEventListener(\'scroll\'')
+  && source.includes('capture: true'), 'nested Agent scrolling should close the image context menu in capture phase');
+ok(source.includes('role="menuitem"')
+  && source.includes('function moveImageContextMenuFocus(key)')
+  && source.includes('if (state.imageContextMenu) { closeImageContextMenu(); return; }\n    if (state.viewer)'), 'image menus should focus an item, support keyboard navigation, and close before the viewer on Escape');
+ok(!indexHtml.includes('id="app" class="home-v3" aria-live="polite"')
+  && source.includes('id="toastStack" aria-live="polite"'), 'the application root should not expose the whole dynamic tree as a live region');
+ok(source.includes('function syncGalleryScrollPosition()')
+  && source.includes('function syncPromptRepoScrollPosition()')
+  && !source.includes('requestRenderFrame(() => {\n      galleryScrollFrame')
+  && !source.includes('requestRenderFrame(() => {\n      promptRepoScrollFrame'), 'scroll position should be sampled once after the idle boundary');
+ok(source.includes('galleryDeferredHydrations') && source.includes('flushDeferredGalleryHydrations'), 'gallery image hydration should be deferred while the user is actively scrolling');
+ok(source.includes('const promptRepoScrollSnapshot = state.promptRepo?.open ? capturePromptRepoViewportSnapshot() : null') && source.includes('restorePromptRepoViewportSnapshot(promptRepoScrollSnapshot)'), 'global renders should preserve the prompt repository viewport');
+ok(source.includes('function scheduleGalleryHydrationFlush()') && source.includes('requestIdleCallback(run, { timeout: 250 })')
+  && source.includes('function deferredGalleryHydrationLimit()')
+  && source.includes('return 4;')
+  && source.includes('flushDeferredGalleryHydrations(deferredGalleryHydrationLimit())'), 'gallery preview hydration should yield to scrolling while Agent images resume in bounded idle batches');
+ok(source.includes('const GALLERY_POST_SCROLL_HYDRATION_DELAY = 360;')
+  && source.includes('galleryHydrationDeferUntil = Date.now() + GALLERY_POST_SCROLL_HYDRATION_DELAY')
+  && source.includes('const delay = Math.max(0, galleryHydrationDeferUntil - Date.now())'), 'gallery hydration should remain deferred briefly after scrolling settles to avoid a Chromium decode burst');
+ok(source.includes('function scrollInteractionActive()') && source.includes('const scrolling = scrollInteractionActive()') && source.includes('if (scrollInteractionActive())') && source.includes('scheduleStoreWrite(delay);'), 'deferred state writes and full renders should wait until scrolling settles');
+ok(source.includes('deferredRenderPending') && source.includes('scheduleDeferredRender()'), 'full renders should be deferred while a scroll interaction is active');
+ok(source.includes('function markUserInteractionRender()')
+  && source.includes('markUserInteractionRender();')
+  && source.includes('!userInteractionRenderAllowed'), 'direct user interactions should render immediately without reopening the background refresh path during scrolling');
+ok(source.includes('if (!agentScrollIdleTimer) agentScrollIdleTimer = setTimeout(finishAgentScroll, SCROLL_END_FALLBACK_DELAY)') && !source.includes('cancelRenderFrame(agentScrollCaptureFrame);'), 'Agent scroll state capture should keep one idle timer and support native scrollend');
+ok(source.includes('agentScrollIdleTimer = 0;\n  const remaining = SCROLL_END_FALLBACK_DELAY - (Date.now() - agentScrollLastAt);'), 'Agent scroll idle timer should reset before rescheduling after a continuous scroll');
+const agentScrollSchedule = source.slice(source.indexOf('function scheduleAgentScrollStateCapture()'), source.indexOf('function setAgentScrollActivity('));
+ok(agentScrollSchedule.includes('setAgentScrollActivity(true)')
+  && !agentScrollSchedule.includes('requestRenderFrame(')
+  && !agentScrollSchedule.includes('clearTimeout(agentScrollIdleTimer)'), 'Agent scrolling should enter low-cost mode immediately and use one idle timer');
+const workflowScrollSchedule = source.slice(source.indexOf('function scheduleWorkflowScrollCapture()'), source.indexOf('function renderSidebar('));
+ok(workflowScrollSchedule.includes('setWorkflowScrollActivity(true)')
+  && !workflowScrollSchedule.includes('requestRenderFrame(')
+  && workflowScrollSchedule.includes('if (!workflowScrollIdleTimer)'), 'workflow scrolling should use one idle timer');
+ok(source.includes("const classMismatch = scroll?.classList?.contains('is-scrolling') !== next")
+  && source.includes("scroll.classList.toggle('is-scrolling', next)"), 'workflow scrolling should expose its low-cost visual state on the scroll container');
+ok(source.includes('function setScrollTopIfNeeded(') && source.includes('setScrollTopIfNeeded(nextList'), 'scroll restoration should avoid redundant DOM scrollTop writes during active scrolling');
+ok(source.includes('function syncWorkspaceScrollActivity()')
+  && source.includes('滚动状态只保留在实际滚动容器')
+  && !source.includes("workspace.classList.toggle('is-scroll-active'")
+  && !homeCss.includes('.workspace.is-scroll-active'), 'scroll state bookkeeping should not toggle expensive global styles');
 ok(source.includes('function schedulePromptRepoEdgeCheck(promptList)') && source.includes('promptRepoEdgeCheckFrame'), 'prompt repository edge checks should be coalesced per animation frame');
 ok(source.includes('galleryScrollRestoreToken += 1') && source.includes('agentScrollRestoreToken += 1'), 'user scrolling should invalidate pending scroll restoration frames');
 ok(source.includes('function galleryVirtualWindowRefreshMode(') && source.includes('function promptRepoVirtualWindowRefreshMode('), 'virtual scrolling should distinguish a buffered edge from an already-empty viewport');
+ok(source.includes('const fallbackColumns = width <= 760 ? 1 : 3;'), 'prompt virtualization fallback columns should match the CSS grid breakpoints');
+ok(source.includes('function galleryFilteredTaskCount()') && source.includes('filteredTaskCount: tasks.length') && source.includes('const refreshMode = galleryVirtualWindowRefreshMode()'), 'gallery scroll checks should reuse the rendered task count instead of sorting tasks on every scroll event');
+ok(source.includes('const GALLERY_PREVIEW_CONCURRENCY = 2') && source.includes('function acquireGalleryPreviewSlot') && source.includes('function releaseGalleryPreviewSlot'), 'gallery preview conversion must have a bounded concurrency queue');
+ok(source.includes('const galleryPreviewConsumers = new WeakMap()') && source.includes('function releaseGalleryImageWork(card)') && source.includes('galleryDeferredHydrations.delete(img)'), 'removed gallery cards should cancel pending preview work before decoding');
+ok(source.includes('function pruneGalleryPreviewConsumers(job)') && source.includes('job.cancelled') && source.includes('job.consumers'), 'shared gallery preview jobs should stop when no live card consumes them');
+ok(source.includes('let promptRepoSyncPending = false') && source.includes('if (promptRepoScrollIsActive())') && source.includes('if (promptRepoSyncPending) nextRenderFrame'), 'prompt repository pagination should defer DOM replacement until scrolling settles');
+ok(source.includes('renderGalleryListOnly({ virtualScroll: true, allowDuringScroll })')
+  && source.includes('options.allowDuringScroll !== true'), 'large gallery jumps should patch the virtual window in the current scroll frame without hydrating images inside that frame');
 ok(source.includes('function syncAgentTaskCardDom(task)') && source.includes('function scheduleAgentTaskCardSync(task)'), 'Agent streaming updates should have a local task-card DOM path');
-ok(source.includes("if (!scheduleAgentTaskCardSync(task) && state.mode !== 'agent') renderGalleryListOnly();"), 'Agent streaming updates must not fall back to gallery or full-page rendering');
+ok(source.includes('function scheduleAgentTaskCardSyncFrame()') && source.includes('function scheduleGalleryTaskCardSyncFrame()'), 'task-card updates should have explicit idle flush points after scrolling');
+ok(source.includes('scheduleGalleryHydrationFlush();\n  scheduleGalleryTaskCardSyncFrame();'), 'gallery task updates should defer image hydration until the scroll idle boundary');
+ok(source.includes('let promptRepoScrollRestoreToken = 0;')
+  && source.includes('promptRepoScrollRestoreToken += 1;')
+  && source.includes('restoreToken !== promptRepoScrollRestoreToken'), 'prompt repository restores should be invalidated by newer user scrolling');
+ok(source.includes("if (agentScrollActivity || $('.agent-log')?.classList?.contains('is-scrolling'))") && source.includes("if (galleryScrollActivity || $('.gallery-scroll')?.classList?.contains('is-scrolling'))"), 'task-card DOM updates should be deferred during active scrolling');
+ok(source.includes("if (!scheduleAgentTaskCardSync(task) && state.mode !== 'agent' && !galleryScrollActivity) renderGalleryListOnly();"), 'Agent streaming updates must not fall back to gallery or full-page rendering during scrolling');
 ok(source.includes('data-prompt-spacer="top"') && source.includes('data-prompt-spacer="bottom"'), 'prompt virtualization should reuse stable top and bottom spacer nodes');
 ok(source.includes('if (delay > 0 || !galleryVirtualRenderTimer) return;') && source.includes('if (delay > 0 || !promptRepoVirtualRenderTimer) return;'), 'immediate virtual scroll requests should upgrade pending delayed renders');
 ok(typeof hooks.promptRepoVirtualWindow === 'function', 'promptRepoVirtualWindow hook missing');
@@ -469,7 +645,10 @@ sandbox.document.querySelector = originalQuerySelector;
 sandbox.document.hidden = false;
 
 ok(!source.includes('schedulePromptSearchWarmup(12000)'), 'homepage should not preload the 5.9MB prompt search index after 12 seconds without intent');
-ok(source.includes("window.addEventListener('pagehide', revokeAllObjectUrls)"), 'pagehide should revoke all cached object URLs');
+ok(source.includes("window.addEventListener('pagehide', (event) => {") && source.includes('if (!event.persisted) revokeAllObjectUrls();'), 'pagehide should release normal-page object URLs while rehydrating bfcache returns');
+ok(source.includes('function resetTaskStreamPreviewSlotsForHydration(task)')
+  && source.includes('await waitForTaskStreamPartialPersistence(task.id)')
+  && source.includes('void restoreStreamPreviewsAfterBfcache().catch'), 'bfcache restore should replace revoked live stream previews with persisted partials and recover safely');
 ok(source.includes('const changed = await loadRuntime({ preserveComposerSession: true });') && source.includes('if (changed) render();'), 'focus/pageshow runtime refresh should render only after an actual configuration change');
 ok(source.includes('if (document.hidden) return;') && source.includes('clearInterval(runningTimerInterval)'), 'hidden pages should stop the running-task timer scan');
 ok(source.includes('data-modal-key="workflow-editor"') && source.includes('aria-labelledby="workflowEditorTitle"'), 'workflow editor should expose labelled modal dialog semantics');
@@ -483,6 +662,12 @@ const candidates = hooks.collectImageCandidates({
   output: [{ content: [{ data_url: 'data:image/png;base64,ccc' }] }]
 });
 ok(candidates.length >= 5, 'recursive image candidate collector should find all nested image results');
+let deepImagePayload = { result: { data: { output: { images: [{ b64_json: 'ZGVlcC1pbWFnZS1kYXRh' }] } } } };
+for (let index = 0; index < 6; index += 1) deepImagePayload = { envelope: deepImagePayload };
+ok(
+  hooks.collectImageCandidates(deepImagePayload).some((item) => item.b64_json === 'ZGVlcC1pbWFnZS1kYXRh'),
+  'image candidate collector should inspect the same bounded depth as the stream runtime'
+);
 const stringImageCandidates = hooks.collectImageCandidates({
   images: [
     'data:image/png;base64,inline-string-image',
@@ -664,6 +849,8 @@ if (typeof hooks.renderDetailModal === 'function') {
     'image viewer should anchor navigation to the rendered image and leave actions to the context menu');
   ok(detailHtml.includes('detail-media-stage') && detailHtml.includes('detail-thumbs'),
     'multi-image detail modal should reserve a separate thumbnail rail below the image stage');
+  ok(source.includes('data-action="prompt-image-viewer-image"') && source.includes("if (action === 'prompt-image-viewer-image') return;"),
+    'prompt image viewer must not close when the displayed image itself is clicked');
   ok(source.includes("new ClipboardItem({ 'image/png': pngPromise })")
     && source.includes('const pngPromise = blobFromImageSource(source).then'),
   'context-menu copy should call the clipboard immediately with an asynchronous PNG payload');
@@ -675,6 +862,8 @@ if (typeof hooks.renderDetailModal === 'function') {
     && source.includes("new ClipboardItem({ 'image/png': preparedBlob })")
     && source.includes("copyState: 'loading'"),
   'context-menu copy should prebuild a concrete PNG Blob for Firefox before the copy click');
+  ok(source.includes("!/^blob:/i.test(String(value))") && source.includes('当前浏览器不支持直接复制图片，请使用下载功能'),
+    'Firefox copy fallback must not expose a temporary blob URL as a usable image link');
   ok(source.includes('class="image-context-menu" role="menu"')
     && !source.includes('data-modal-key="image-context-menu"'),
   'image context menu should not make the underlying viewer inert');
@@ -725,6 +914,8 @@ ok(hooks.taskReferenceDisplayBlobId({ blobId: 'masked-ref', originalBlobId: 'ori
 ok(hooks.taskReferenceOriginalBlobId({ blobId: 'masked-ref', originalBlobId: 'original-ref', compositedBlobId: 'composited-ref' }) === 'original-ref', 'task reference viewer should prefer the original blob');
 const imageContextMenuHtml = hooks.renderImageContextMenu({ x: 24, y: 32 });
 ok(imageContextMenuHtml.includes('复制') && imageContextMenuHtml.includes('下载') && imageContextMenuHtml.includes('编辑'), 'custom image context menu should contain only copy/download/edit actions');
+const streamPreviewMenuHtml = hooks.renderImageContextMenu({ kind: 'stream-preview', x: 24, y: 32 });
+ok(streamPreviewMenuHtml.includes('复制') && streamPreviewMenuHtml.includes('下载') && !streamPreviewMenuHtml.includes('data-action="edit-image-source"'), 'stream preview context menu should only expose copy/download actions');
 ok(imageContextMenuHtml.includes('role="menu"') && !imageContextMenuHtml.includes('aria-modal="true"') && imageContextMenuHtml.includes('data-modal-autofocus'), 'custom image context menu must remain keyboard accessible without locking the viewer in the modal stack');
 
 if (typeof hooks.shouldCloseModalFromClick === 'function') {
@@ -943,6 +1134,17 @@ if (typeof hooks.openAiSizePayload === 'function') {
   const virtualWindow = hooks.galleryVirtualWindow(300);
   ok(virtualWindow.shouldVirtualize === true, 'large gallery should use virtualized rendering');
   ok(virtualWindow.endIndex - virtualWindow.startIndex < 90, 'virtual gallery should render only a bounded window of cards');
+  hooks.setTestState({ galleryVirtual: { viewportWidth: 1740, scrollTop: 0, viewportHeight: 700 } });
+  const moderateVirtualWindow = hooks.galleryVirtualWindow(18);
+  ok(moderateVirtualWindow.shouldVirtualize === false && moderateVirtualWindow.endIndex === 18, 'small gallery histories should keep the simple non-virtual layout');
+  const mediumVirtualWindow = hooks.galleryVirtualWindow(42);
+  ok(mediumVirtualWindow.shouldVirtualize === false && mediumVirtualWindow.endIndex === 42, 'medium gallery histories should keep the native list path to avoid cross-browser virtual DOM churn');
+  const compactVirtualWindow = hooks.galleryVirtualWindow(43);
+  ok(compactVirtualWindow.shouldVirtualize === true && compactVirtualWindow.endIndex - compactVirtualWindow.startIndex < 43, 'large-enough gallery histories should use the bounded virtual window path');
+  const bufferedVirtualWindow = hooks.galleryVirtualWindow(50);
+  ok(bufferedVirtualWindow.shouldVirtualize === true && bufferedVirtualWindow.endIndex - bufferedVirtualWindow.startIndex < 50, 'virtual gallery histories should keep a bounded buffered window');
+  const largeVirtualWindow = hooks.galleryVirtualWindow(120);
+  ok(largeVirtualWindow.shouldVirtualize === true && largeVirtualWindow.endIndex - largeVirtualWindow.startIndex < 90, 'very large gallery histories should keep offscreen paint bounded by the virtual window');
   const wideGalleryMetrics = hooks.measureGalleryMetrics({ clientWidth: 1740 });
   ok(wideGalleryMetrics.columns === 3, 'wide gallery should keep three columns');
   ok(wideGalleryMetrics.cardHeight > 306, 'wide virtual gallery cards should grow beyond the legacy 306px height');
@@ -1516,12 +1718,15 @@ if (typeof hooks.openAiSizePayload === 'function') {
     rawResponse: { data: [{ b64_json: Buffer.alloc(4096, 1).toString('base64') }] }
   }]);
   hooks.writeStore();
-  const emergencyStoreWrite = emergencyWrites.find(([, value]) => String(value || '').includes('task-emergency-store'));
+  const emergencyStoreWrite = emergencyWrites.find(([, value]) => String(value || '').includes('taskStore'));
   const emergencyPayload = emergencyStoreWrite ? JSON.parse(emergencyStoreWrite[1]) : null;
-  const emergencyTask = emergencyPayload?.tasks?.find((task) => task.id === 'task-emergency-store');
-  ok(emergencyStoreAttempts === 3, 'writeStore should try normal, compact, then emergency storage when quota writes fail');
-  ok(emergencyTask?.status === 'success' && emergencyTask.images?.length === 2, 'emergency writeStore fallback must preserve successful multi-image task evidence');
-  ok(emergencyTask?.expectedCount === 2 && emergencyTask?.actualCount === 2 && emergencyTask?.failedCount === 0, 'emergency writeStore fallback must preserve multi-image counts for refresh recovery');
+  ok(emergencyStoreAttempts === 3, 'writeStore should fall back to a lightweight localStorage pointer after quota writes fail');
+  ok(Array.isArray(emergencyPayload?.tasks) && emergencyPayload.tasks.length === 0 && emergencyPayload.taskStore?.count === 1
+    && emergencyPayload.taskStore?.ids?.includes('task-emergency-store'), 'quota fallback should keep full task data out of localStorage while retaining recovery IDs');
+  await hooks.flushTaskPersistence();
+  const persistedEmergencyTask = fakeIndexedDbStores.get('tasks')?.get('task-emergency-store');
+  ok(persistedEmergencyTask?.status === 'success' && persistedEmergencyTask.images?.length === 2, 'quota fallback must preserve successful multi-image task evidence in IndexedDB');
+  ok(persistedEmergencyTask?.expectedCount === 2 && persistedEmergencyTask?.actualCount === 2 && persistedEmergencyTask?.failedCount === 0, 'quota fallback must preserve multi-image counts for refresh recovery');
 
   hooks.setTestState({
     profiles: [
@@ -1581,7 +1786,7 @@ if (typeof hooks.openAiSizePayload === 'function') {
     textProfile: strictTextProfile
   });
   ok(Array.isArray(payload.tools) && payload.tools.length === 1 && payload.tools[0].type === 'web_search', 'supported Agent web search request should send official Responses web_search tools');
-  ok(payload.stream === true, 'Agent Responses payload should explicitly request streaming');
+  ok(payload.stream === false, 'Agent Responses payload should default to non-streaming when the profile has no streaming capability');
   ok(typeof payload.currentBeijingTime === 'string' && /北京时间/.test(payload.currentBeijingTime), 'Agent payload should inject current Beijing time context');
   ok(payload.currentModelSlug === 'gpt-5.4-mini', 'Agent payload should expose the actual model slug');
   ok(payload.webSearchEnabled === true, 'Agent payload should expose the runtime web search state');
@@ -1596,7 +1801,7 @@ if (typeof hooks.openAiSizePayload === 'function') {
     textProfile: strictTextProfile,
     mode: 'planner'
   });
-  ok(workflowAgentPayload.stream === true, 'Workflow Agent Responses payload should explicitly request streaming');
+  ok(workflowAgentPayload.stream === false, 'Workflow Agent Responses payload should default to non-streaming when the profile has no streaming capability');
   const fetchBeforeAgentPost = sandbox.fetch;
   let postedAgentBody = null;
   sandbox.fetch = async (_url, options = {}) => {
@@ -1609,7 +1814,19 @@ if (typeof hooks.openAiSizePayload === 'function') {
   };
   await hooks.postAgentResponsesRequest({ model: strictTextProfile.model, input: 'test', stream: false }, strictTextProfile);
   sandbox.fetch = fetchBeforeAgentPost;
-  ok(postedAgentBody?.stream === true, 'Agent Responses network boundary should force stream=true even if a caller passes false');
+  ok(postedAgentBody?.stream === false, 'Agent Responses network boundary should disable unsupported streaming even if a caller passes true');
+  postedAgentBody = null;
+  const streamingTextProfile = { ...strictTextProfile, streamResponses: true };
+  sandbox.fetch = async (_url, options = {}) => {
+    postedAgentBody = JSON.parse(options.body || '{}');
+    return {
+      ok: true,
+      headers: { get: () => 'application/json' },
+      text: async () => JSON.stringify({ status: 'completed', output_text: 'ok' })
+    };
+  };
+  await hooks.postAgentResponsesRequest({ model: streamingTextProfile.model, input: 'test', stream: false }, streamingTextProfile);
+  ok(postedAgentBody?.stream === true, 'Agent Responses network boundary should enable streaming when the profile declares support');
   const longAgentImageReply = '可以。先说明一点：我不能直接复刻角色。你可以直接用下面提示词生成： **中文提示词：** 一只原创的蓝色圆脸机器猫风格角色，手里抱着几枚金黄色圆形甜点，神情慌张，正在快速奔跑；后方一个原创的瘦弱男孩角色戴着圆框眼镜，穿简单休闲服，表情着急，正追赶前面的机器猫角色。整体构图有强烈的追逐动感，日系动画风，线条干净，色彩明亮，2D 插画，完整人物，全身，居中构图，透明背景，PNG，背景留空，无场景无地面无道具杂物。 **负面提示词：** 不要直接使用已有角色形象，不要版权角色，不要真实背景，不要街道。 如果你想，我还可以继续输出 Midjourney 版。';
   const extractedAgentPrompt = hooks.extractImagePromptFromAgentText(longAgentImageReply);
   ok(extractedAgentPrompt.includes('一只原创的蓝色圆脸机器猫风格角色'), 'Agent image prompt extraction should keep the labeled prompt body');
@@ -1778,7 +1995,7 @@ if (typeof hooks.openAiSizePayload === 'function') {
     history: []
   });
   ok(typeof plainAgentPayload.input === 'string', 'Agent payload without attachments should keep string input for compatibility');
-  ok(plainAgentPayload.stream === true, 'plain Agent payload should explicitly include stream=true');
+  ok(plainAgentPayload.stream === false, 'plain Agent payload should default to non-streaming for an unverified profile');
   const multimodalAgentPayload = hooks.buildAgentRequestPayload('看这张图', {
     project: { name: '测试项目', prompt: '' },
     textProfile: { id: 'text', model: 'gpt-5.5', provider: 'openai', apiMode: 'responses' },
@@ -1788,7 +2005,7 @@ if (typeof hooks.openAiSizePayload === 'function') {
     attachmentImageParts: [{ type: 'input_image', image_url: 'data:image/png;base64,abc' }]
   });
   ok(Array.isArray(multimodalAgentPayload.input) && multimodalAgentPayload.input[0].content.some((part) => part.type === 'input_image'), 'Agent payload with image attachments should use Responses multimodal content');
-  ok(multimodalAgentPayload.stream === true, 'multimodal Agent payload should explicitly include stream=true');
+  ok(multimodalAgentPayload.stream === false, 'multimodal Agent payload should default to non-streaming for an unverified profile');
 
   const streamFrames = Array.from({ length: 30 }, (_, index) => Buffer.from(`frame-${index}`).toString('base64'));
   const imageStreamText = Array.from({ length: 30 }, (_, index) => {
@@ -1925,6 +2142,29 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(regularJsonPayload.responseMode === 'json', 'normal image JSON should retain json response mode');
   ok(regularJsonPayload.data[0].b64_json === regularJsonB64, 'normal image JSON should retain b64_json');
 
+  let proxyProbeCalled = false;
+  const proxyMarkedJsonPayload = await hooks.consumeImageHttpResponse({
+    ok: true,
+    status: 200,
+    statusText: 'OK',
+    headers: {
+      get: (name) => {
+        const key = String(name).toLowerCase();
+        if (key === 'content-type') return 'application/json';
+        if (key === 'x-gpt-image-proxy-probed') return '1';
+        return null;
+      }
+    },
+    body: {
+      tee: () => {
+        proxyProbeCalled = true;
+        throw new Error('proxy-marked responses must not be probed twice');
+      }
+    },
+    text: async () => JSON.stringify({ data: [{ b64_json: regularJsonB64 }] })
+  });
+  ok(!proxyProbeCalled && proxyMarkedJsonPayload.responseMode === 'json', 'proxy probe marker should suppress the frontend first-chunk probe');
+
   const twoOutputStreamText = [
     { output_index: 0, partial_image_index: 0, b64_json: Buffer.from('output-0-partial').toString('base64') },
     { output_index: 1, partial_image_index: 0, b64_json: Buffer.from('output-1-partial').toString('base64') },
@@ -2040,6 +2280,59 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(missingTransparentResult.processedCount === 0 && missingTransparentResult.failedCount === 1, 'transparent postprocess should report a missing source blob as a failed image');
   ok(missingTransparentResult.images[0].blobId === 'missing-transparent-blob' && missingTransparentResult.images[0].transparent === false, 'transparent postprocess failure should preserve the opaque original image');
   ok(!missingTransparentResult.images[0].transparentSource, 'transparent postprocess failure should not claim a transparent source');
+  const originalLocalGetItem = sandbox.localStorage.getItem;
+  const originalLocalSetItem = sandbox.localStorage.setItem;
+  const originalSessionGetItem = sandbox.sessionStorage.getItem;
+  sandbox.localStorage.getItem = (key) => key === 'gpt-image2.home.v3'
+    ? JSON.stringify({ tasks: [{ id: 'session-state-preserved', status: 'success', images: [] }], settings: { quality: 'high' } })
+    : null;
+  sandbox.sessionStorage.getItem = (key) => key === 'gpt-image2.home.v3.composer-session' ? '{broken-session' : null;
+  const isolatedStore = hooks.readStore();
+  ok(isolatedStore.tasks.some((task) => task.id === 'session-state-preserved'), 'corrupt sessionStorage must not discard the valid localStorage store');
+  sandbox.localStorage.getItem = originalLocalGetItem;
+  sandbox.localStorage.setItem = originalLocalSetItem;
+  sandbox.sessionStorage.getItem = originalSessionGetItem;
+
+  const corruptPersistedBlobId = 'corrupt-persisted-store-blob';
+  fakeIndexedDbStore.set(corruptPersistedBlobId, new Blob(['corrupt-store'], { type: 'image/png' }));
+  sandbox.localStorage.getItem = (key) => key === 'gpt-image2.home.v3' ? '{broken-store' : null;
+  hooks.setTestTasks([]);
+  const corruptPersistedCleanup = await hooks.deleteUnreferencedBlobIds([corruptPersistedBlobId]);
+  ok(corruptPersistedCleanup?.skipped === true && fakeIndexedDbStore.has(corruptPersistedBlobId), 'Blob cleanup must skip deletion when the persisted store cannot be parsed');
+  sandbox.localStorage.getItem = originalLocalGetItem;
+
+  const tasksBeforeStorageMerge = hooks.getTestState().tasks;
+  const storageMergeWrites = new Map();
+  sandbox.localStorage.getItem = (key) => storageMergeWrites.get(key) || null;
+  sandbox.localStorage.setItem = (key, value) => storageMergeWrites.set(key, String(value));
+  hooks.setTestTasks([{
+    id: 'legacy-reference-task',
+    createdAt: 200,
+    status: 'success',
+    images: [],
+    referenceSnapshots: [],
+    references: [{ id: 'legacy-ref', blobId: 'legacy-ref-blob', originalBlobId: 'legacy-ref-blob', type: 'image/png' }]
+  }]);
+  storageMergeWrites.set('gpt-image2.home.v3', JSON.stringify({ tasks: [] }));
+  hooks.writeStore();
+  const legacyTaskPayload = JSON.parse(storageMergeWrites.get('gpt-image2.home.v3') || '{}');
+  ok(legacyTaskPayload.tasks?.find((task) => task.id === 'legacy-reference-task')?.referenceSnapshots?.length === 1, 'legacy task references must survive the next localStorage write');
+
+  storageMergeWrites.set('gpt-image2.home.v3', JSON.stringify({ tasks: [{ id: 'cross-tab-task', createdAt: 300, status: 'success', images: [] }] }));
+  hooks.setTestTasks([{ id: 'current-tab-task', createdAt: 400, status: 'success', images: [] }]);
+  hooks.writeStore();
+  const mergedTabPayload = JSON.parse(storageMergeWrites.get('gpt-image2.home.v3') || '{}');
+  ok(mergedTabPayload.tasks?.some((task) => task.id === 'cross-tab-task') && mergedTabPayload.tasks?.some((task) => task.id === 'current-tab-task'), 'a stale tab write must preserve a task created by another tab');
+  hooks.setTestTasks([{ id: 'current-tab-task', createdAt: 400, status: 'success', images: [] }]);
+  hooks.writeStore({ deletedTaskIds: ['cross-tab-task'] });
+  storageMergeWrites.set('gpt-image2.home.v3', JSON.stringify({ tasks: [{ id: 'cross-tab-task', createdAt: 300, status: 'success', images: [] }, { id: 'current-tab-task', createdAt: 400, status: 'success', images: [] }] }));
+  hooks.writeStore();
+  const tombstonePayload = JSON.parse(storageMergeWrites.get('gpt-image2.home.v3') || '{}');
+  ok(!tombstonePayload.tasks?.some((task) => task.id === 'cross-tab-task'), 'a task deleted in one tab must not be resurrected by a stale later write');
+  hooks.setTestTasks(tasksBeforeStorageMerge);
+  sandbox.localStorage.getItem = originalLocalGetItem;
+  sandbox.localStorage.setItem = originalLocalSetItem;
+
   const reservationStorage = new Map();
   sandbox.localStorage.getItem = (key) => reservationStorage.get(key) || null;
   sandbox.localStorage.setItem = (key, value) => reservationStorage.set(key, String(value));
@@ -2050,7 +2343,8 @@ if (typeof hooks.openAiSizePayload === 'function') {
     get: () => reservationStorage.size
   });
   await hooks.putBlob(new Blob(['reserved'], { type: 'image/png' }), 'cleanup-race-reserved');
-  await hooks.cleanupOrphanBlobs();
+  const defaultCleanup = await hooks.cleanupOrphanBlobs();
+  ok(defaultCleanup?.skipped === true && defaultCleanup.reason === 'explicit-confirmation-required', 'orphan cleanup must be opt-in and skip by default');
   ok(fakeIndexedDbStore.has('cleanup-race-reserved'), 'orphan cleanup must preserve a newly written blob until its state reference can be committed');
   fakeIndexedDbStore.delete('cleanup-race-reserved');
   const reservationPrefix = 'gpt-image2.home.v3.blob-reservations.';
@@ -2072,6 +2366,339 @@ if (typeof hooks.openAiSizePayload === 'function') {
     fakeIndexedDbStore.delete(id);
     reservationStorage.delete(`${reservationPrefix}${id}`);
   }
+
+  const archivedAgentBlobId = 'archived-agent-attachment-blob';
+  fakeIndexedDbStore.set(archivedAgentBlobId, new Blob(['archived-agent'], { type: 'image/png' }));
+  fakeIndexedDbStores.get('agentThreads').set('archived-agent-thread', {
+    threadId: 'archived-agent-thread',
+    messages: [{ id: 'archived-agent-message', attachments: [{ blobId: archivedAgentBlobId }] }]
+  });
+  hooks.setTestTasks([]);
+  await hooks.deleteUnreferencedBlobIds([archivedAgentBlobId]);
+  ok(fakeIndexedDbStore.has(archivedAgentBlobId), 'Agent attachment referenced only by IndexedDB archive must survive Blob cleanup');
+  fakeIndexedDbStores.get('agentThreads').delete('archived-agent-thread');
+  await hooks.deleteUnreferencedBlobIds([archivedAgentBlobId]);
+  ok(!fakeIndexedDbStore.has(archivedAgentBlobId), 'Agent archive Blob should be reclaimable after its archived message is removed');
+
+  const workflowRunBlobId = 'running-workflow-reference-blob';
+  fakeIndexedDbStore.set(workflowRunBlobId, new Blob(['workflow-run'], { type: 'image/png' }));
+  const agentBeforeWorkflowRunBlob = hooks.getTestState().agent;
+  hooks.setTestState({ agent: { workflowRuns: [{ id: 'running-workflow-run', status: 'running', references: [{ blobId: workflowRunBlobId }] }] } });
+  await hooks.deleteUnreferencedBlobIds([workflowRunBlobId]);
+  ok(fakeIndexedDbStore.has(workflowRunBlobId), 'running workflow reference must survive Blob cleanup after workflowInvoke is cleared');
+  hooks.setTestState({ agent: { workflowRuns: [{ id: 'running-workflow-run', status: 'success', references: [{ blobId: workflowRunBlobId }] }] } });
+  await hooks.deleteUnreferencedBlobIds([workflowRunBlobId]);
+  ok(!fakeIndexedDbStore.has(workflowRunBlobId), 'completed workflow run references must not keep input Blobs forever');
+  hooks.setTestState({ agent: agentBeforeWorkflowRunBlob });
+
+  const tasksBeforeBlobGuard = hooks.getTestState().tasks;
+  if (typeof hooks.setGalleryScrollActivity === 'function') {
+    const deferredPartialTask = { id: 'deferred-partial-write', images: [], streamPartialImages: [] };
+    hooks.setTestTasks([deferredPartialTask]);
+    hooks.setGalleryScrollActivity(true);
+    await hooks.persistTaskStreamPartialCandidate(deferredPartialTask, {
+      outputIndex: 0,
+      partialIndex: 1,
+      eventType: 'image_generation.partial_image',
+      b64_json: Buffer.from('deferred-partial').toString('base64')
+    });
+    const deferredBlobId = deferredPartialTask.streamPartialImages[0]?.blobId;
+    ok(deferredBlobId && fakeIndexedDbStore.has(deferredBlobId), 'partial persistence during scrolling must retain the new Blob until the deferred store write');
+    hooks.setGalleryScrollActivity(false);
+    hooks.writeStore();
+    const deferredStorePayload = JSON.parse(reservationStorage.get('gpt-image2.home.v3') || '{}');
+    ok(deferredStorePayload.tasks?.some((task) => task.id === 'deferred-partial-write' && task.streamPartialImages?.some((item) => item.blobId === deferredBlobId)), 'deferred partial state must be included in the first idle store write');
+    ok(!reservationStorage.has(`${reservationPrefix}${deferredBlobId}`), 'deferred partial Blob reservation must release after the idle store write commits');
+  }
+  hooks.setTestTasks(tasksBeforeBlobGuard);
+  fakeIndexedDbStore.set('shared-task-blob', new Blob(['shared-task'], { type: 'image/png' }));
+  hooks.setTestTasks([
+    { id: 'shared-task-a', images: [{ blobId: 'shared-task-blob' }] },
+    { id: 'shared-task-b', images: [{ blobId: 'shared-task-blob' }] }
+  ]);
+  await hooks.deleteUnreferencedBlobIds(['shared-task-blob']);
+  ok(fakeIndexedDbStore.has('shared-task-blob'), 'shared Blob must survive while two tasks reference it');
+  hooks.setTestTasks([{ id: 'shared-task-b', images: [{ blobId: 'shared-task-blob' }] }]);
+  await hooks.deleteUnreferencedBlobIds(['shared-task-blob']);
+  ok(fakeIndexedDbStore.has('shared-task-blob'), 'shared Blob must survive after deleting only one referencing task');
+  hooks.setTestTasks([]);
+  await hooks.deleteUnreferencedBlobIds(['shared-task-blob']);
+  ok(!fakeIndexedDbStore.has('shared-task-blob'), 'unreferenced Blob should be deleted after the last task reference is gone');
+  fakeIndexedDbStore.set('shared-task-blob', new Blob(['shared-task'], { type: 'image/png' }));
+  hooks.setTestTasks([
+    { id: 'shared-delete-a', images: [{ blobId: 'shared-task-blob' }] },
+    { id: 'shared-delete-b', images: [{ blobId: 'shared-task-blob' }] }
+  ]);
+  await hooks.performDeleteTask('shared-delete-a');
+  ok(fakeIndexedDbStore.has('shared-task-blob'), 'deleting one task must not delete a Blob still referenced by another task');
+  await hooks.performDeleteTask('shared-delete-b');
+  ok(!fakeIndexedDbStore.has('shared-task-blob'), 'deleting the final referencing task should release the shared Blob');
+  hooks.setTestTasks(tasksBeforeBlobGuard);
+
+  const savedBlobLocks = sandbox.navigator.locks;
+  const noLockBlob = 'no-web-lock-blob';
+  fakeIndexedDbStore.set(noLockBlob, new Blob(['no-lock'], { type: 'image/png' }));
+  sandbox.navigator.locks = null;
+  const noLockCleanup = await hooks.deleteUnreferencedBlobIds([noLockBlob]);
+  ok(noLockCleanup?.skipped === true && fakeIndexedDbStore.has(noLockBlob), 'Blob cleanup must fail closed when Web Locks are unavailable');
+  sandbox.navigator.locks = savedBlobLocks;
+  await hooks.deleteUnreferencedBlobIds([noLockBlob]);
+  ok(!fakeIndexedDbStore.has(noLockBlob), 'a skipped no-lock Blob cleanup must be reclaimable after the lock is restored');
+
+  const reservationRaceBlob = 'reservation-race-blob';
+  const reservationRaceKey = `${reservationPrefix}${reservationRaceBlob}`;
+  fakeIndexedDbStore.set(reservationRaceBlob, new Blob(['reservation-race'], { type: 'image/png' }));
+  reservationStorage.set(reservationRaceKey, JSON.stringify({ version: 1, owner: 'old-tab', expiresAt: Date.now() + 60_000 }));
+  const reservationRaceCleanup = hooks.deleteUnreferencedBlobIds([reservationRaceBlob]);
+  setTimeout(() => {
+    reservationStorage.set(reservationRaceKey, JSON.stringify({ version: 1, owner: 'new-tab', expiresAt: Date.now() + 60_000 }));
+  }, 0);
+  const reservationRaceResult = await reservationRaceCleanup;
+  ok(reservationRaceResult?.retry?.includes(reservationRaceBlob), 'a same-ID reservation created by another tab during cleanup must be retried');
+  ok(fakeIndexedDbStore.has(reservationRaceBlob), 'a same-ID reservation created during cleanup must protect the Blob');
+  reservationStorage.delete(reservationRaceKey);
+  const oldReservationCleanup = await hooks.deleteUnreferencedBlobIds([reservationRaceBlob]);
+  ok(oldReservationCleanup?.deleted === 1 && !fakeIndexedDbStore.has(reservationRaceBlob), 'an unchanged pre-existing reservation must not leak an unreferenced Blob');
+
+  const taskStore = fakeIndexedDbStores.get('tasks');
+  const revisionPartialBlob = 'revision-partial-blob';
+  taskStore.set('revision-partial-task', {
+    id: 'revision-partial-task',
+    status: 'running',
+    createdAt: 5000,
+    startedAt: 5000,
+    persistenceRevision: 10,
+    images: [],
+    streamPartialImages: []
+  });
+  hooks.setTestTasks([{
+    id: 'revision-partial-task',
+    status: 'running',
+    createdAt: 5000,
+    startedAt: 5000,
+    persistenceRevision: 11,
+    images: [],
+    streamPartialImages: [{ blobId: revisionPartialBlob, outputIndex: 0, kind: 'latest' }]
+  }]);
+  hooks.writeStore();
+  await hooks.flushTaskPersistence();
+  const revisionRecord = taskStore.get('revision-partial-task');
+  ok(revisionRecord?.persistenceRevision === 11 && revisionRecord.streamPartialImages?.some((item) => item.blobId === revisionPartialBlob), 'newer task persistence revision must win over an older IDB partial snapshot');
+
+  const idbOnlyTaskBlob = 'idb-only-task-blob';
+  fakeIndexedDbStore.set(idbOnlyTaskBlob, new Blob(['idb-task-reference'], { type: 'image/png' }));
+  taskStore.set('idb-only-reference-task', {
+    id: 'idb-only-reference-task',
+    status: 'success',
+    images: [{ blobId: idbOnlyTaskBlob }]
+  });
+  hooks.setTestTasks([]);
+  reservationStorage.set('gpt-image2.home.v3', JSON.stringify({ tasks: [] }));
+  const idbTaskReferenceCleanup = await hooks.deleteUnreferencedBlobIds([idbOnlyTaskBlob]);
+  ok(idbTaskReferenceCleanup?.deleted === 0 && fakeIndexedDbStore.has(idbOnlyTaskBlob), 'Blob cleanup must protect references held only by the IndexedDB tasks store');
+  taskStore.delete('idb-only-reference-task');
+  await hooks.deleteUnreferencedBlobIds([idbOnlyTaskBlob]);
+  ok(!fakeIndexedDbStore.has(idbOnlyTaskBlob), 'an IndexedDB task Blob becomes reclaimable after its task record is removed');
+
+  const deleteRaceTaskId = 'delete-race-task';
+  const deleteRaceBlob = 'delete-race-blob';
+  fakeIndexedDbStore.set(deleteRaceBlob, new Blob(['delete-race'], { type: 'image/png' }));
+  taskStore.set(deleteRaceTaskId, {
+    id: deleteRaceTaskId,
+    status: 'success',
+    persistenceRevision: 20,
+    images: [{ blobId: deleteRaceBlob }]
+  });
+  hooks.setTestTasks([{ id: deleteRaceTaskId, status: 'success', persistenceRevision: 21, images: [{ blobId: deleteRaceBlob }] }]);
+  hooks.writeStore();
+  hooks.setTestTasks([]);
+  hooks.writeStore({ deletedTaskIds: [deleteRaceTaskId], forceTaskPersistence: true });
+  hooks.writeStore();
+  await hooks.flushTaskPersistence();
+  ok(!taskStore.has(deleteRaceTaskId), 'a later ordinary write must not skip the task deletion tombstone in the IDB persistence queue');
+
+  const crossTabDeleteTaskId = 'cross-tab-idb-delete';
+  const crossTabDeleteBlob = 'cross-tab-idb-delete-blob';
+  fakeIndexedDbStore.set(crossTabDeleteBlob, new Blob(['cross-tab-delete'], { type: 'image/png' }));
+  taskStore.set(crossTabDeleteTaskId, {
+    id: crossTabDeleteTaskId,
+    status: 'success',
+    persistenceRevision: 30,
+    images: [{ blobId: crossTabDeleteBlob }]
+  });
+  hooks.setTestTasks([{ id: crossTabDeleteTaskId, status: 'success', persistenceRevision: 31, images: [{ blobId: crossTabDeleteBlob }] }]);
+  hooks.writeStore({ deletedTaskIds: [crossTabDeleteTaskId], forceTaskPersistence: true });
+  await hooks.flushTaskPersistence();
+  hooks.setTestTasks([]);
+  hooks.writeStore();
+  await hooks.flushTaskPersistence();
+  ok(!taskStore.has(crossTabDeleteTaskId), 'a later cross-tab ordinary write must propagate existing deletion tombstones to the IndexedDB task store');
+  ok([...taskStore.values()].some((record) => record?.kind === 'task-delete' && record?.taskId === crossTabDeleteTaskId), 'task deletion must persist an IndexedDB tombstone for stale tabs');
+  await hooks.deleteUnreferencedBlobIds([crossTabDeleteBlob]);
+  ok(!fakeIndexedDbStore.has(crossTabDeleteBlob), 'a Blob referenced only by a cross-tab-deleted IDB task must become reclaimable');
+
+  hooks.setTestTasks([{ id: crossTabDeleteTaskId, status: 'success', persistenceRevision: 99, images: [] }]);
+  hooks.writeStore({ forceTaskPersistence: true });
+  await hooks.flushTaskPersistence();
+  ok(!taskStore.has(crossTabDeleteTaskId), 'an old queued task snapshot must not revive an IndexedDB-tombstoned task');
+
+  const storageFailureDeleteId = 'storage-failure-delete';
+  taskStore.set(storageFailureDeleteId, { id: storageFailureDeleteId, status: 'success', images: [] });
+  hooks.setTestTasks([{ id: storageFailureDeleteId, status: 'success', images: [] }]);
+  const originalStorageSetItemForDelete = sandbox.localStorage.setItem;
+  sandbox.localStorage.setItem = () => { throw new Error('quota exceeded'); };
+  hooks.writeStore({ deletedTaskIds: [storageFailureDeleteId], forceTaskPersistence: true });
+  await hooks.flushTaskPersistence();
+  sandbox.localStorage.setItem = originalStorageSetItemForDelete;
+  ok(!taskStore.has(storageFailureDeleteId)
+    && [...taskStore.values()].some((record) => record?.kind === 'task-delete' && record?.taskId === storageFailureDeleteId), 'deletion must remain durable when localStorage cannot be written');
+  hooks.setTestTasks([{ id: storageFailureDeleteId, status: 'success', images: [] }]);
+  hooks.setTestState({ taskStore: null, taskRecovery: { status: 'idle', retrying: false, error: '', detail: '' } });
+  await hooks.hydrateTasksFromDb();
+  ok(!hooks.getTestState().tasks.some((task) => task.id === storageFailureDeleteId), 'task hydration must apply IndexedDB deletion tombstones after localStorage failure');
+
+  const bfcacheTask = {
+    id: 'bfcache-stream-task',
+    streamPreviewSlots: {
+      0: { url: 'blob:revoked-stream-preview', temporary: true },
+      1: { url: 'https://example.com/stream-preview.png', temporary: false }
+    },
+    streamPartialImages: [{ blobId: 'persisted-stream-preview', outputIndex: 0, kind: 'latest' }]
+  };
+  ok(hooks.resetTaskStreamPreviewSlotsForHydration(bfcacheTask) === true
+    && !bfcacheTask.streamPreviewSlots['0']
+    && bfcacheTask.streamPreviewSlots['1']?.url === 'https://example.com/stream-preview.png'
+    && bfcacheTask.streamPartialImages[0].blobId === 'persisted-stream-preview', 'bfcache stream hydration should drop revoked live slots while retaining persisted partials and remote slots');
+
+  const partialFailureTaskId = 'partial-write-failure';
+  const partialFailureBaselineRevision = 40;
+  taskStore.set(partialFailureTaskId, {
+    id: partialFailureTaskId,
+    status: 'running',
+    createdAt: 100,
+    persistenceRevision: partialFailureBaselineRevision,
+    images: [],
+    streamPartialImages: []
+  });
+  const partialFailureTask = {
+    id: partialFailureTaskId,
+    status: 'running',
+    createdAt: 100,
+    persistenceRevision: partialFailureBaselineRevision,
+    images: [],
+    streamPartialImages: []
+  };
+  hooks.setTestTasks([partialFailureTask]);
+  const blobKeysBeforePartialFailure = new Set(fakeIndexedDbStore.keys());
+  const originalStorageSetItem = sandbox.localStorage.setItem;
+  sandbox.localStorage.setItem = () => { throw new Error('quota exceeded'); };
+  await hooks.persistTaskStreamPartialCandidate(partialFailureTask, {
+    outputIndex: 0,
+    partialIndex: 1,
+    eventType: 'image_generation.partial_image',
+    b64_json: Buffer.from('partial-write-failure').toString('base64')
+  });
+  sandbox.localStorage.setItem = originalStorageSetItem;
+  await hooks.flushTaskPersistence();
+  const rollbackRecord = taskStore.get(partialFailureTaskId);
+  ok(partialFailureTask.streamPartialImages.length === 0, 'failed partial state persistence must retain the previous partial references');
+  ok(rollbackRecord?.persistenceRevision > partialFailureBaselineRevision && !rollbackRecord?.streamPartialImages?.length, 'failed partial rollback must persist a newer revision without retaining the failed Blob reference');
+  ok([...fakeIndexedDbStore.keys()].every((id) => blobKeysBeforePartialFailure.has(id)), 'failed partial state persistence must remove the newly written unreferenced Blob');
+
+  const idbFailureTask = { id: 'idb-write-failure-task', status: 'success', images: [] };
+  hooks.setTestTasks([idbFailureTask]);
+  sandbox.failTaskStoreWrites = true;
+  hooks.writeStore({ forceTaskPersistence: true });
+  const failedTaskFlush = await hooks.flushTaskPersistence();
+  sandbox.failTaskStoreWrites = false;
+  const idbFailureState = hooks.getTestState();
+  ok(failedTaskFlush === false && idbFailureState.taskStore?.status === 'error' && idbFailureState.taskRecovery?.status === 'error', 'failed IndexedDB persistence must leave an explicit recovery marker');
+  sandbox.failTaskStoreWrites = true;
+  hooks.setTestTasks([{ id: 'pending-marker-task', status: 'success', note: 'old', images: [] }]);
+  hooks.writeStore({ forceTaskPersistence: true });
+  const pendingMarkerOldRevision = hooks.getTestState().tasks?.[0]?.persistenceRevision || 0;
+  hooks.setTestTasks([{ id: 'pending-marker-task', status: 'success', note: 'latest', images: [] }]);
+  hooks.writeStore({ forceTaskPersistence: true });
+  const pendingMarkerLatestRevision = hooks.getTestState().tasks?.[0]?.persistenceRevision || 0;
+  const pendingMarkerFlush = await hooks.flushTaskPersistence();
+  sandbox.failTaskStoreWrites = false;
+  const pendingMarkerState = hooks.getTestState();
+  ok(pendingMarkerFlush === false
+    && pendingMarkerState.taskStore?.status === 'error'
+    && pendingMarkerState.taskStore?.ids?.length === 1
+    && pendingMarkerState.taskStore?.ids?.[0] === 'pending-marker-task'
+    && pendingMarkerState.taskStore?.snapshotRevision >= pendingMarkerLatestRevision
+    && pendingMarkerLatestRevision > pendingMarkerOldRevision, 'an IndexedDB failure marker must use the newest pending task snapshot');
+  hooks.setTestState({ taskStore: null, taskRecovery: { status: 'idle', retrying: false, error: '', detail: '' } });
+
+  const savedTaskRecordsBeforeRecovery = new Map(taskStore);
+  taskStore.clear();
+  const inMemoryTask = { id: 'memory-task-survives-recovery-error', status: 'success', images: [] };
+  hooks.setTestTasks([inMemoryTask]);
+  hooks.setTestState({ taskStore: { version: 1, count: 2 }, taskRecovery: { status: 'idle', retrying: false, error: '', detail: '' } });
+  const recoveryResult = await hooks.retryTaskHistory();
+  const recoveryState = hooks.getTestState();
+  const recoveryHtml = hooks.renderGalleryStage();
+  ok(recoveryResult === false && recoveryState.taskRecovery?.status === 'error', 'incomplete IndexedDB task recovery must enter an explicit error state');
+  ok(recoveryState.tasks?.some((task) => task.id === inMemoryTask.id), 'failed IndexedDB recovery must preserve valid in-memory tasks');
+  ok(recoveryHtml.includes('role="alert"') && recoveryHtml.includes('data-action="retry-task-history"'), 'gallery must expose a visible task recovery retry action');
+  taskStore.set('different-task-id', { id: 'different-task-id', status: 'success', images: [] });
+  hooks.setTestState({ taskStore: { version: 1, count: 1, ids: ['missing-task-id'] }, taskRecovery: { status: 'idle', retrying: false, error: '', detail: '' } });
+  const sameCountMissingIdRecovery = await hooks.retryTaskHistory();
+  const sameCountMissingIdState = hooks.getTestState();
+  ok(sameCountMissingIdRecovery === false && sameCountMissingIdState.taskRecovery?.status === 'error'
+    && /缺少/.test(sameCountMissingIdState.taskRecovery?.detail || ''), 'task recovery must validate taskStore ids instead of trusting a matching record count');
+  hooks.setTestState({ taskStore: { version: 1, count: 1, ids: [] }, taskRecovery: { status: 'idle', retrying: false, error: '', detail: '' } });
+  const emptyIdsRecovery = await hooks.retryTaskHistory();
+  const emptyIdsState = hooks.getTestState();
+  ok(emptyIdsRecovery === false && emptyIdsState.taskRecovery?.status === 'error'
+    && /没有有效任务 ID/.test(emptyIdsState.taskRecovery?.detail || ''), 'task recovery must reject an explicitly empty taskStore id index');
+  taskStore.clear();
+  for (const [id, record] of savedTaskRecordsBeforeRecovery) taskStore.set(id, record);
+  hooks.setTestTasks(tasksBeforeBlobGuard);
+  hooks.setTestState({ taskStore: null, taskRecovery: { status: 'idle', retrying: false, error: '', detail: '' } });
+
+  const crossTabStoreKey = 'gpt-image2.home.v3';
+  const crossTabStoreRaw = sandbox.localStorage.getItem(crossTabStoreKey);
+  hooks.writeStore({ forceTaskPersistence: true });
+  const crossTabBaseline = JSON.parse(sandbox.localStorage.getItem(crossTabStoreKey) || '{}');
+  hooks.setTestPersistedStoreBaseline(crossTabBaseline);
+  const crossTabRemote = JSON.parse(JSON.stringify(crossTabBaseline));
+  crossTabRemote.settings = { ...(crossTabRemote.settings || {}), themeMode: 'light' };
+  crossTabRemote.agent = { ...(crossTabRemote.agent || {}), inputDraft: 'remote-tab-agent-state' };
+  crossTabRemote.references = [{ id: 'remote-tab-reference', blobId: 'remote-tab-reference-blob' }];
+  sandbox.localStorage.setItem(crossTabStoreKey, JSON.stringify(crossTabRemote));
+  hooks.writeStore({ forceTaskPersistence: true });
+  const crossTabMerged = JSON.parse(sandbox.localStorage.getItem(crossTabStoreKey) || '{}');
+  ok(crossTabMerged.settings?.themeMode === 'light'
+    && crossTabMerged.agent?.inputDraft === 'remote-tab-agent-state'
+    && crossTabMerged.references?.[0]?.id === 'remote-tab-reference', 'a stale tab write must preserve remote non-task domains that it did not modify');
+  hooks.setTestPersistedStoreBaseline(crossTabBaseline);
+  const localAgentState = hooks.getTestState().agent || {};
+  hooks.setTestState({ agent: { ...localAgentState, inputDraft: 'local-tab-agent-state' } });
+  const concurrentRemote = JSON.parse(JSON.stringify(crossTabBaseline));
+  concurrentRemote.agent = {
+    ...(concurrentRemote.agent || {}),
+    workflows: [...(concurrentRemote.agent?.workflows || []), { id: 'remote-tab-workflow', name: '远端工作流' }]
+  };
+  sandbox.localStorage.setItem(crossTabStoreKey, JSON.stringify(concurrentRemote));
+  hooks.writeStore({ forceTaskPersistence: true });
+  const concurrentMerged = JSON.parse(sandbox.localStorage.getItem(crossTabStoreKey) || '{}');
+  ok(concurrentMerged.agent?.inputDraft === 'local-tab-agent-state'
+    && concurrentMerged.agent?.workflows?.some((item) => item.id === 'remote-tab-workflow'), 'concurrent changes in different Agent fields must be merged instead of replacing the whole Agent domain');
+  hooks.setTestPersistedStoreBaseline(crossTabBaseline);
+  hooks.setTestState({ agent: JSON.parse(JSON.stringify(crossTabBaseline.agent || {})) });
+  const partialRemote = JSON.parse(JSON.stringify(crossTabBaseline));
+  partialRemote.agent = { inputDraft: 'remote-partial-agent-state' };
+  sandbox.localStorage.setItem(crossTabStoreKey, JSON.stringify(partialRemote));
+  hooks.writeStore({ forceTaskPersistence: true });
+  const partialMerged = JSON.parse(sandbox.localStorage.getItem(crossTabStoreKey) || '{}');
+  ok(partialMerged.agent?.inputDraft === 'remote-partial-agent-state'
+    && Object.prototype.hasOwnProperty.call(partialMerged.agent || {}, 'threadsByProject'), 'cross-tab merge must retain local fields when a remote snapshot omits them');
+  hooks.setTestState({ agent: crossTabBaseline.agent || localAgentState });
+  if (crossTabStoreRaw === null) sandbox.localStorage.removeItem(crossTabStoreKey);
+  else sandbox.localStorage.setItem(crossTabStoreKey, crossTabStoreRaw);
+  hooks.setTestPersistedStoreBaseline(crossTabStoreRaw ? JSON.parse(crossTabStoreRaw) : null);
 
   if (typeof hooks.hydrateBlobImage === 'function') {
     fakeIndexedDbStore.set('hydrate-detached-blob', new Blob(['detached'], { type: 'image/png' }));
@@ -2100,6 +2727,10 @@ if (typeof hooks.openAiSizePayload === 'function') {
     ok(sharedUrls.length === 1, 'concurrent hydrateBlobImage calls must recheck the cache after await and create one object URL per blob');
     ok(firstSharedImg.src && firstSharedImg.src === secondSharedImg.src, 'concurrent hydrateBlobImage targets should share the same live cached object URL');
     ok(!revokedObjectUrls.includes(firstSharedImg.src), 'hydrateBlobImage must not leave an image pointing at an object URL revoked by a concurrent hydration');
+
+    const missingImg = { isConnected: true, dataset: { blobId: 'missing-hydration-blob' }, src: '', alt: '' };
+    await hooks.hydrateBlobImage(missingImg, 'missing-hydration-blob');
+    ok(missingImg.dataset.imageMissing === '1' && /本地图片缓存已丢失/.test(missingImg.alt), 'missing historical Blob must render an explicit cache-missing fallback instead of a silent blank image');
   }
 
   const sseText = [

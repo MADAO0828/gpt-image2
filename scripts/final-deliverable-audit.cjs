@@ -112,9 +112,9 @@ for (const name of allowedAssets) {
 }
 
 const index = read('index.html');
-assertContains(index, '/assets/homepage-v3.css?v=home-v3-20260718-scroll-smooth-r112', 'Index must load cache-busted homepage v3 CSS r112.');
-assertContains(index, '/assets/image-stream-runtime.js?v=home-v3-20260718-scroll-smooth-r112', 'Index must load the cache-busted stream runtime r112.');
-assertContains(index, '/assets/homepage-v3.js?v=home-v3-20260718-scroll-smooth-r112', 'Index must load cache-busted homepage v3 JS r112.');
+assertContains(index, '/assets/homepage-v3.css?v=home-v3-20260720-full-audit-r191', 'Index must load cache-busted homepage v3 CSS r191.');
+assertContains(index, '/assets/image-stream-runtime.js?v=home-v3-20260720-full-audit-r191', 'Index must load cache-busted stream runtime r191.');
+assertContains(index, '/assets/homepage-v3.js?v=home-v3-20260720-full-audit-r191', 'Index must load cache-busted homepage v3 JS r191.');
 for (const old of ['homepage-v2', 'index-CZHhOunP', 'index-BR6pbS6i', 'fast-workbench-skeleton', 'home-v3-20260703', 'home-v3-20260704-cache-recovery-agent-viewer-r8', 'home-v3-20260704-cache-recovery-agent-viewer-r9', 'home-v3-20260704-cache-recovery-agent-viewer-r10', 'home-v3-20260704-cache-recovery-agent-viewer-r11', 'home-v3-20260704-cache-recovery-agent-viewer-r12', 'home-v3-20260704-cache-recovery-agent-viewer-r13', 'home-v3-20260704-cache-recovery-agent-viewer-r14', 'home-v3-20260704-cache-recovery-agent-viewer-r15', 'home-v3-20260704-cache-recovery-agent-viewer-r16', 'home-v3-20260704-cache-recovery-agent-viewer-r17', 'home-v3-20260704-cache-recovery-agent-viewer-r18', 'home-v3-20260704-cache-recovery-agent-viewer-r19', 'home-v3-20260704-cache-recovery-agent-viewer-r20', 'home-v3-20260704-cache-recovery-agent-viewer-r21', 'home-v3-20260704-cache-recovery-agent-viewer-r22', 'home-v3-20260704-cache-recovery-agent-viewer-r23', 'home-v3-20260704-cache-recovery-agent-viewer-r24']) {
   assertNotContains(index, old, `Index still references obsolete shell marker: ${old}`);
 }
@@ -146,7 +146,7 @@ const imageStreamRuntime = read('assets/image-stream-runtime.js');
 for (const marker of [
   'function normalizeRestoredTask',
   'function compactTaskForStorage',
-  'store write used emergency task-only compaction',
+  '完整任务仍已排队 IndexedDB',
   'onPersistedImages',
   'function persistResponseImages',
   'function resolveTaskProfile',
@@ -206,7 +206,7 @@ for (const marker of [
 
 const proAnalyze = read('functions/api/pro-workbench/analyze.js');
 const proRender = read('functions/api/pro-workbench/render.js');
-assertContains(proAnalyze, 'request.formData()', 'Pro workbench analyze must accept multipart FormData image uploads.');
+assertContains(proAnalyze, 'formData()', 'Pro workbench analyze must accept multipart FormData image uploads.');
 assertContains(proRender, 'profileId', 'Pro workbench render must forward selected image profile.');
 assertContains(proRender, '5056x3392', 'Pro workbench render must use Google official 4K size table.');
 
@@ -239,6 +239,9 @@ const textSourceFiles = walk('.')
   .filter((rel) => rel !== 'prompts_data.json')
   .filter((rel) => rel !== 'scripts/final-deliverable-audit.cjs')
   .filter((rel) => rel !== 'scripts/verify-quality-static.cjs');
+const sensitiveBinaryFiles = walk('.')
+  .filter((rel) => /\.(?:pem|key|p12|pfx|sqlite|sqlite3|db)$/i.test(rel));
+for (const rel of sensitiveBinaryFiles) fail(`Sensitive binary file must not be shipped: ${rel}`);
 
 const obsoletePatterns = [
   /homepage-v2/i,
@@ -279,6 +282,23 @@ for (const rel of textSourceFiles) {
     if (pattern.test(content)) fail(`Obsolete marker ${pattern} found in ${rel}`);
   }
   if (/\b(alert|confirm|prompt)\s*\(/.test(content)) fail(`Native browser dialog call found in ${rel}`);
+}
+
+const secretPatterns = [
+  ['OpenAI-style API key', /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/i],
+  ['Google API key', /\bAIza[A-Za-z0-9_-]{30,}\b/],
+  ['xAI API key', /\bxai-[A-Za-z0-9_-]{20,}\b/i],
+  ['GitHub token', /\b(?:ghp|github_pat)_[A-Za-z0-9_]{20,}\b/],
+  ['private key', /-----BEGIN (?:RSA|EC|OPENSSH|PRIVATE) KEY-----/],
+  ['compact JWT', /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/],
+  ['hard-coded credential value', /\b(?:apiKey|api_key|clientSecret|accessToken|refreshToken|privateKey|LOCAL_JWT_SECRET)\s*[:=]\s*['"][^'"\r\n]{20,}['"]/i]
+];
+for (const rel of textSourceFiles) {
+  if (/^tests[\\/]|^scripts[\\/]backup-security\.test\.mjs$/i.test(rel)) continue;
+  const content = read(rel);
+  for (const [label, pattern] of secretPatterns) {
+    if (pattern.test(content)) fail(`Potential ${label} leaked in ${rel}`);
+  }
 }
 
 const middleware = read('functions/_middleware.js');

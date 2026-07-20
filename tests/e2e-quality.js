@@ -1,17 +1,17 @@
 /*
  * NexGen end-to-end quality smoke tests.
  * Run with:
- *   $env:BASE_URL='https://gpt-image2-bg5.pages.dev'; $env:TEST_USER='a691466166'; $env:TEST_PASS='<hidden>'
+ *   $env:BASE_URL='https://gpt-image2-bg5.pages.dev'; $env:TEST_USER='<admin-user>'; $env:TEST_PASS='<hidden>'
  *   npx --yes --package playwright node tests/e2e-quality.js
  */
 const { chromium, firefox, devices } = require('playwright');
 
 const DEFAULT_BASE_URL = 'https://gpt-image2-bg5.pages.dev';
 const BASE_URL = normalizeBaseUrl(process.env.BASE_URL || DEFAULT_BASE_URL);
-const TEST_USER = process.env.TEST_USER || 'a691466166';
+const TEST_USER = process.env.TEST_USER || '';
 const TEST_PASS = process.env.TEST_PASS || '';
-if (!TEST_PASS) {
-  console.error('[quality] ERROR TEST_PASS is required and will not be stored in source.');
+if (!TEST_USER || !TEST_PASS) {
+  console.error('[quality] ERROR TEST_USER and TEST_PASS are required and will not be stored in source.');
   process.exit(2);
 }
 const HEADLESS = !/^(0|false|no)$/i.test(process.env.HEADLESS || '1');
@@ -660,6 +660,127 @@ async function smokeFirefoxAgentLayout() {
   }
 }
 
+async function smokeGalleryVirtualScroll(browserType, browserName) {
+  const browser = await browserType.launch({ headless: HEADLESS, slowMo: SLOW_MO });
+  const context = await browser.newContext({
+    viewport: { width: 1440, height: 900 },
+    ignoreHTTPSErrors: true,
+  });
+  await authenticateContext(context);
+  const page = await context.newPage();
+  const errors = attachPageDiagnostics(page);
+  try {
+    await page.goto(absolutePath('/'), { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
+    await waitForSettled(page);
+    await page.evaluate(() => {
+      const hooks = window.__homepageV3TestHooks;
+      const source = hooks.getTestState().tasks[0] || { status: 'success', prompt: 'scroll test', images: [] };
+      const tasks = Array.from({ length: 72 }, (_, index) => ({
+        ...source,
+        id: `virtual-gallery-${index}`,
+        status: 'success',
+        prompt: `连续滚动验收 ${index}`,
+        images: [],
+        actualCount: 0,
+        expectedCount: 1
+      }));
+      hooks.setTestTasks(tasks);
+      hooks.setTestState({
+        mode: 'gallery',
+        promptRepo: { open: false },
+        galleryVirtual: { scrollTop: 0, viewportHeight: 0, viewportWidth: 0 }
+      });
+      hooks.render();
+    });
+    await page.waitForSelector('.gallery-scroll .asset-card', { timeout: TIMEOUT });
+    const audit = await page.evaluate(async () => {
+      const scroll = document.querySelector('.gallery-scroll');
+      const initialScrollHeight = scroll.scrollHeight;
+      const blankRatios = [];
+      for (const ratio of [0, 0.2, 0.45, 0.7, 0.92, 1]) {
+        const target = Math.round((scroll.scrollHeight - scroll.clientHeight) * ratio);
+        scroll.scrollTop = target;
+        scroll.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        const listRect = scroll.getBoundingClientRect();
+        const visible = [...scroll.querySelectorAll('.asset-card')].filter((card) => {
+          const rect = card.getBoundingClientRect();
+          return rect.bottom > listRect.top && rect.top < listRect.bottom;
+        }).length;
+        if (!visible) blankRatios.push(ratio);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 260));
+      return {
+        initialScrollHeight,
+        settledScrollHeight: scroll.scrollHeight,
+        cardCount: scroll.querySelectorAll('.asset-card').length,
+        virtual: scroll.dataset.virtual,
+        blankRatios
+      };
+    });
+    assert(audit.virtual === '1', `${browserName}: gallery should remain virtualized: ${JSON.stringify(audit)}`);
+    assert(audit.blankRatios.length === 0, `${browserName}: gallery viewport must not become empty during continuous scroll: ${JSON.stringify(audit)}`);
+    assert(Math.abs(audit.settledScrollHeight - audit.initialScrollHeight) <= 2, `${browserName}: gallery scroll height must remain stable after layout settles: ${JSON.stringify(audit)}`);
+    assert(audit.cardCount <= 60, `${browserName}: gallery virtual DOM should stay bounded: ${JSON.stringify(audit)}`);
+    await page.evaluate(() => {
+      const hooks = window.__homepageV3TestHooks;
+      const source = hooks.getTestState().tasks[0] || { status: 'success', prompt: 'medium scroll test', images: [] };
+      const tasks = Array.from({ length: 25 }, (_, index) => ({
+        ...source,
+        id: `medium-gallery-${index}`,
+        status: 'success',
+        prompt: `中等数量滚动验收 ${index}`,
+        images: [],
+        referenceSnapshots: [],
+        actualCount: 0,
+        expectedCount: 1
+      }));
+      hooks.setTestTasks(tasks);
+      hooks.setTestState({
+        mode: 'gallery',
+        promptRepo: { open: false },
+        galleryVirtual: { scrollTop: 0, viewportHeight: 0, viewportWidth: 0 }
+      });
+      hooks.render();
+      const scroll = document.querySelector('.gallery-scroll');
+      if (scroll) scroll.scrollTop = 0;
+    });
+    await page.waitForSelector('.gallery-scroll .asset-card', { timeout: TIMEOUT });
+    const mediumAudit = await page.evaluate(() => {
+      const scroll = document.querySelector('.gallery-scroll');
+      const cards = [...scroll.querySelectorAll('.asset-card')];
+      const rect = scroll.getBoundingClientRect();
+      return {
+        virtual: scroll.dataset.virtual,
+        cardCount: cards.length,
+        visible: cards.filter((card) => {
+          const item = card.getBoundingClientRect();
+          return item.bottom > rect.top && item.top < rect.bottom;
+        }).length,
+        scrollHeight: scroll.scrollHeight
+      };
+    });
+    assert(mediumAudit.virtual === '0', `${browserName}: 25-card gallery should keep the native list path: ${JSON.stringify(mediumAudit)}`);
+    assert(mediumAudit.cardCount === 25, `${browserName}: 25-card gallery should not enter the virtual DOM patch path: ${JSON.stringify(mediumAudit)}`);
+    assert(mediumAudit.visible > 0, `${browserName}: medium gallery viewport must not be empty: ${JSON.stringify(mediumAudit)}`);
+    await page.mouse.move(720, 450);
+    await page.mouse.wheel(0, 260);
+    const scrollingStyles = await page.evaluate(() => {
+      const scroll = document.querySelector('.gallery-scroll');
+      const card = scroll?.querySelector('.asset-card');
+      if (!scroll || !card) return null;
+      const style = getComputedStyle(card);
+      return { active: scroll.classList.contains('is-scrolling'), shadow: style.boxShadow, transition: style.transition };
+    });
+    assert(scrollingStyles?.active === true, `${browserName}: medium gallery should expose native scroll activity: ${JSON.stringify(scrollingStyles)}`);
+    assert(scrollingStyles.shadow === 'none' && scrollingStyles.transition === 'none', `${browserName}: medium gallery should disable expensive card effects while scrolling: ${JSON.stringify(scrollingStyles)}`);
+    assert(errors.length === 0, `${browserName}: unexpected gallery virtualization browser errors: ${errors.join(' | ')}`);
+  } finally {
+    await context.close();
+    await browser.close();
+  }
+}
+
 async function smokePromptVirtualization(browserType, browserName) {
   const browser = await browserType.launch({ headless: HEADLESS, slowMo: SLOW_MO });
   const context = await browser.newContext({
@@ -773,7 +894,7 @@ async function smokePromptVirtualization(browserType, browserName) {
 
 (async () => {
   log(`BASE_URL=${BASE_URL}`);
-  log(`TEST_USER=${TEST_USER}`);
+  log('TEST_USER=<provided>');
   log('TEST_PASS=<hidden>');
 
   const browser = await chromium.launch({ headless: HEADLESS, slowMo: SLOW_MO });
@@ -788,6 +909,8 @@ async function smokePromptVirtualization(browserType, browserName) {
   await step('Firefox Agent layout', () => smokeFirefoxAgentLayout());
   await step('Chromium modal keyboard 390/768', () => smokeModalKeyboardMatrix(chromium, 'Chromium'));
   await step('Firefox modal keyboard 390/768', () => smokeModalKeyboardMatrix(firefox, 'Firefox'));
+  await step('Chromium gallery virtualization scroll', () => smokeGalleryVirtualScroll(chromium, 'Chromium'));
+  await step('Firefox gallery virtualization scroll', () => smokeGalleryVirtualScroll(firefox, 'Firefox'));
   await step('Chromium prompt virtualization 500 cards', () => smokePromptVirtualization(chromium, 'Chromium'));
   await step('Firefox prompt virtualization 500 cards', () => smokePromptVirtualization(firefox, 'Firefox'));
 
