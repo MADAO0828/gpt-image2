@@ -65,6 +65,7 @@ async function newContext(browser, options = {}) {
 
 function attachPageDiagnostics(page) {
   const errors = [];
+  let cloudflareRumErrorAt = 0;
   page.on('pageerror', (error) => {
     errors.push(`pageerror: ${error.message}`);
   });
@@ -73,6 +74,12 @@ function attachPageDiagnostics(page) {
     const text = msg.text();
     // 401 probes during unauthenticated redirects are expected before login on protected pages.
     if (/\b401\b/.test(text) && /api\/auth\/me|img-runtime-config/.test(text)) return;
+    // Cloudflare injects this optional RUM beacon on branch previews; its CORS failure is outside the app runtime.
+    if (/cloudflareinsights\.com\/cdn-cgi\/rum/i.test(text)) {
+      cloudflareRumErrorAt = Date.now();
+      return;
+    }
+    if (/^Failed to load resource: net::ERR_FAILED$/i.test(text) && Date.now() - cloudflareRumErrorAt < 1000) return;
     errors.push(`console error: ${text}`);
   });
   page.on('dialog', async (dialog) => {
