@@ -161,58 +161,101 @@ export function assertUpstreamHostAllowed(rawUrl, allowedHosts) {
   return url;
 }
 
-async function resolvePublicAddresses(hostname, signal) {
-  if (signal?.aborted) {
-    const error = new Error('Public DNS lookup cancelled');
-    error.code = 'UPSTREAM_DNS_TIMEOUT';
-    throw error;
-  }
-  if (isReservedTestHostname(hostname)) return [];
+const PUBLIC_DNS_RESOLVERS = Object.freeze([
+  { id: 'cloudflare', endpoint: 'https://cloudflare-dns.com/dns-query' },
+  { id: 'google', endpoint: 'https://dns.google/resolve' }
+]);
+const PUBLIC_DNS_ATTEMPT_TIMEOUT_MS = 2500;
+const PUBLIC_DNS_TOTAL_TIMEOUT_MS = 5000;
+
+function publicDnsError(message, code) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function orderedPublicDnsResolvers(preferredResolverId = '') {
+  const preferred = PUBLIC_DNS_RESOLVERS.find((resolver) => resolver.id === preferredResolverId);
+  if (!preferred) return [...PUBLIC_DNS_RESOLVERS];
+  return [preferred, ...PUBLIC_DNS_RESOLVERS.filter((resolver) => resolver.id !== preferred.id)];
+}
+
+async function queryPublicDnsResolver(resolver, hostname, signal) {
+  if (signal?.aborted) throw publicDnsError('公共 DNS 解析已取消', 'UPSTREAM_DNS_TIMEOUT');
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 5000);
+  let attemptTimedOut = false;
+  const timeoutId = setTimeout(() => {
+    attemptTimedOut = true;
+    controller.abort();
+  }, PUBLIC_DNS_ATTEMPT_TIMEOUT_MS);
   const abortFromCaller = () => controller.abort();
   signal?.addEventListener?.('abort', abortFromCaller, { once: true });
   if (signal?.aborted) abortFromCaller();
   try {
-    const addresses = [];
-    for (const recordType of ['A', 'AAAA']) {
-      const dnsUrl = `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(hostname)}&type=${recordType}`;
-      const response = await fetch(dnsUrl, {
+    const answersByType = await Promise.all(['A', 'AAAA'].map(async (recordType) => {
+      const dnsUrl = new URL(resolver.endpoint);
+      dnsUrl.searchParams.set('name', hostname);
+      dnsUrl.searchParams.set('type', recordType);
+      const response = await fetch(dnsUrl.toString(), {
         cache: 'no-store',
         headers: { Accept: 'application/dns-json', 'Cache-Control': 'no-cache' },
         redirect: 'error',
         signal: controller.signal
       });
-      if (!response.ok) throw new Error('DNS lookup failed');
+      if (!response.ok) throw new Error('DNS resolver returned a non-success status');
       const payload = await response.json();
-      for (const answer of Array.isArray(payload?.Answer) ? payload.Answer : []) {
-        if (![1, 28].includes(Number(answer?.type))) continue;
-        const address = String(answer?.data || '').trim();
-        if (!address || isPrivateIp(address)) {
-          const error = new Error('API URL resolves to a private network');
-          error.code = 'UPSTREAM_DNS_REJECTED';
-          throw error;
-        }
-        addresses.push(address);
-      }
+      return Array.isArray(payload?.Answer) ? payload.Answer : [];
+    }));
+    const addresses = [];
+    for (const answer of answersByType.flat()) {
+      if (![1, 28].includes(Number(answer?.type))) continue;
+      const address = String(answer?.data || '').trim();
+      if (!address) continue;
+      if (isPrivateIp(address)) throw publicDnsError('上游 API 域名解析到了内部网络', 'UPSTREAM_DNS_REJECTED');
+      addresses.push(address);
     }
-    const unique = normalizedAddresses(addresses);
-    if (!unique.length) {
-      const error = new Error('API URL has no public DNS address');
-      error.code = 'UPSTREAM_DNS_REJECTED';
-      throw error;
-    }
-    return unique;
+    return normalizedAddresses(addresses);
   } catch (error) {
     if (error?.code === 'UPSTREAM_DNS_REJECTED') throw error;
-    if (error?.name === 'AbortError') {
-      const timeout = new Error('Public DNS lookup timed out');
-      timeout.code = 'UPSTREAM_DNS_TIMEOUT';
-      throw timeout;
+    if (signal?.aborted) throw publicDnsError('公共 DNS 解析已取消', 'UPSTREAM_DNS_TIMEOUT');
+    if (attemptTimedOut || error?.name === 'AbortError') throw publicDnsError('公共 DNS 解析服务响应超时', 'UPSTREAM_DNS_ATTEMPT_TIMEOUT');
+    throw publicDnsError('公共 DNS 解析服务请求失败', 'UPSTREAM_DNS_ATTEMPT_FAILED');
+  } finally {
+    clearTimeout(timeoutId);
+    signal?.removeEventListener?.('abort', abortFromCaller);
+  }
+}
+
+export async function resolvePublicAddresses(hostname, signal, options = {}) {
+  const normalizedHost = String(hostname || '').trim().toLowerCase().replace(/\.$/, '');
+  if (signal?.aborted) throw publicDnsError('公共 DNS 解析已取消', 'UPSTREAM_DNS_TIMEOUT');
+  if (isReservedTestHostname(normalizedHost) && options.allowReservedTestHostname !== false) return { addresses: [], resolverId: 'reserved' };
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), PUBLIC_DNS_TOTAL_TIMEOUT_MS);
+  const abortFromCaller = () => controller.abort();
+  signal?.addEventListener?.('abort', abortFromCaller, { once: true });
+  if (signal?.aborted) abortFromCaller();
+  let sawEmptyResult = false;
+  let lastFailure = null;
+  try {
+    for (const resolver of orderedPublicDnsResolvers(options.preferredResolverId)) {
+      if (controller.signal.aborted) break;
+      try {
+        const addresses = await queryPublicDnsResolver(resolver, normalizedHost, controller.signal);
+        if (!addresses.length) {
+          sawEmptyResult = true;
+          continue;
+        }
+        return { addresses, resolverId: resolver.id };
+      } catch (error) {
+        if (error?.code === 'UPSTREAM_DNS_REJECTED') throw error;
+        if (error?.code === 'UPSTREAM_DNS_TIMEOUT' && signal?.aborted) throw error;
+        lastFailure = error;
+      }
     }
-    const wrapped = new Error('Public DNS lookup failed');
-    wrapped.code = 'UPSTREAM_DNS_FAILED';
-    throw wrapped;
+    if (signal?.aborted || controller.signal.aborted) throw publicDnsError('公共 DNS 解析超时', 'UPSTREAM_DNS_TIMEOUT');
+    if (sawEmptyResult && !lastFailure) throw publicDnsError('上游 API 域名没有公网解析结果', 'UPSTREAM_DNS_REJECTED');
+    throw publicDnsError('公共 DNS 解析服务暂时不可用', 'UPSTREAM_DNS_FAILED');
   } finally {
     clearTimeout(timeoutId);
     signal?.removeEventListener?.('abort', abortFromCaller);
@@ -241,11 +284,10 @@ export function normalizeUpstreamTimeoutSeconds(value, fallback = DEFAULT_UPSTRE
 
 export async function assertPublicUpstreamUrl(rawUrl, signal, expectedAddresses) {
   const url = assertSafeUpstreamUrl(rawUrl);
-  const addresses = await resolvePublicAddresses(normalizedHostname(url), signal);
+  const resolved = await resolvePublicAddresses(normalizedHostname(url), signal);
+  const addresses = resolved.addresses;
   if (expectedAddresses !== undefined && !sameAddresses(addresses, expectedAddresses)) {
-    const error = new Error('API URL DNS resolution changed during the request');
-    error.code = 'UPSTREAM_DNS_REBOUND';
-    throw error;
+    throw publicDnsError('上游 API 域名解析在请求期间发生变化', 'UPSTREAM_DNS_REBOUND');
   }
   return addresses;
 }
@@ -254,9 +296,7 @@ export function pinUpstreamFetchInit(init = {}, resolvedAddresses = []) {
   const addresses = normalizedAddresses(resolvedAddresses);
   if (!addresses.length) return { ...init };
   if (addresses.some((address) => isPrivateIp(address))) {
-    const error = new Error('API URL resolves to a private network');
-    error.code = 'UPSTREAM_DNS_REJECTED';
-    throw error;
+    throw publicDnsError('上游 API 域名解析到了内部网络', 'UPSTREAM_DNS_REJECTED');
   }
   // Workers 不允许把 IP 地址作为 cf.resolveOverride；请求继续使用已校验的原始主机名。
   return { ...init };
@@ -267,29 +307,25 @@ export async function fetchPinnedUpstream(rawUrl, init = {}, options = {}) {
   const url = !requireAllowlist && options?.allowedHosts === undefined
     ? assertSafeUpstreamUrl(rawUrl)
     : assertUpstreamHostAllowed(rawUrl, options.allowedHosts);
-  const addresses = await resolvePublicAddresses(normalizedHostname(url), init?.signal);
-  const response = addresses.length
-    ? await fetchWithPinnedAddress(url.toString(), addresses, init)
-    : await fetch(url.toString(), pinUpstreamFetchInit(init, addresses));
-  return { response, addresses };
+  const resolved = await resolvePublicAddresses(normalizedHostname(url), init?.signal);
+  const response = resolved.addresses.length
+    ? await fetchWithPinnedAddress(url.toString(), resolved.addresses, init, { preferredResolverId: resolved.resolverId })
+    : await fetch(url.toString(), pinUpstreamFetchInit(init, resolved.addresses));
+  return { response, addresses: resolved.addresses, resolverId: resolved.resolverId };
 }
 
-export async function fetchWithPinnedAddress(rawUrl, address, init = {}) {
+export async function fetchWithPinnedAddress(rawUrl, address, init = {}, options = {}) {
   const url = assertSafeUpstreamUrl(rawUrl);
   const expectedAddresses = normalizedAddresses(Array.isArray(address) ? address : [address]);
   if (isReservedTestHostname(normalizedHostname(url))) return fetch(url.toString(), pinUpstreamFetchInit(init, expectedAddresses));
   if (!expectedAddresses.length || expectedAddresses.some((candidate) => isPrivateIp(candidate))) {
-    const error = new Error('API URL resolves to a private network');
-    error.code = 'UPSTREAM_DNS_REJECTED';
-    throw error;
+    throw publicDnsError('上游 API 域名解析到了内部网络', 'UPSTREAM_DNS_REJECTED');
   }
-  const currentAddresses = await resolvePublicAddresses(normalizedHostname(url), init?.signal);
-  if (!sameAddresses(currentAddresses, expectedAddresses)) {
-    const error = new Error('API URL DNS resolution changed during the request');
-    error.code = 'UPSTREAM_DNS_REBOUND';
-    throw error;
+  const current = await resolvePublicAddresses(normalizedHostname(url), init?.signal, { preferredResolverId: options.preferredResolverId });
+  if (!sameAddresses(current.addresses, expectedAddresses)) {
+    throw publicDnsError('上游 API 域名解析在请求期间发生变化', 'UPSTREAM_DNS_REBOUND');
   }
-  return fetch(url.toString(), pinUpstreamFetchInit(init, currentAddresses));
+  return fetch(url.toString(), pinUpstreamFetchInit(init, current.addresses));
 }
 
 export function bindClientAbort(request, controller) {

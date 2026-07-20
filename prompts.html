@@ -42,32 +42,6 @@ html.dark .srch input:focus{background:rgba(15,23,42,.82)}
 .card{background:var(--card-bg);border:1px solid rgba(148,163,184,.18);border-radius:22px;overflow:hidden;cursor:pointer;transition:transform .16s,box-shadow .16s,border-color .16s,background .18s;box-shadow:var(--card-shadow);animation:cardIn .14s ease both;content-visibility:auto;contain-intrinsic-size:240px 300px;contain:layout paint style;will-change:auto;backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px)}
 .card:hover{transform:translateY(-3px);border-color:rgba(10,132,255,0.22);box-shadow:var(--card-shadow-hover);background:rgba(255,255,255,.88)}html.dark .card:hover{background:rgba(15,23,42,.82)}.card:active{transform:scale(.985);transition-duration:.06s}
 @keyframes cardIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
-/* 滚动期间关闭 Chromium 成本较高的滤镜、阴影和卡片动画，空闲后恢复原有视觉。 */
-html.is-scrolling .h,
-html.is-scrolling .nav-actions,
-html.is-scrolling .cats,
-html.is-scrolling .info,
-html.is-scrolling .card,
-html.is-scrolling .empty-state,
-html.is-scrolling .skeleton-card {
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
-  box-shadow: none;
-}
-html.is-scrolling .card,
-html.is-scrolling .card:hover,
-html.is-scrolling .card:active {
-  animation: none;
-  transform: none;
-  transition: none;
-}
-html.is-scrolling .card-img img {
-  transform: none;
-  transition: none;
-}
-html.is-scrolling .skeleton-card::after {
-  animation-play-state: paused;
-}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 .card-img{width:100%;aspect-ratio:16/9;overflow:hidden;background:var(--surface)}
 .card-img img{width:100%;height:100%;object-fit:cover;transition:transform .20s;content-visibility:auto}
@@ -273,7 +247,7 @@ html.dark .prompt-detail-media{background:radial-gradient(circle at 26% 20%,rgba
   consumeTokenFromHash();
 })();
 </script>
- <link rel="stylesheet" href="/assets/macos-design.css?v=nexgen-shared-20260719-scroll-consistency-r160"><link rel="stylesheet" href="/assets/shell-ui.css?v=nexgen-shared-20260704"></head><body>
+ <link rel="stylesheet" href="/assets/macos-design.css?v=nexgen-shared-20260720-prompts-scroll-stability-r192"><link rel="stylesheet" href="/assets/shell-ui.css?v=nexgen-shared-20260704"></head><body>
 <header class="h prompts-unified"><span class="hl">📚 提示词仓库</span><div class="srch top-srch"><input id="s" placeholder="🔍 搜索提示词..." /></div><div class="nav-actions"><span class="acct" id="promptAccountInfo">&#39564;&#35777;&#20013;...</span>
   <button onclick="toggleTheme()" id="theme-toggle" class="b" title="&#20999;&#25442;&#20027;&#39064;"><span class="nav-ico">&#128187;</span><span class="nav-text">&#20027;&#39064;</span></button>
   <a href="/admin" class="b" title="&#21518;&#21488;"><span class="nav-ico">&#9881;</span><span class="nav-text">&#21518;&#21488;</span></a>
@@ -786,30 +760,15 @@ mi.addEventListener("click",openImageViewer);
 mi.addEventListener("keydown",function(e){if(e.key==="Enter"||e.key===" "){e.preventDefault();openImageViewer()}});
 document.getElementById("imgViewer").addEventListener("click",function(e){if(e.target===this)closeImageViewer()});
 document.getElementById("ivclose").addEventListener("click",function(){closeImageViewer()});
-var scrollingTimer=0,scrollingLastAt=0;
-function finishPromptScrolling(force){
-  force=force===true;
-  clearTimeout(scrollingTimer);
-  scrollingTimer=0;
-  var remaining=360-(Date.now()-scrollingLastAt);
-  if(!force&&remaining>0){scrollingTimer=setTimeout(finishPromptScrolling,remaining);return}
-  document.documentElement.classList.remove("is-scrolling");
-}
-function markPromptScrolling(){
-  scrollingLastAt=Date.now();
-  document.documentElement.classList.add("is-scrolling");
-  if(!scrollingTimer)scrollingTimer=setTimeout(finishPromptScrolling,360);
-}
+var scrollingLastAt=0;
+function markPromptScrolling(){scrollingLastAt=Date.now()}
 ["grid","cats"].forEach(function(id){
   var scroller=document.getElementById(id);
   if(scroller){
     scroller.addEventListener("scroll",markPromptScrolling,{passive:true});
-    scroller.addEventListener("wheel",markPromptScrolling,{passive:true});
-    scroller.addEventListener("touchmove",markPromptScrolling,{passive:true});
-     scroller.addEventListener("scrollend",function(){finishPromptScrolling()},{passive:true});
   }
 });
-window.addEventListener("pagehide",function(){clearTimeout(scrollingTimer);scrollingTimer=0;scrollingLastAt=0;document.documentElement.classList.remove("is-scrolling")});
+window.addEventListener("pagehide",function(){scrollingLastAt=0});
 fetch('/api/auth/me',{cache:'no-store',credentials:'same-origin'}).then(function(r){if(!r.ok){authFailed();return null}return r.json()}).then(function(u){var el=document.getElementById('promptAccountInfo');if(el&&u){if(window.GptShell)window.GptShell.setAccount(el,u,u.role);else{el.textContent=(u.role==='admin'?'\u7ba1\u7406\u5458 ':'\u7528\u6237 ')+u.username;el.title=el.textContent}}}).catch(function(){authFailed()});
 loadCategories();
 </script></body></html>

@@ -1,5 +1,5 @@
 import { currentUser, json } from '../_lib/auth.js';
-import { assertUpstreamHostAllowed, bindClientAbort, fetchPinnedUpstream, fetchWithPinnedAddress, isPrivateIpAddress as isSharedPrivateIpAddress, normalizeSafeBaseUrl, normalizeUpstreamTimeoutSeconds, safeUpstreamEndpoint } from '../_lib/upstream-url.js';
+import { assertUpstreamHostAllowed, bindClientAbort, fetchPinnedUpstream, fetchWithPinnedAddress, isPrivateIpAddress as isSharedPrivateIpAddress, normalizeSafeBaseUrl, normalizeUpstreamTimeoutSeconds, resolvePublicAddresses, safeUpstreamEndpoint } from '../_lib/upstream-url.js';
 async function loadSettings(db, userId) { const rows = await db.prepare('SELECT key, value FROM user_settings WHERE user_id = ?').bind(userId).all(); const settings = {}; (rows.results || []).forEach(row => { try { settings[row.key] = JSON.parse(row.value); } catch (e) { settings[row.key] = row.value; } }); return settings; }
 function asBool(value, fallback = false) { return value === undefined || value === null ? fallback : !!value; }
 function asNum(value, fallback) { const n = Number(value); return Number.isFinite(n) ? n : fallback; }
@@ -275,54 +275,18 @@ async function assertPublicRemoteHostname(hostname, signal) {
     error.code = 'REMOTE_IMAGE_HOST_REJECTED';
     throw error;
   }
-  if (signal?.aborted) {
-    const error = new Error('远程图片域名校验已取消');
-    error.name = 'AbortError';
-    throw error;
-  }
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 5000);
-  const abortFromCaller = () => controller.abort();
-  signal?.addEventListener?.('abort', abortFromCaller, { once: true });
-  if (signal?.aborted) abortFromCaller();
   try {
-    let hasAddress = false;
-    const addresses = new Set();
-    for (const recordType of ['A', 'AAAA']) {
-      const dnsUrl = `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(host)}&type=${recordType}`;
-      const response = await fetch(dnsUrl, {
-        headers: { Accept: 'application/dns-json' },
-        signal: controller.signal
-      });
-      if (!response.ok) throw new Error('公网 DNS 校验失败');
-      const payload = await response.json();
-      for (const answer of Array.isArray(payload?.Answer) ? payload.Answer : []) {
-        if (![1, 28].includes(Number(answer?.type))) continue;
-        const address = String(answer?.data || '').trim();
-        if (!address) continue;
-        hasAddress = true;
-        addresses.add(normalizeRemoteIpAddress(address));
-        if (isPrivateIpAddress(address)) {
-          const error = new Error('远程图片地址解析到了内部网络');
-          error.code = 'REMOTE_IMAGE_HOST_REJECTED';
-          throw error;
-        }
-      }
-    }
-    if (!hasAddress) {
-      const error = new Error('远程图片地址没有可用的公网解析结果');
-      error.code = 'REMOTE_IMAGE_HOST_REJECTED';
-      throw error;
-    }
-    return [...addresses].sort();
+    return await resolvePublicAddresses(host, signal, { allowReservedTestHostname: false });
   } catch (error) {
-    if (error?.code === 'REMOTE_IMAGE_HOST_REJECTED') throw error;
-    const wrapped = new Error(error?.name === 'AbortError' ? '远程图片域名校验超时' : '远程图片域名校验失败');
-    wrapped.code = 'REMOTE_IMAGE_HOST_REJECTED';
+    if (error?.code === 'UPSTREAM_DNS_REJECTED') {
+      const mapped = new Error(error.message || '远程图片地址解析未通过安全校验');
+      mapped.code = 'REMOTE_IMAGE_HOST_REJECTED';
+      throw mapped;
+    }
+    const wrapped = new Error(error?.code === 'UPSTREAM_DNS_TIMEOUT' ? '远程图片域名校验超时' : '远程图片域名校验失败');
+    wrapped.name = error?.code === 'UPSTREAM_DNS_TIMEOUT' ? 'AbortError' : 'Error';
+    wrapped.code = error?.code === 'UPSTREAM_DNS_TIMEOUT' ? 'REMOTE_IMAGE_DNS_TIMEOUT' : 'REMOTE_IMAGE_DNS_FAILED';
     throw wrapped;
-  } finally {
-    clearTimeout(timeoutId);
-    signal?.removeEventListener?.('abort', abortFromCaller);
   }
 }
 function sameDnsAnswers(first, second) {
@@ -400,11 +364,11 @@ async function proxyRemoteImage(request, value, env) {
     let current = target;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const resolvedBeforeFetch = await assertPublicRemoteHostname(current.hostname, controller.signal);
-      upstream = await fetchWithPinnedAddress(current, resolvedBeforeFetch, {
+      upstream = await fetchWithPinnedAddress(current, resolvedBeforeFetch.addresses, {
         method: request.method,
         redirect: 'manual',
         signal: controller.signal
-      });
+      }, { preferredResolverId: resolvedBeforeFetch.resolverId });
       if (upstream.status < 300 || upstream.status >= 400) break;
       const location = upstream.headers.get('Location');
       if (!location) break;
@@ -446,6 +410,12 @@ async function proxyRemoteImage(request, value, env) {
     }
     if (error?.code === 'REMOTE_IMAGE_HOST_REJECTED') {
       return json({ error: error.message || '远程图片地址被安全策略拒绝', code: error.code }, 400, corsHeaders(request));
+    }
+    if (error?.code === 'REMOTE_IMAGE_DNS_TIMEOUT') {
+      return upstreamError(request, error.message || '远程图片域名校验超时', error.code, 'image_dns_timeout', 504, null);
+    }
+    if (error?.code === 'REMOTE_IMAGE_DNS_FAILED') {
+      return upstreamError(request, error.message || '远程图片域名校验失败', error.code, 'image_dns', 502, null);
     }
     const policyResponse = remoteImagePolicyResponse(request, error);
     if (policyResponse) return policyResponse;

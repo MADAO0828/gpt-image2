@@ -6,6 +6,7 @@ const indexHtml = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 const indexShellHtml = indexHtml.replace(/<script id="promptFastBootstrap" type="application\/json">[\s\S]*?<\/script>/, '');
 const homeJs = fs.readFileSync(path.join(root, 'assets', 'homepage-v3.js'), 'utf8');
 const homeCss = fs.readFileSync(path.join(root, 'assets', 'homepage-v3.css'), 'utf8');
+const upstreamUrl = fs.readFileSync(path.join(root, 'functions', '_lib', 'upstream-url.js'), 'utf8');
 const localPreviewServer = fs.readFileSync(path.join(root, 'scripts', 'local-preview-server.mjs'), 'utf8');
 const runtimeConfigFunction = fs.readFileSync(path.join(root, 'functions', '.well-known', 'img-runtime-config.json.js'), 'utf8');
 const proRenderFunction = fs.readFileSync(path.join(root, 'functions', 'api', 'pro-workbench', 'render.js'), 'utf8');
@@ -44,6 +45,7 @@ ok(homeJs.includes('id="imageMenuMount"') && homeJs.includes('function syncImage
 ok(!homeJs.includes('state.imageContextMenu = menu;\n  render();'), 'opening the image context menu must not re-render the gallery or viewer');
 ok(homeJs.includes('id="imageMenuMount" data-modal-inert-exempt') && homeJs.includes("if (child.matches?.('[data-modal-inert-exempt]')) return;"), 'image context menu mount must not become inert under the active detail or viewer modal');
 ok(homeJs.includes('data-modal-key="task-detail"') && homeJs.includes('data-modal-key="confirm-dialog"') && homeJs.includes('data-modal-key="entry-advanced"'), 'homepage dialogs must expose stable modal keys');
+ok(upstreamUrl.includes('cloudflare-dns.com/dns-query') && upstreamUrl.includes('dns.google/resolve') && upstreamUrl.includes("Promise.all(['A', 'AAAA']"), 'upstream DNS validation must keep both public resolvers and parallel A/AAAA checks');
 ok(promptsHtml.includes('id="imgViewer" role="dialog" aria-modal="true"') && promptsHtml.includes('id="ivclose"') && promptsHtml.includes('function closeImageViewer'), 'standalone prompt image viewer must expose dialog semantics and keyboard-close behavior');
 
 for (const marker of [

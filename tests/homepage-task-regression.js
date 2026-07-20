@@ -195,6 +195,18 @@ ok(typeof hooks.retryTask === 'function', 'retryTask hook missing');
 ok(typeof hooks.extractReturnedParams === 'function', 'extractReturnedParams hook missing');
 ok(typeof hooks.renderDetailModal === 'function', 'renderDetailModal hook missing');
 ok(typeof hooks.renderViewer === 'function', 'renderViewer hook missing');
+ok(typeof hooks.renderEntryAdvancedModal === 'function', 'renderEntryAdvancedModal hook missing');
+for (const entry of ['gallery', 'agent', 'workflow', 'pro']) {
+  let advancedHtml = '';
+  try {
+    advancedHtml = hooks.renderEntryAdvancedModal(entry);
+  } catch (error) {
+    advancedHtml = String(error?.message || error);
+  }
+  ok(advancedHtml.includes('data-modal-key="entry-advanced"') && advancedHtml.includes('entry-advanced-input'), `${entry} advanced settings modal should render without an exception`);
+}
+ok(source.includes("if (action === 'open-entry-advanced')")
+  && source.includes("if (action === 'close-entry-advanced') { state.entryAdvancedModal = null; render(); return; }"), 'advanced settings modal open and close actions must remain wired');
 ok(typeof hooks.captureGalleryScrollState === 'function', 'captureGalleryScrollState hook missing');
 ok(typeof hooks.restoreGalleryScrollState === 'function', 'restoreGalleryScrollState hook missing');
 ok(typeof hooks.sanitizeReferenceSnapshots === 'function', 'sanitizeReferenceSnapshots hook missing');
@@ -299,26 +311,18 @@ ok(homeCss.includes('.prompt-list.is-scrolling > .prompt-card .prompt-skeleton-m
 ok(homeCss.includes('.prompt-list.is-scrolling > .prompt-card')
   && homeCss.includes('.workflow-manager-scroll.is-scrolling > .workflow-card-grid > .workflow-card')
   && homeCss.includes('backdrop-filter: none;'), 'homepage scroll surfaces should disable expensive card filters while scrolling');
-ok(promptPage.includes('html.is-scrolling .card')
-  && promptPage.includes('html.is-scrolling .card-img img')
-  && promptPage.includes('animation: none;'), 'standalone prompt repository should have a bounded scrolling visual state');
+ok(!promptPage.includes('html.is-scrolling .card')
+  && !promptPage.includes('html.is-scrolling .card-img img')
+  && !macosCss.includes('html.is-scrolling .c .grid .card'), 'standalone prompt repository scrolling must not mutate card visuals');
 ok(!promptPage.includes('content-visibility: visible;')
   && !promptPage.includes('contain: none;')
   && !promptPage.includes('contain-intrinsic-size: none;')
   && promptPage.includes('content-visibility:auto;')
   && promptPage.includes('contain:layout paint style;'), 'standalone prompt repository should preserve layout containment while scrolling');
-ok(promptPage.includes('html.is-scrolling .card-img img') && promptPage.includes('backdrop-filter: none'), 'standalone prompt repository should disable costly card filters during scroll');
-const macosPromptScrollCss = macosCss.slice(macosCss.lastIndexOf('/* 提示词仓库滚动时优先走浏览器原生布局和合成路径。 */'));
-ok(macosPromptScrollCss.includes('html.is-scrolling .c .grid .card')
-  && !macosPromptScrollCss.includes('content-visibility: visible !important')
-  && !macosPromptScrollCss.includes('contain: none !important')
-  && macosPromptScrollCss.includes('backdrop-filter: none !important'), 'shared macOS CSS must not override the prompt repository native scrolling path');
-ok(promptPage.includes('document.documentElement.classList.add("is-scrolling")')
-  && promptPage.includes('function finishPromptScrolling(force)')
-  && promptPage.includes('scroller.addEventListener("wheel",markPromptScrolling,{passive:true})')
-  && promptPage.includes('scroller.addEventListener("scrollend",function(){finishPromptScrolling()}')
-  && !promptPage.includes('scroller.addEventListener("scrollend",function(){finishPromptScrolling(true)}')
-  && promptPage.includes('if(!scrollingTimer)scrollingTimer=setTimeout(finishPromptScrolling,360)'), 'standalone prompt repository should prime scroll mode before wheel frames and use native scrollend with a fallback timer');
+ok(!macosCss.includes('html.is-scrolling'), 'shared macOS CSS must not override prompt card visuals during scroll');
+ok(promptPage.includes('scroller.addEventListener("scroll",markPromptScrolling,{passive:true})')
+  && !promptPage.includes('document.documentElement.classList.add("is-scrolling")')
+  && !promptPage.includes('finishPromptScrolling'), 'standalone prompt repository should retain passive scroll observation without a visual state rewrite');
 ok(typeof hooks.buildGalleryPreviewBlob === 'function' && typeof hooks.hydrateGalleryPreviewImage === 'function', 'gallery preview hydration hooks missing');
 ok(source.includes('if (!state.galleryVirtual) state.galleryVirtual = {};') && source.includes('classList.contains(\'is-scrolling\') !== next'), 'scroll handlers should avoid allocating state objects and mutating classes on every event');
 ok(source.includes('if (isScrolling || galleryScrollActivity)') && source.includes('galleryVirtualHydratePending = true') && source.includes('const forceHydrate = galleryVirtualHydratePending || options.forceHydrate === true'), 'reference image hydration should be deferred during active scrolling and restored after scrolling stops');

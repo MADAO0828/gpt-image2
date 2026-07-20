@@ -20,7 +20,7 @@ const PROMPT_PAGE_SIZE = 36;
 const PROMPT_VIRTUAL_THRESHOLD = 108;
 const PROMPT_VIRTUAL_BUFFER_ROWS = 5;
 const PROMPT_REPO_CACHE_LIMIT = 24;
-const PROMPT_FAST_VERSION = 'home-v3-20260720-full-audit-r191';
+const PROMPT_FAST_VERSION = 'home-v3-20260720-stability-r192';
 const PROMPT_FAST_BOOTSTRAP_URL = `/prompts_fast/bootstrap.json?v=${PROMPT_FAST_VERSION}`;
 const PROMPT_FAST_PREVIEWS_URL = `/prompts_fast/category_previews.json?v=${PROMPT_FAST_VERSION}`;
 const PROMPT_FAST_SEARCH_URL = `/prompts_fast/search_index.json?v=${PROMPT_FAST_VERSION}`;
@@ -5320,7 +5320,7 @@ function renderEntryAdvancedFields(entry, profile) {
 }
 function renderEntryAdvancedModal(entry) {
   const profile = entry === 'pro' ? proImageProfile() : entry === 'agent' ? agentImageProfile() : imageProfile();
-  const advanced = effectiveAdvanced(entry, profile, options.advanced);
+  const advanced = effectiveAdvanced(entry, profile);
   const title = entry === 'gallery' ? '画廊高级配置' : entry === 'workflow' ? '工作流高级配置' : entry === 'agent' ? 'Agent 生图高级配置' : '专业工作台高级配置';
   const modelName = profile.name || profile.model || profileId(profile) || '未选择模型';
   return `
@@ -11557,6 +11557,7 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     renderAgentComposer,
     renderWorkflowWorkspace,
     renderPopover,
+    renderEntryAdvancedModal,
     render,
     captureFocusState,
     restoreFocusState,

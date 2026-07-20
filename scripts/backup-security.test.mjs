@@ -680,6 +680,102 @@ test('upstream DNS validation honors an already-aborted client signal', async ()
   }
 });
 
+test('upstream DNS validation falls back to Google when Cloudflare is unavailable', async () => {
+  const mod = await importWorkerModule('functions/_lib/upstream-url.js', ['resolvePublicAddresses']);
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async url => {
+    const text = String(url);
+    requests.push(text);
+    if (text.includes('cloudflare-dns.com/dns-query')) return new Response('', { status: 503 });
+    if (text.includes('dns.google/resolve') && text.includes('type=A')) {
+      return new Response(JSON.stringify({ Answer: [{ type: 1, data: '8.8.8.8' }] }), { headers: { 'Content-Type': 'application/dns-json' } });
+    }
+    return new Response(JSON.stringify({ Answer: [] }), { headers: { 'Content-Type': 'application/dns-json' } });
+  };
+  try {
+    const resolved = await mod.resolvePublicAddresses('dns-fallback.invalid');
+    assert.equal(resolved.resolverId, 'google');
+    assert.deepEqual(resolved.addresses, ['8.8.8.8']);
+    assert.equal(requests.filter(url => url.includes('cloudflare-dns.com/dns-query')).length, 2);
+    assert.equal(requests.filter(url => url.includes('dns.google/resolve')).length, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('upstream DNS validation fails closed when all public resolvers fail', async () => {
+  const mod = await importWorkerModule('functions/_lib/upstream-url.js', ['resolvePublicAddresses']);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error('resolver unavailable'); };
+  try {
+    await assert.rejects(
+      () => mod.resolvePublicAddresses('dns-unavailable.invalid'),
+      error => error?.code === 'UPSTREAM_DNS_FAILED'
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('upstream DNS validation rejects empty public answers', async () => {
+  const mod = await importWorkerModule('functions/_lib/upstream-url.js', ['resolvePublicAddresses']);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ Answer: [] }), { headers: { 'Content-Type': 'application/dns-json' } });
+  try {
+    await assert.rejects(
+      () => mod.resolvePublicAddresses('dns-empty.invalid'),
+      error => error?.code === 'UPSTREAM_DNS_REJECTED'
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('upstream DNS validation rejects address changes during the pinned request', async () => {
+  const mod = await importWorkerModule('functions/_lib/upstream-url.js', ['fetchWithPinnedAddress']);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async url => {
+    assert.match(String(url), /cloudflare-dns\.com\/dns-query/);
+    if (String(url).includes('type=A')) return new Response(JSON.stringify({ Answer: [{ type: 1, data: '1.1.1.1' }] }), { headers: { 'Content-Type': 'application/dns-json' } });
+    return new Response(JSON.stringify({ Answer: [] }), { headers: { 'Content-Type': 'application/dns-json' } });
+  };
+  try {
+    await assert.rejects(
+      () => mod.fetchWithPinnedAddress('https://dns-rebound.invalid/v1', ['8.8.8.8'], {}, { preferredResolverId: 'cloudflare' }),
+      error => error?.code === 'UPSTREAM_DNS_REBOUND'
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('upstream DNS validation propagates a client cancellation during lookup', async () => {
+  const mod = await importWorkerModule('functions/_lib/upstream-url.js', ['resolvePublicAddresses']);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_url, init) => await new Promise((resolve, reject) => {
+    if (init?.signal?.aborted) {
+      const error = new Error('aborted');
+      error.name = 'AbortError';
+      reject(error);
+      return;
+    }
+    init?.signal?.addEventListener('abort', () => {
+      const error = new Error('aborted');
+      error.name = 'AbortError';
+      reject(error);
+    }, { once: true });
+  });
+  const controller = new AbortController();
+  try {
+    const pending = mod.resolvePublicAddresses('dns-cancelled.invalid', controller.signal);
+    controller.abort();
+    await assert.rejects(pending, error => error?.code === 'UPSTREAM_DNS_TIMEOUT');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('models API classifies an upstream 524 as a timeout', async () => {
   const mod = await importWorkerModule('functions/api/models/index.js', ['onRequestPost']);
   const db = makeDb({ users: [{ id: 2, username: 'user', role: 'user' }] });
@@ -825,7 +921,7 @@ test('remote image proxy rejects hostnames that resolve to private addresses', a
     });
     assert.equal(response.status, 400);
     assert.match(await response.text(), /REMOTE_IMAGE_HOST_REJECTED/);
-    assert.equal(dnsRequests, 1);
+    assert.equal(dnsRequests, 2);
   } finally {
     globalThis.fetch = originalFetch;
   }

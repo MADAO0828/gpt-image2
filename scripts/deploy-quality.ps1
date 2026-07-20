@@ -52,6 +52,9 @@ function Invoke-SourceSecurityGates {
   if ($helper -notmatch 'export async function assertPublicUpstreamUrl' -or $helper -notmatch 'export function pinUpstreamFetchInit' -or $helper -notmatch 'UPSTREAM_DNS_REBOUND') {
     throw 'Security gate failed: public upstream DNS rebinding protection is missing.'
   }
+  if ($helper -notmatch 'cloudflare-dns\.com/dns-query' -or $helper -notmatch 'dns\.google/resolve' -or $helper -notmatch "Promise\.all\(\['A', 'AAAA'\]") {
+    throw 'Security gate failed: public DNS fallback or parallel A/AAAA validation is missing.'
+  }
   if ($helper -notmatch 'export function bindClientAbort' -or $helper -notmatch 'export function normalizeUpstreamTimeoutSeconds') {
     throw 'Security gate failed: upstream cancellation or timeout helper is missing.'
   }
