@@ -143,7 +143,7 @@ export function assertUpstreamHostAllowed(rawUrl, allowedHosts) {
   const url = assertSafeUpstreamUrl(rawUrl);
   const configured = String(Array.isArray(allowedHosts) ? allowedHosts.join(',') : allowedHosts || '').trim();
   if (!configured) {
-    const error = new Error('生产环境未配置上游域名白名单');
+    const error = new Error('当前运行环境未配置上游域名白名单');
     error.code = 'UPSTREAM_HOST_ALLOWLIST_MISSING';
     throw error;
   }
@@ -180,6 +180,11 @@ function orderedPublicDnsResolvers(preferredResolverId = '') {
   return [preferred, ...PUBLIC_DNS_RESOLVERS.filter((resolver) => resolver.id !== preferred.id)];
 }
 
+function localPublicDnsLookup() {
+  const lookup = globalThis.__GPT_IMAGE2_PUBLIC_DNS_LOOKUP__;
+  return typeof lookup === 'function' ? lookup : null;
+}
+
 async function queryPublicDnsResolver(resolver, hostname, signal) {
   if (signal?.aborted) throw publicDnsError('公共 DNS 解析已取消', 'UPSTREAM_DNS_TIMEOUT');
   const controller = new AbortController();
@@ -192,7 +197,19 @@ async function queryPublicDnsResolver(resolver, hostname, signal) {
   signal?.addEventListener?.('abort', abortFromCaller, { once: true });
   if (signal?.aborted) abortFromCaller();
   try {
-    const answersByType = await Promise.all(['A', 'AAAA'].map(async (recordType) => {
+    const localLookup = localPublicDnsLookup();
+    if (localLookup) {
+      const localAddresses = await localLookup(hostname, controller.signal);
+      const addresses = [];
+      for (const value of Array.isArray(localAddresses) ? localAddresses : []) {
+        const address = String(value || '').trim();
+        if (!address) continue;
+        if (isPrivateIp(address)) throw publicDnsError('上游 API 域名解析到了内部网络', 'UPSTREAM_DNS_REJECTED');
+        addresses.push(address);
+      }
+      return normalizedAddresses(addresses);
+    }
+    const queryResults = await Promise.allSettled(['A', 'AAAA'].map(async (recordType) => {
       const dnsUrl = new URL(resolver.endpoint);
       dnsUrl.searchParams.set('name', hostname);
       dnsUrl.searchParams.set('type', recordType);
@@ -206,6 +223,14 @@ async function queryPublicDnsResolver(resolver, hostname, signal) {
       const payload = await response.json();
       return Array.isArray(payload?.Answer) ? payload.Answer : [];
     }));
+    const answersByType = [];
+    let successfulQueries = 0;
+    for (const result of queryResults) {
+      if (result.status !== 'fulfilled') continue;
+      successfulQueries += 1;
+      answersByType.push(result.value);
+    }
+    if (!successfulQueries) throw new Error('DNS resolver returned no usable record response');
     const addresses = [];
     for (const answer of answersByType.flat()) {
       if (![1, 28].includes(Number(answer?.type))) continue;
@@ -238,25 +263,32 @@ export async function resolvePublicAddresses(hostname, signal, options = {}) {
   let sawEmptyResult = false;
   let lastFailure = null;
   try {
-    for (const resolver of orderedPublicDnsResolvers(options.preferredResolverId)) {
-      if (controller.signal.aborted) break;
-      try {
-        const addresses = await queryPublicDnsResolver(resolver, normalizedHost, controller.signal);
-        if (!addresses.length) {
+    const pending = new Map(orderedPublicDnsResolvers(options.preferredResolverId).map((resolver, index) => [
+      index,
+      queryPublicDnsResolver(resolver, normalizedHost, controller.signal).then(
+        addresses => ({ index, resolver, addresses }),
+        error => ({ index, resolver, error })
+      )
+    ]));
+    while (pending.size && !controller.signal.aborted) {
+      const result = await Promise.race([...pending.values()]);
+      pending.delete(result.index);
+      if (!result.error) {
+        if (!result.addresses.length) {
           sawEmptyResult = true;
           continue;
         }
-        return { addresses, resolverId: resolver.id };
-      } catch (error) {
-        if (error?.code === 'UPSTREAM_DNS_REJECTED') throw error;
-        if (error?.code === 'UPSTREAM_DNS_TIMEOUT' && signal?.aborted) throw error;
-        lastFailure = error;
+        return { addresses: result.addresses, resolverId: result.resolver.id };
       }
+      if (result.error?.code === 'UPSTREAM_DNS_REJECTED') throw result.error;
+      if (result.error?.code === 'UPSTREAM_DNS_TIMEOUT' && signal?.aborted) throw result.error;
+      lastFailure = result.error;
     }
     if (signal?.aborted || controller.signal.aborted) throw publicDnsError('公共 DNS 解析超时', 'UPSTREAM_DNS_TIMEOUT');
     if (sawEmptyResult && !lastFailure) throw publicDnsError('上游 API 域名没有公网解析结果', 'UPSTREAM_DNS_REJECTED');
     throw publicDnsError('公共 DNS 解析服务暂时不可用', 'UPSTREAM_DNS_FAILED');
   } finally {
+    controller.abort();
     clearTimeout(timeoutId);
     signal?.removeEventListener?.('abort', abortFromCaller);
   }
@@ -302,16 +334,27 @@ export function pinUpstreamFetchInit(init = {}, resolvedAddresses = []) {
   return { ...init };
 }
 
+function canUsePlatformDnsFallback(error, options) {
+  return options?.allowPlatformDnsFallback === true
+    && (error?.code === 'UPSTREAM_DNS_FAILED' || error?.code === 'UPSTREAM_DNS_TIMEOUT');
+}
+
 export async function fetchPinnedUpstream(rawUrl, init = {}, options = {}) {
   const requireAllowlist = options?.requireAllowlist === true;
-  const url = !requireAllowlist && options?.allowedHosts === undefined
-    ? assertSafeUpstreamUrl(rawUrl)
-    : assertUpstreamHostAllowed(rawUrl, options.allowedHosts);
-  const resolved = await resolvePublicAddresses(normalizedHostname(url), init?.signal);
-  const response = resolved.addresses.length
-    ? await fetchWithPinnedAddress(url.toString(), resolved.addresses, init, { preferredResolverId: resolved.resolverId })
-    : await fetch(url.toString(), pinUpstreamFetchInit(init, resolved.addresses));
-  return { response, addresses: resolved.addresses, resolverId: resolved.resolverId };
+  const url = requireAllowlist
+    ? assertUpstreamHostAllowed(rawUrl, options.allowedHosts)
+    : assertSafeUpstreamUrl(rawUrl);
+  try {
+    const resolved = await resolvePublicAddresses(normalizedHostname(url), init?.signal);
+    const response = resolved.addresses.length
+      ? await fetchWithPinnedAddress(url.toString(), resolved.addresses, init, { preferredResolverId: resolved.resolverId })
+      : await fetch(url.toString(), pinUpstreamFetchInit(init, resolved.addresses));
+    return { response, addresses: resolved.addresses, resolverId: resolved.resolverId, dnsFallback: false };
+  } catch (error) {
+    if (init?.signal?.aborted || !canUsePlatformDnsFallback(error, options)) throw error;
+    const response = await fetch(url.toString(), pinUpstreamFetchInit(init));
+    return { response, addresses: [], resolverId: 'platform-fallback', dnsFallback: true };
+  }
 }
 
 export async function fetchWithPinnedAddress(rawUrl, address, init = {}, options = {}) {

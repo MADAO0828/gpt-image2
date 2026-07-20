@@ -221,7 +221,8 @@ export async function onRequestPost(ctx) {
       redirect: 'manual'
     }, {
       allowedHosts: ctx.env?.UPSTREAM_ALLOWED_HOSTS,
-      requireAllowlist: String(ctx.env?.UPSTREAM_ALLOWLIST_REQUIRED || '').toLowerCase() === 'true'
+      requireAllowlist: String(ctx.env?.UPSTREAM_ALLOWLIST_REQUIRED || '').toLowerCase() === 'true',
+      allowPlatformDnsFallback: true
     });
     upstream = pinned.response;
     const text = await upstream.text();

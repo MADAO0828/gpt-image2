@@ -674,9 +674,97 @@ test('upstream DNS validation honors an already-aborted client signal', async ()
     assert.equal(mod.assertUpstreamHostAllowed('https://api.example.com/v1', 'api.example.com').hostname, 'api.example.com');
     assert.equal(mod.assertUpstreamHostAllowed('https://img.api.example.com/v1', '*.api.example.com').hostname, 'img.api.example.com');
     assert.throws(() => mod.assertUpstreamHostAllowed('https://other.example/v1', 'api.example.com'), error => error?.code === 'UPSTREAM_HOST_NOT_ALLOWED');
-    assert.throws(() => mod.assertUpstreamHostAllowed('https://api.example.com/v1', ''), error => error?.code === 'UPSTREAM_HOST_ALLOWLIST_MISSING');
+    assert.throws(() => mod.assertUpstreamHostAllowed('https://api.example.com/v1', ''), error => error?.code === 'UPSTREAM_HOST_ALLOWLIST_MISSING' && /当前运行环境/.test(error.message));
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test('dynamic upstream mode ignores stale allowlist configuration but retains URL and DNS validation', async () => {
+  const mod = await importWorkerModule('functions/_lib/upstream-url.js', ['fetchPinnedUpstream']);
+  const originalFetch = globalThis.fetch;
+  let upstreamRequests = 0;
+  globalThis.fetch = async url => {
+    const text = String(url);
+    if (text.includes('cloudflare-dns.com/dns-query') || text.includes('dns.google/resolve')) {
+      return new Response(JSON.stringify({ Answer: [{ type: 1, data: '8.8.8.8' }] }), { headers: { 'Content-Type': 'application/dns-json' } });
+    }
+    upstreamRequests += 1;
+    assert.equal(new URL(text).hostname, 'api.dynamic-provider.invalid');
+    return new Response('{"ok":true}', { headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    const result = await mod.fetchPinnedUpstream('https://api.dynamic-provider.invalid/v1/models', {}, {
+      allowedHosts: 'stale-provider.example',
+      requireAllowlist: false
+    });
+    assert.equal(result.response.status, 200);
+    assert.equal(upstreamRequests, 1);
+    await assert.rejects(
+      () => mod.fetchPinnedUpstream('https://127.0.0.1/v1/models', {}, { requireAllowlist: false }),
+      error => /internal|private|local|ip literal/i.test(String(error?.message || ''))
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('configured API profiles use the platform DNS fallback only when public DNS is unavailable', async () => {
+  const mod = await importWorkerModule('functions/_lib/upstream-url.js', ['fetchPinnedUpstream']);
+  const originalFetch = globalThis.fetch;
+  let upstreamRequests = 0;
+  globalThis.fetch = async url => {
+    const text = String(url);
+    if (text.includes('cloudflare-dns.com/dns-query') || text.includes('dns.google/resolve')) {
+      throw new Error('public resolver unavailable');
+    }
+    upstreamRequests += 1;
+    return new Response('{"ok":true}', { headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    const fallback = await mod.fetchPinnedUpstream('https://api.dynamic-provider.invalid/v1/models', {}, {
+      allowPlatformDnsFallback: true
+    });
+    assert.equal(fallback.dnsFallback, true);
+    assert.equal(fallback.resolverId, 'platform-fallback');
+    assert.equal(upstreamRequests, 1);
+    await assert.rejects(
+      () => mod.fetchPinnedUpstream('https://api.dynamic-provider.invalid/v1/models'),
+      error => error?.code === 'UPSTREAM_DNS_FAILED'
+    );
+    await assert.rejects(
+      () => mod.fetchPinnedUpstream('https://127.0.0.1/v1/models', {}, { allowPlatformDnsFallback: true }),
+      error => /ip literal/i.test(String(error?.message || ''))
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('upstream DNS validation uses the local resolver hook without bypassing public-address checks', async () => {
+  const mod = await importWorkerModule('functions/_lib/upstream-url.js', ['resolvePublicAddresses']);
+  const originalFetch = globalThis.fetch;
+  const originalLookup = globalThis.__GPT_IMAGE2_PUBLIC_DNS_LOOKUP__;
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    throw new Error('public DNS-over-HTTPS should not be called in local mode');
+  };
+  globalThis.__GPT_IMAGE2_PUBLIC_DNS_LOOKUP__ = async () => ['8.8.8.8'];
+  try {
+    const resolved = await mod.resolvePublicAddresses('local-dns-hook.invalid');
+    assert.equal(resolved.resolverId, 'cloudflare');
+    assert.deepEqual(resolved.addresses, ['8.8.8.8']);
+    assert.equal(fetchCalls, 0);
+    globalThis.__GPT_IMAGE2_PUBLIC_DNS_LOOKUP__ = async () => ['127.0.0.1'];
+    await assert.rejects(
+      () => mod.resolvePublicAddresses('local-dns-private.invalid'),
+      error => error?.code === 'UPSTREAM_DNS_REJECTED'
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalLookup === undefined) delete globalThis.__GPT_IMAGE2_PUBLIC_DNS_LOOKUP__;
+    else globalThis.__GPT_IMAGE2_PUBLIC_DNS_LOOKUP__ = originalLookup;
   }
 });
 
@@ -699,6 +787,28 @@ test('upstream DNS validation falls back to Google when Cloudflare is unavailabl
     assert.deepEqual(resolved.addresses, ['8.8.8.8']);
     assert.equal(requests.filter(url => url.includes('cloudflare-dns.com/dns-query')).length, 2);
     assert.equal(requests.filter(url => url.includes('dns.google/resolve')).length, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('upstream DNS validation keeps an A result when the AAAA lookup fails', async () => {
+  const mod = await importWorkerModule('functions/_lib/upstream-url.js', ['resolvePublicAddresses']);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async url => {
+    const text = String(url);
+    if (text.includes('cloudflare-dns.com/dns-query') && text.includes('type=A')) {
+      return new Response(JSON.stringify({ Answer: [{ type: 1, data: '8.8.8.8' }] }), { headers: { 'Content-Type': 'application/dns-json' } });
+    }
+    if (text.includes('cloudflare-dns.com/dns-query') && text.includes('type=AAAA')) {
+      return new Response('', { status: 503 });
+    }
+    return new Response(JSON.stringify({ Answer: [] }), { headers: { 'Content-Type': 'application/dns-json' } });
+  };
+  try {
+    const resolved = await mod.resolvePublicAddresses('dns-partial.invalid');
+    assert.equal(resolved.resolverId, 'cloudflare');
+    assert.deepEqual(resolved.addresses, ['8.8.8.8']);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -967,7 +1077,7 @@ test('remote image proxy applies the specific allowlist to every redirect target
   const originalFetch = globalThis.fetch;
   let remoteRequests = 0;
   globalThis.fetch = async url => {
-    if (String(url).includes('cloudflare-dns.com/dns-query')) {
+    if (String(url).includes('cloudflare-dns.com/dns-query') || String(url).includes('dns.google/resolve')) {
       return new Response(JSON.stringify({ Answer: [{ type: 1, data: '8.8.8.8' }] }), {
         headers: { 'Content-Type': 'application/dns-json' }
       });
@@ -1005,7 +1115,7 @@ test('remote image proxy converts redirect exhaustion to a safe upstream error',
   const originalFetch = globalThis.fetch;
   let remoteRequests = 0;
   globalThis.fetch = async url => {
-    if (String(url).includes('cloudflare-dns.com/dns-query')) {
+    if (String(url).includes('cloudflare-dns.com/dns-query') || String(url).includes('dns.google/resolve')) {
       return new Response(JSON.stringify({ Answer: [{ type: 1, data: '8.8.8.8' }] }), { headers: { 'Content-Type': 'application/dns-json' } });
     }
     remoteRequests += 1;

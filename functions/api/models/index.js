@@ -68,7 +68,8 @@ async function handleModelsRequest(ctx, input = {}) {
       signal: controller.signal
     }, {
       allowedHosts: ctx.env?.UPSTREAM_ALLOWED_HOSTS,
-      requireAllowlist: String(ctx.env?.UPSTREAM_ALLOWLIST_REQUIRED || '').toLowerCase() === 'true'
+      requireAllowlist: String(ctx.env?.UPSTREAM_ALLOWLIST_REQUIRED || '').toLowerCase() === 'true',
+      allowPlatformDnsFallback: true
     });
     upstream = pinned.response;
     if (upstream.status >= 300 && upstream.status < 400) {

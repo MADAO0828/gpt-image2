@@ -907,7 +907,8 @@ export async function onRequest(ctx) {
     armProxyTimeout('response-header');
     const pinned = await fetchPinnedUpstream(targetUrl, fetchInit, {
       allowedHosts: ctx.env?.UPSTREAM_ALLOWED_HOSTS,
-      requireAllowlist: String(ctx.env?.UPSTREAM_ALLOWLIST_REQUIRED || '').toLowerCase() === 'true'
+      requireAllowlist: String(ctx.env?.UPSTREAM_ALLOWLIST_REQUIRED || '').toLowerCase() === 'true',
+      allowPlatformDnsFallback: true
     });
     const upstream = pinned.response;
     armProxyTimeout('stream-idle');
@@ -935,6 +936,7 @@ export async function onRequest(ctx) {
     Object.entries(corsHeaders(ctx.request, {
       'X-GPT-Image-Upstream-Ms': String(upstreamMs),
       'X-GPT-Image-Proxy-Ms': String(Date.now() - proxyStart),
+      'X-GPT-Image-DNS-Mode': pinned.dnsFallback ? 'platform-fallback' : 'public-resolver',
       'X-GPT-Image-Profile-Id': String(profile.id || ''),
       'X-GPT-Image-Profile-Name': encodeURIComponent(String(profile.name || ''))
     })).forEach(([k, v]) => responseHeaders.set(k, v));

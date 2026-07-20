@@ -45,7 +45,9 @@ ok(homeJs.includes('id="imageMenuMount"') && homeJs.includes('function syncImage
 ok(!homeJs.includes('state.imageContextMenu = menu;\n  render();'), 'opening the image context menu must not re-render the gallery or viewer');
 ok(homeJs.includes('id="imageMenuMount" data-modal-inert-exempt') && homeJs.includes("if (child.matches?.('[data-modal-inert-exempt]')) return;"), 'image context menu mount must not become inert under the active detail or viewer modal');
 ok(homeJs.includes('data-modal-key="task-detail"') && homeJs.includes('data-modal-key="confirm-dialog"') && homeJs.includes('data-modal-key="entry-advanced"'), 'homepage dialogs must expose stable modal keys');
-ok(upstreamUrl.includes('cloudflare-dns.com/dns-query') && upstreamUrl.includes('dns.google/resolve') && upstreamUrl.includes("Promise.all(['A', 'AAAA']"), 'upstream DNS validation must keep both public resolvers and parallel A/AAAA checks');
+ok(upstreamUrl.includes('cloudflare-dns.com/dns-query') && upstreamUrl.includes('dns.google/resolve') && upstreamUrl.includes("Promise.allSettled(['A', 'AAAA']") && upstreamUrl.includes('Promise.race([...pending.values()])'), 'upstream DNS validation must keep both public resolvers and parallel resolver/A/AAAA checks');
+ok(upstreamUrl.includes('allowPlatformDnsFallback') && upstreamUrl.includes("resolverId: 'platform-fallback'") && upstreamUrl.includes('UPSTREAM_DNS_REBOUND'), 'configured API profiles may use a platform DNS fallback without weakening DNS rebinding rejection');
+ok(localPreviewServer.includes("from 'node:dns/promises'") && localPreviewServer.includes('__GPT_IMAGE2_PUBLIC_DNS_LOOKUP__') && localPreviewServer.includes('resolveLocalPublicDns'), 'local preview must use the system DNS resolver when DNS-over-HTTPS is unavailable');
 ok(promptsHtml.includes('id="imgViewer" role="dialog" aria-modal="true"') && promptsHtml.includes('id="ivclose"') && promptsHtml.includes('function closeImageViewer'), 'standalone prompt image viewer must expose dialog semantics and keyboard-close behavior');
 
 for (const marker of [

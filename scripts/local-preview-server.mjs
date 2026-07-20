@@ -1,5 +1,6 @@
 import http from 'node:http';
 import { randomBytes } from 'node:crypto';
+import { resolve4, resolve6 } from 'node:dns/promises';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -63,6 +64,30 @@ const publicStaticFiles = new Set([
   'sw.js'
 ]);
 const publicStaticDirectories = new Set(['assets', 'prompts_fast', 'prompts_pages']);
+
+function abortLocalDnsLookup() {
+  const error = new Error('本地 DNS 解析已取消');
+  error.name = 'AbortError';
+  return error;
+}
+
+async function resolveLocalPublicDns(hostname, signal) {
+  if (signal?.aborted) throw abortLocalDnsLookup();
+  const queries = await Promise.allSettled([resolve4(hostname), resolve6(hostname)]);
+  if (signal?.aborted) throw abortLocalDnsLookup();
+  const addresses = [];
+  let successfulQueries = 0;
+  for (const query of queries) {
+    if (query.status !== 'fulfilled') continue;
+    successfulQueries += 1;
+    addresses.push(...query.value);
+  }
+  if (!successfulQueries) throw new Error('本地系统 DNS 未返回可用记录');
+  return [...new Set(addresses)];
+}
+
+// 本地 Node 可能无法访问公共 DNS-over-HTTPS；后续仍由共享安全逻辑校验系统 DNS 返回的地址。
+globalThis.__GPT_IMAGE2_PUBLIC_DNS_LOOKUP__ = resolveLocalPublicDns;
 
 function send(res, status, body, headers = {}) {
   const buffer = Buffer.isBuffer(body) ? body : Buffer.from(String(body || ''));

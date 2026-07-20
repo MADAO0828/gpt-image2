@@ -52,8 +52,12 @@ function Invoke-SourceSecurityGates {
   if ($helper -notmatch 'export async function assertPublicUpstreamUrl' -or $helper -notmatch 'export function pinUpstreamFetchInit' -or $helper -notmatch 'UPSTREAM_DNS_REBOUND') {
     throw 'Security gate failed: public upstream DNS rebinding protection is missing.'
   }
-  if ($helper -notmatch 'cloudflare-dns\.com/dns-query' -or $helper -notmatch 'dns\.google/resolve' -or $helper -notmatch "Promise\.all\(\['A', 'AAAA'\]") {
+  if ($helper -notmatch 'cloudflare-dns\.com/dns-query' -or $helper -notmatch 'dns\.google/resolve' -or ($helper -notmatch "Promise\.allSettled\(\['A', 'AAAA'\]" -and $helper -notmatch "Promise\.all\(\['A', 'AAAA'\]")) {
     throw 'Security gate failed: public DNS fallback or parallel A/AAAA validation is missing.'
+  }
+  $wranglerConfig = Get-Content -LiteralPath (Join-Path $ProjectDir 'wrangler.jsonc') -Raw | ConvertFrom-Json
+  if ([string]$wranglerConfig.vars.UPSTREAM_ALLOWLIST_REQUIRED -ne 'false') {
+    throw 'Security gate failed: dynamic upstream mode must disable the static host allowlist.'
   }
   if ($helper -notmatch 'export function bindClientAbort' -or $helper -notmatch 'export function normalizeUpstreamTimeoutSeconds') {
     throw 'Security gate failed: upstream cancellation or timeout helper is missing.'
@@ -243,8 +247,8 @@ function Invoke-ProductionSecretPreflight {
   if ($output -notmatch '(?i)\bJWT_SECRET\b') {
     throw 'Production blocked: Pages secret JWT_SECRET is not configured.'
   }
-  if ($output -notmatch '(?i)\bUPSTREAM_ALLOWED_HOSTS\b') {
-    throw 'Production blocked: Pages secret UPSTREAM_ALLOWED_HOSTS is not configured.'
+  if ($output -match '(?i)\bUPSTREAM_ALLOWED_HOSTS\b') {
+    Write-Host 'Legacy Pages secret UPSTREAM_ALLOWED_HOSTS will be removed after the new dynamic-upstream runtime passes production verification.' -ForegroundColor Yellow
   }
   if ($output -match '(?i)\bALLOW_INSECURE_JWT_FALLBACK\b') {
     throw 'Production blocked: insecure local JWT fallback must not be configured in Pages.'
@@ -256,6 +260,21 @@ function Invoke-ProductionSecretPreflight {
     throw 'Production blocked: session header authentication must not be configured in Pages.'
   }
   Write-Host 'Production Pages secret preflight passed: JWT_SECRET exists and local fallback/header authentication are absent.'
+}
+
+function Remove-LegacyUpstreamAllowlistSecret {
+  Write-Step 'Remove deprecated upstream host allowlist secret'
+  $before = Invoke-LoggedCommand -FilePath 'wrangler' -Arguments @('pages', 'secret', 'list', '--project-name', 'gpt-image2') -CaptureOutput
+  if ($before -notmatch '(?i)\bUPSTREAM_ALLOWED_HOSTS\b') {
+    Write-Host 'No legacy upstream host allowlist secret is configured.'
+    return
+  }
+  Invoke-LoggedCommand -FilePath 'wrangler' -Arguments @('pages', 'secret', 'delete', 'UPSTREAM_ALLOWED_HOSTS', '--project-name', 'gpt-image2')
+  $after = Invoke-LoggedCommand -FilePath 'wrangler' -Arguments @('pages', 'secret', 'list', '--project-name', 'gpt-image2') -CaptureOutput
+  if ($after -match '(?i)\bUPSTREAM_ALLOWED_HOSTS\b') {
+    throw 'Production deployment completed but the deprecated upstream host allowlist secret remains configured.'
+  }
+  Write-Host 'Deprecated upstream host allowlist secret was removed.'
 }
 
 function Invoke-ProductionDatabasePreflight {
@@ -445,6 +464,7 @@ try {
     $productionUrl = Invoke-PagesDeploy -Branch $ProductionBranch -Label 'production'
     Invoke-StaticDeployChecks -Url $productionUrl -Label 'production'
     Invoke-QualityTests -Url $productionUrl -Label 'production'
+    Remove-LegacyUpstreamAllowlistSecret
   } else {
     Write-Host 'Skipping production deploy by parameter.' -ForegroundColor Yellow
   }

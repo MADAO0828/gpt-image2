@@ -5,7 +5,7 @@
   "pages_build_output_dir": ".",
   "vars": {
     "ALLOW_PUBLIC_REGISTRATION": "true",
-    "UPSTREAM_ALLOWLIST_REQUIRED": "true"
+    "UPSTREAM_ALLOWLIST_REQUIRED": "false"
   },
   "d1_databases": [
     {
