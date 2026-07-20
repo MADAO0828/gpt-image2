@@ -337,19 +337,38 @@ function Test-PreviewSupportsAuth([string]$Url) {
   }
 }
 
+function Invoke-DeployHttpGet([string]$Uri, [string]$Label) {
+  $lastStatus = 0
+  $lastMessage = ''
+  for ($attempt = 1; $attempt -le 8; $attempt++) {
+    try {
+      return Invoke-WebRequest -UseBasicParsing -Uri $Uri -TimeoutSec 45
+    } catch {
+      $lastStatus = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
+      $lastMessage = if ($lastStatus) { "HTTP $lastStatus" } else { $_.Exception.Message }
+      $retryable = $lastStatus -eq 404 -or $lastStatus -eq 502 -or $lastStatus -eq 503
+      if (-not $retryable -or $attempt -eq 8) {
+        throw "$Label request failed after $attempt attempt(s): $lastMessage"
+      }
+      Start-Sleep -Seconds 5
+    }
+  }
+  throw "$Label request failed: $lastMessage"
+}
+
 function Invoke-StaticDeployChecks([string]$Url, [string]$Label) {
   Write-Step "Run static deploy checks against $Label"
   $localIndex = Get-Content -LiteralPath (Join-Path $ProjectDir 'index.html') -Raw
   $localVersions = @([regex]::Matches($localIndex, 'home-v3-[A-Za-z0-9-]+') | ForEach-Object { $_.Value } | Select-Object -Unique)
   if ($localVersions.Count -ne 1) { throw "Local index.html must contain exactly one asset version marker." }
   $expectedVersion = $localVersions[0]
-  $root = Invoke-WebRequest -UseBasicParsing -Uri ($Url.TrimEnd('/') + '/') -TimeoutSec 45
+  $root = Invoke-DeployHttpGet -Uri ($Url.TrimEnd('/') + '/') -Label "$Label root"
   if (-not ($root.Content -match [regex]::Escape($expectedVersion))) {
     throw "$Label HTML does not contain expected asset version $expectedVersion."
   }
-  $js = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($Url.TrimEnd('/') + '/assets/homepage-v3.js') -TimeoutSec 45
-  $streamRuntime = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($Url.TrimEnd('/') + '/assets/image-stream-runtime.js') -TimeoutSec 45
-  $css = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($Url.TrimEnd('/') + '/assets/homepage-v3.css') -TimeoutSec 45
+  $js = Invoke-DeployHttpGet -Uri ($Url.TrimEnd('/') + '/assets/homepage-v3.js') -Label "$Label homepage-v3.js"
+  $streamRuntime = Invoke-DeployHttpGet -Uri ($Url.TrimEnd('/') + '/assets/image-stream-runtime.js') -Label "$Label image-stream-runtime.js"
+  $css = Invoke-DeployHttpGet -Uri ($Url.TrimEnd('/') + '/assets/homepage-v3.css') -Label "$Label homepage-v3.css"
   $jsType = [string]($js.Headers['Content-Type'])
   $streamRuntimeType = [string]($streamRuntime.Headers['Content-Type'])
   $cssType = [string]($css.Headers['Content-Type'])
