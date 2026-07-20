@@ -14,7 +14,7 @@ function escapeHtml(value) {
 
 function withSecurityHeaders(response) {
   const next = new Response(response.body, response);
-  const contentSecurityPolicy = "default-src 'self'; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; font-src 'self' data: https:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'";
+  const contentSecurityPolicy = "default-src 'self'; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com; font-src 'self' data: https:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'";
   next.headers.set('X-Content-Type-Options', 'nosniff');
   next.headers.set('X-Frame-Options', 'SAMEORIGIN');
   next.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
