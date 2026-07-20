@@ -383,12 +383,23 @@ function Invoke-StaticDeployChecks([string]$Url, [string]$Label) {
   if ($streamRuntime.Content -notmatch 'DEFAULT_SCAN_DEPTH') { throw "$Label image-stream-runtime.js does not contain the expected stack-safe r103 runtime." }
   if ($cssType -notmatch 'css|text/plain') { throw "$Label homepage-v3.css has unexpected content type: $cssType" }
   foreach ($path in @('/init_db.sql', '/schema.sql', '/migrations/20260710_session_version_and_auth_rate_limits.sql', '/scripts/deploy-quality.ps1', '/tests/e2e-quality.js', '/README.md', '/wrangler.toml', '/wrangler.jsonc', '/.dev.vars', '/.env', '/.git/config', '/.wrangler/state/foo', '/functions/_lib/auth.js', '/api/settings')) {
-    try {
-      $res = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($Url.TrimEnd('/') + $path) -TimeoutSec 30
-      if ($res.StatusCode -ne 404) { throw "$Label sensitive path should be 404: $path returned $($res.StatusCode)" }
-    } catch {
-      if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 404) { continue }
-      throw
+    $verified = $false
+    for ($attempt = 1; $attempt -le 4; $attempt++) {
+      try {
+        $res = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($Url.TrimEnd('/') + $path) -TimeoutSec 30
+      } catch {
+        $responseStatus = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
+        if ($responseStatus -eq 404) { $verified = $true; break }
+        if ($attempt -eq 4) { throw }
+        Start-Sleep -Seconds 2
+        continue
+      }
+      if ([int]$res.StatusCode -ne 404) { throw "$Label sensitive path should be 404: $path returned $($res.StatusCode)" }
+      $verified = $true
+      break
+    }
+    if (-not $verified) {
+      throw "$Label sensitive path check did not complete: $path"
     }
   }
   Write-Host "$Label static checks passed."
