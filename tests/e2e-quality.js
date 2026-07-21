@@ -160,7 +160,7 @@ async function smokeLoginAndAdmin(browser) {
   await context.close();
 }
 
-async function smokeGalleryAndAgent(browser) {
+async function smokeGalleryAndAgent(browser, options = {}) {
   const context = await newContext(browser);
   const page = await context.newPage();
   const errors = attachPageDiagnostics(page);
@@ -205,10 +205,34 @@ async function smokeGalleryAndAgent(browser) {
     text: document.querySelector('.model-menu')?.innerText || '',
     buttonCount: document.querySelectorAll('.model-menu button').length,
     secondarySpans: document.querySelectorAll('.model-menu button span').length,
+    activeCount: document.querySelectorAll('.model-menu button.active').length,
+    checkedCount: document.querySelectorAll('.model-menu button[aria-checked="true"]').length,
+    selectionKeys: Array.from(document.querySelectorAll('.model-menu button')).map((button) => button.dataset.value || ''),
   }));
   assert(modelMenuAudit.buttonCount >= 1, `model menu should show configured image profiles: ${JSON.stringify(modelMenuAudit)}`);
   assert(modelMenuAudit.secondarySpans === 0, `model menu should only show configured names, not model subtitles: ${JSON.stringify(modelMenuAudit)}`);
+  assert(modelMenuAudit.activeCount === 1 && modelMenuAudit.checkedCount === 1, `model menu should expose exactly one selected profile: ${JSON.stringify(modelMenuAudit)}`);
+  assert(new Set(modelMenuAudit.selectionKeys).size === modelMenuAudit.buttonCount, `model menu selection keys must remain unique when stored profile IDs collide: ${JSON.stringify(modelMenuAudit)}`);
   await page.keyboard.press('Escape').catch(() => {});
+  await page.locator('[data-action="open-entry-advanced"][data-entry="gallery"]').click();
+  await page.waitForSelector('.entry-advanced-modal', { timeout: TIMEOUT });
+  const advancedPalette = await page.evaluate(() => {
+    const root = document.documentElement;
+    const previousTheme = root.dataset.theme || '';
+    root.dataset.theme = 'dark';
+    const option = document.querySelector('.entry-advanced-modal select option');
+    const style = option ? getComputedStyle(option) : null;
+    const result = style ? { color: style.color, background: style.backgroundColor, colorScheme: style.colorScheme } : null;
+    root.dataset.theme = previousTheme;
+    return result;
+  });
+  assert(advancedPalette?.color === 'rgb(247, 251, 255)' && advancedPalette?.background === 'rgb(32, 38, 49)', `dark advanced select options should remain readable: ${JSON.stringify(advancedPalette)}`);
+  await page.locator('.entry-advanced-modal .modal-close[data-action="close-entry-advanced"]').click();
+  if (options.controlsOnly) {
+    assert(errors.length === 0, `unexpected browser errors on Gallery controls: ${errors.join(' | ')}`);
+    await context.close();
+    return;
+  }
 
   await clickMode(page, ['专业', 'Pro']);
   await page.waitForSelector('.pro-mode-rail', { timeout: TIMEOUT });
@@ -441,6 +465,15 @@ async function smokeMobileLayout(browser) {
 
   assert(errors.length === 0, `unexpected browser errors on mobile layout: ${errors.join(' | ')}`);
   await context.close();
+}
+
+async function smokeFirefoxGalleryControls() {
+  const browser = await firefox.launch({ headless: HEADLESS, slowMo: SLOW_MO });
+  try {
+    await smokeGalleryAndAgent(browser, { controlsOnly: true });
+  } finally {
+    await browser.close();
+  }
 }
 
 async function authenticateContext(context) {
@@ -913,6 +946,7 @@ async function smokePromptVirtualization(browserType, browserName) {
   } finally {
     await browser.close();
   }
+  await step('Firefox Gallery controls', () => smokeFirefoxGalleryControls());
   await step('Firefox Agent layout', () => smokeFirefoxAgentLayout());
   await step('Chromium modal keyboard 390/768', () => smokeModalKeyboardMatrix(chromium, 'Chromium'));
   await step('Firefox modal keyboard 390/768', () => smokeModalKeyboardMatrix(firefox, 'Firefox'));

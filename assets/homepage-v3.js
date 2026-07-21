@@ -20,7 +20,7 @@ const PROMPT_PAGE_SIZE = 36;
 const PROMPT_VIRTUAL_THRESHOLD = 108;
 const PROMPT_VIRTUAL_BUFFER_ROWS = 5;
 const PROMPT_REPO_CACHE_LIMIT = 24;
-const PROMPT_FAST_VERSION = 'home-v3-20260720-stability-r192';
+const PROMPT_FAST_VERSION = 'home-v3-20260721-controls-r194';
 const PROMPT_FAST_BOOTSTRAP_URL = `/prompts_fast/bootstrap.json?v=${PROMPT_FAST_VERSION}`;
 const PROMPT_FAST_PREVIEWS_URL = `/prompts_fast/category_previews.json?v=${PROMPT_FAST_VERSION}`;
 const PROMPT_FAST_SEARCH_URL = `/prompts_fast/search_index.json?v=${PROMPT_FAST_VERSION}`;
@@ -249,6 +249,7 @@ let promptRepoVirtualRenderTimer = 0;
 let galleryVirtualRenderFrame = 0;
 let promptRepoVirtualRenderFrame = 0;
 let galleryScrollLastAt = 0;
+let taskDetailOverlayGeneration = 0;
 let promptRepoScrollLastAt = 0;
 let galleryScrollDelta = 0;
 let promptRepoScrollDelta = 0;
@@ -2838,7 +2839,7 @@ function transparentBackgroundUnsupportedMessage(profile = imageProfile()) {
 function appendAdvancedHeaders(headers = {}, entry = currentEntryKey(), profile = imageProfile(), advancedOverride = null) {
   const advanced = effectiveAdvanced(entry, profile, advancedOverride);
   const out = { ...headers };
-  out['X-GPT-Image-Profile-Id'] = profileId(profile);
+  out['X-GPT-Image-Profile-Id'] = profileSelectionKey(profile);
   if (advanced.timeout) out['X-GPT-Image-Timeout-Seconds'] = String(advanced.timeout);
   out['X-GPT-Image-Response-B64'] = advanced.responseFormatB64Json ? 'true' : 'false';
   out['X-GPT-Image-Stream'] = advanced.streamImages && streamSupported(profile) ? 'true' : 'false';
@@ -2923,6 +2924,29 @@ function activeProfile() {
 function profileId(profile) {
   return profile?.id || profile?.name || '';
 }
+function profileSelectionKey(profile, profiles = state.profiles) {
+  const id = String(profileId(profile) || '').trim();
+  if (!id) return '';
+  const candidates = Array.isArray(profiles) ? profiles.filter(Boolean) : [];
+  if (candidates.filter((item) => String(profileId(item) || '').trim() === id).length <= 1) return id;
+  const name = String(profile?.name || '').trim();
+  if (!name) return id;
+  const collisions = candidates.filter((item) => {
+    return String(profileId(item) || '').trim() === name || String(item?.name || '').trim() === name;
+  });
+  return collisions.length === 1 ? name : id;
+}
+function findProfileBySelectionKey(profiles, value) {
+  const key = String(value || '').trim();
+  if (!key) return null;
+  const candidates = Array.isArray(profiles) ? profiles.filter(Boolean) : [];
+  const idMatches = candidates.filter((profile) => String(profileId(profile) || '').trim() === key);
+  if (idMatches.length === 1) return idMatches[0];
+  if (idMatches.length > 1) {
+    return idMatches.find((profile) => String(profile.name || '').trim() === key) || idMatches[0];
+  }
+  return candidates.find((profile) => String(profile.name || '').trim() === key) || null;
+}
 function profileMode(profile) {
   return String(profile?.apiMode || 'images').toLowerCase();
 }
@@ -2943,15 +2967,13 @@ function fallbackImageProfile() {
 }
 function imageProfile() {
   const candidates = imageProfiles();
-  return candidates.find((p) => profileId(p) === state.activeImageProfileId) ||
-    candidates.find((p) => profileId(p) === state.activeProfileId) ||
+  return findProfileBySelectionKey(candidates, state.activeImageProfileId) ||
+    findProfileBySelectionKey(candidates, state.activeProfileId) ||
     candidates[0] ||
     fallbackImageProfile();
 }
 function findImageProfileById(id) {
-  const value = String(id || '').trim();
-  if (!value) return null;
-  return imageProfiles().find((profile) => profileId(profile) === value || profile.name === value) || null;
+  return findProfileBySelectionKey(imageProfiles(), id);
 }
 function resolveTaskProfile(task) {
   if (!task || typeof task !== 'object') return null;
@@ -2963,21 +2985,20 @@ function resolveTaskProfile(task) {
     null;
 }
 function proImageProfile() {
-  const candidates = imageProfiles();
-  return candidates.find((p) => profileId(p) === state.pro?.profileId) || imageProfile();
+  return findImageProfileById(state.pro?.profileId) || imageProfile();
 }
 function agentTextProfile() {
   const cfg = state.agentConfig || {};
   const candidates = responseProfiles();
   const usable = candidates.filter(isAgentTextProfileUsable);
-  if (cfg.mode === 'hybrid') return usable.find((p) => profileId(p) === cfg.textProfileId) || null;
-  return usable.find((p) => profileId(p) === state.activeProfileId) || usable[0] || null;
+  if (cfg.mode === 'hybrid') return findProfileBySelectionKey(usable, cfg.textProfileId);
+  return findProfileBySelectionKey(usable, state.activeProfileId) || usable[0] || null;
 }
 function configuredAgentTextProfile() {
   const cfg = state.agentConfig || {};
   const candidates = responseProfiles();
-  if (cfg.mode === 'hybrid') return candidates.find((p) => profileId(p) === cfg.textProfileId) || null;
-  return candidates.find((p) => profileId(p) === state.activeProfileId) || candidates[0] || null;
+  if (cfg.mode === 'hybrid') return findProfileBySelectionKey(candidates, cfg.textProfileId);
+  return findProfileBySelectionKey(candidates, state.activeProfileId) || candidates[0] || null;
 }
 function isAgentTextProfileUsable(profile) {
   if (!profile || profileMode(profile) !== 'responses') return false;
@@ -3111,7 +3132,7 @@ function requestedParamsFromSettings(profile = activeProfile(), settings = state
   return {
     source: `${PROVIDER[key]?.name || profile.provider} · ${profile.name || profile.id} · ${profile.model || 'model'}`,
     provider: key,
-    profileId: profile.id,
+    profileId: profileSelectionKey(profile),
     profileName: profile.name,
     model: profile.model,
     size: sizeSummary(profile, source),
@@ -3154,7 +3175,7 @@ async function restoreTaskToComposer(task, options = {}) {
   const requested = task.requestedParams && typeof task.requestedParams === 'object' ? task.requestedParams : {};
   const profile = resolveTaskProfile(task);
   if (state.preferences?.reuseTaskApiProfileTemporarily && profile) {
-    const id = profileId(profile);
+    const id = profileSelectionKey(profile);
     state.activeImageProfileId = id;
     state.activeProfileId = id;
   }
@@ -3180,7 +3201,7 @@ function requestedParams(profile = activeProfile()) {
 function cloneGalleryImageSettingsForAgent() {
   return {
     ...settingsForSummary(state.settings),
-    profileId: profileId(imageProfile()),
+    profileId: profileSelectionKey(imageProfile()),
     initializedFromGallery: true,
     initializedAt: Date.now()
   };
@@ -3192,7 +3213,7 @@ function initialAgentImageSettings() {
   if (!configuredProfile) return cloneGalleryImageSettingsForAgent();
   return {
     ...settingsForSummary(state.settings),
-    profileId: profileId(configuredProfile),
+    profileId: profileSelectionKey(configuredProfile),
     initializedFromGallery: false,
     initializedFromAgentConfig: true,
     initializedAt: Date.now()
@@ -3207,7 +3228,7 @@ function agentImageSettings() {
   }
   state.agent.imageSettings = {
     ...settingsForSummary(existing),
-    profileId: existing.profileId || state.agentConfig?.imageProfileId || profileId(imageProfile()),
+    profileId: existing.profileId || state.agentConfig?.imageProfileId || profileSelectionKey(imageProfile()),
     initializedFromGallery: existing.initializedFromGallery !== false,
     initializedAt: existing.initializedAt || Date.now()
   };
@@ -3808,7 +3829,7 @@ function render(options = {}) {
       </main>
     </div>
     <div class="toast-stack" id="toastStack" aria-live="polite" aria-atomic="false"></div>
-    ${state.modal ? renderDetailModal(state.modal) : ''}
+    <div id="taskDetailMount">${state.modal ? renderDetailModal(state.modal) : ''}</div>
     ${state.viewer ? renderViewer(state.viewer) : ''}
     <div id="imageMenuMount" data-modal-inert-exempt></div>
     ${state.promptRepo.open ? `<div id="promptRepoMount">${renderPromptRepo()}</div>` : ''}
@@ -3825,6 +3846,7 @@ function render(options = {}) {
   `;
   syncImageContextMenu();
   hydrateImages();
+  warmTaskDetailImages();
   bindTransientEvents();
   syncModalAccessibility();
   const topDialog = topVisibleModal();
@@ -4960,7 +4982,7 @@ function finishGalleryScroll(force = false, node = galleryScrollIdleNode || gall
   }
   syncGalleryScrollPosition();
   inspectGalleryScrollPosition();
-  galleryHydrationDeferUntil = Date.now() + GALLERY_POST_SCROLL_HYDRATION_DELAY;
+  galleryHydrationDeferUntil = Date.now();
   setGalleryScrollActivity(false);
   galleryScrollIdleNode = null;
   galleryScrollIdleGeneration = 0;
@@ -5176,6 +5198,22 @@ function renderTaskStreamPreviewImage(task, outputIndex = 0, extra = '') {
   if (preview.url) return `<img ${common} src="${esc(preview.url)}" class="${esc(extra)}" alt="流式预览" decoding="async">`;
   return `<img ${common} data-blob-id="${esc(preview.blobId || '')}" class="${esc(extra)}" alt="流式预览" decoding="async">`;
 }
+function cachedTaskImageSource(image, preference = 'preview') {
+  const blobId = String(image?.blobId || '');
+  if (!blobId) return '';
+  const sources = preference === 'full'
+    ? [state.imageUrls, state.galleryPreviewUrls]
+    : [state.galleryPreviewUrls, state.imageUrls];
+  for (const source of sources) {
+    const url = touchObjectUrl(source, blobId);
+    if (url) return url;
+  }
+  return '';
+}
+function cachedTaskImageSrcAttribute(image, preference = 'preview') {
+  const source = cachedTaskImageSource(image, preference);
+  return source ? ` src="${esc(source)}"` : '';
+}
 function renderAssetCard(task) {
   const image = (task.images || [])[0];
   const streamPreviewHtml = renderTaskStreamPreviewImage(task, 0);
@@ -5191,7 +5229,7 @@ function renderAssetCard(task) {
     <article class="asset-card ${selected ? 'selected' : ''}" data-task-id="${esc(task.id)}" data-card-signature="${esc(assetCardSignature(task))}">
       <button class="asset-check" title="选择" data-action="toggle-select" data-id="${esc(task.id)}"></button>
       <div class="asset-media" data-action="open-detail" data-id="${esc(task.id)}">
-        ${image ? `<img data-image-kind="task-image" data-gallery-preview="1" data-task-id="${esc(task.id)}" data-index="0" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(storedImageSource(image))}" loading="lazy" decoding="async" fetchpriority="low" alt="">` : streamPreviewHtml || placeholder}
+        ${image ? `<img data-image-kind="task-image" data-gallery-preview="1" data-task-id="${esc(task.id)}" data-index="0" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(storedImageSource(image))}"${cachedTaskImageSrcAttribute(image)} loading="lazy" decoding="async" fetchpriority="low" alt="">` : streamPreviewHtml || placeholder}
         ${!image && streamPreviewHtml ? '<span class="stream-preview-badge">预览</span>' : ''}
         ${renderReferenceBadge(task)}
         <div class="asset-badges">
@@ -5292,7 +5330,8 @@ function renderGalleryComposer() {
 
 function renderImageProfileSelect(entry, activeId) {
   const profiles = imageProfiles();
-  return `<label class="profile-select-pill"><small>渲染模型</small><select data-action="entry-profile-select" data-entry="${esc(entry)}">${profiles.map((profile) => `<option value="${esc(profileId(profile))}" ${profileId(profile) === activeId ? 'selected' : ''}>${esc(profile.name || profileId(profile))}</option>`).join('')}</select></label>`;
+  const current = findProfileBySelectionKey(profiles, activeId) || profiles[0] || null;
+  return `<label class="profile-select-pill"><small>渲染模型</small><select data-action="entry-profile-select" data-entry="${esc(entry)}">${profiles.map((profile) => `<option value="${esc(profileSelectionKey(profile))}" ${profile === current ? 'selected' : ''}>${esc(profile.name || profileId(profile))}</option>`).join('')}</select></label>`;
 }
 function renderEntryAdvancedControls(entry) {
   const profile = entry === 'pro' ? proImageProfile() : entry === 'workflow' ? imageProfile() : imageProfile();
@@ -5982,7 +6021,7 @@ function agentOptionLabelType(line) {
     .replace(/\*\*/g, '')
     .replace(/^#{1,6}\s*/, '')
     .trim();
-  const match = normalized.match(/^(适合模型|推荐理由|正向\s*Prompt|正向提示词|中文提示词|出图提示词|图像提示词|Prompt|负面\s*Prompt|负面提示词|反向提示词|Negative\s*Prompt|Negative)\s*[:：]?\s*(.*)$/i);
+  const match = normalized.match(/^(适合模型|推荐理由|(?:正向|正面)\s*(?:Prompt|提示词)|中文提示词|英文提示词|出图提示词|图像提示词|Prompt|负面\s*(?:Prompt|提示词)?|反向\s*(?:Prompt|提示词)?|Negative(?:\s*Prompt)?)(?:\s*[（(][^()（）\n]{0,48}[)）])?\s*[:：]?\s*(.*)$/i);
   if (!match) return null;
   const raw = match[1].toLowerCase();
   const type = /负面|反向|negative/i.test(raw) ? 'negativePrompt'
@@ -6008,7 +6047,7 @@ function parseAgentOptionSection(section) {
   const lines = String(section || '').replace(/\r\n?/g, '\n').split('\n');
   let current = '';
   for (const line of lines) {
-    if (/^\s*(?:#{1,6}\s*)?方案\s*[1-5]\b/i.test(line)) break;
+    if (/^\s*(?:#{1,6}\s*)?(?:\*\*)?方案\s*[1-5]\b/i.test(line)) break;
     const label = agentOptionLabelType(line);
     if (label) {
       current = label.type;
@@ -6026,7 +6065,7 @@ function parseAgentOptionSection(section) {
 }
 function extractAgentPromptOptions(text) {
   const source = String(text || '').replace(/\r\n?/g, '\n');
-  const pattern = /(?:^|\n)\s*(?:#{1,6}\s*)?方案\s*([1-5])\s*[：:、.\-—]?\s*([^\n]*)/gi;
+  const pattern = /(?:^|\n)\s*(?:#{1,6}\s*)?(?:\*\*)?方案\s*([1-5])\s*(?:\*\*)?\s*[：:、.\-—]?\s*([^\n]*)/gi;
   const matches = [];
   let match;
   while ((match = pattern.exec(source))) {
@@ -6098,7 +6137,7 @@ function latestAgentPromptOptionsMessage(projectId = state.agent.activeProjectId
 function agentMessageDisplayText(message, options) {
   const text = String(message?.text || '');
   if (!options?.length) return text;
-  const firstOption = text.search(/(?:^|\n)\s*(?:#{1,6}\s*)?方案\s*[1-5]\b/i);
+  const firstOption = text.search(/(?:^|\n)\s*(?:#{1,6}\s*)?(?:\*\*)?方案\s*[1-5]\b/i);
   return firstOption > 0 ? text.slice(0, firstOption).trim() : '';
 }
 function renderAgentPromptOptionCard(message, option, recommended) {
@@ -6183,7 +6222,7 @@ function renderAgentTaskCard(task) {
   const progressText = `${actual}/${expected}`;
   return `<button class="agent-task-card ${esc(statusClass)}" data-action="open-detail" data-id="${esc(task.id)}" title="点击查看完整生图详情">
     <div class="agent-task-preview">
-      ${image ? `<img data-image-kind="task-image" data-gallery-preview="1" data-task-id="${esc(task.id)}" data-index="0" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(storedImageSource(image))}" loading="lazy" decoding="async" fetchpriority="low" alt="">` : streamPreviewHtml || '<span class="spinner"></span>'}
+      ${image ? `<img data-image-kind="task-image" data-gallery-preview="1" data-task-id="${esc(task.id)}" data-index="0" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(storedImageSource(image))}"${cachedTaskImageSrcAttribute(image)} loading="lazy" decoding="async" fetchpriority="low" alt="">` : streamPreviewHtml || '<span class="spinner"></span>'}
       ${!image && streamPreviewHtml ? '<span class="stream-preview-badge compact">预览</span>' : ''}
     </div>
     <div class="agent-task-meta">
@@ -6486,6 +6525,7 @@ function renderDetailModal(taskId) {
   const requested = task.requestedParams || {};
   const returned = task.returnedParams || {};
   const requestedFormat = firstDefined(requested.format, requested.output_format, state.settings.output_format);
+  const requestedNegativePrompt = String(firstDefined(requested.negative_prompt, requested.negativePrompt, requested.negative) || '').trim();
   const returnedFormat = firstDefined(readDeepAlias(returned, ['format', 'output_format', 'outputFormat', 'mimeType', 'mime_type']));
   const formatForConditional = normalizeComparableValue(returnedFormat || requestedFormat, 'format');
   const imageSizeLabel = image?.width && image?.height ? `${image.width}x${image.height}` : firstDefined(returned.resolution, returned.size, returned.dimensions, task.sizeLabel);
@@ -6533,7 +6573,7 @@ function renderDetailModal(taskId) {
               <span>${esc(imageRatioLabel || requested.aspectRatio || 'auto')}</span>
               <span>${esc(imageSizeLabel || requested.resolution || 'auto')}</span>
             </div>
-            ${image ? `<img data-action="open-viewer" role="button" tabindex="0" aria-label="查看生成图片大图" data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="${esc(imageIndex)}" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(storedImageSource(image))}" alt="">` : streamPreviewHtml || '<div class="asset-placeholder"><div class="progress-ring"></div></div>'}
+            ${image ? `<img data-action="open-viewer" role="button" tabindex="0" aria-label="查看生成图片大图" data-image-kind="task-image" data-detail-task-image="1" data-task-id="${esc(task.id)}" data-index="${esc(imageIndex)}" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(storedImageSource(image))}"${cachedTaskImageSrcAttribute(image, 'full')} alt="">` : streamPreviewHtml || '<div class="asset-placeholder"><div class="progress-ring"></div></div>'}
             ${streamPreview ? '<span class="stream-preview-badge detail">流式预览</span>' : ''}
             ${streamPreview?.blobId ? `<button class="detail-download preview" data-action="download-stream-preview" data-task-id="${esc(task.id)}" data-index="${esc(imageIndex)}">下载预览</button>` : ''}
             ${isTransparentPng && image ? `<button class="detail-download original" data-action="download-image" data-task-id="${esc(task.id)}" data-index="${esc(imageIndex)}">下载原图</button><button class="detail-download orig" data-action="download-image" data-task-id="${esc(task.id)}" data-index="${esc(imageIndex)}" data-original="true">ORIG</button>` : ''}
@@ -6546,13 +6586,14 @@ function renderDetailModal(taskId) {
           </div>
           ${mediaCount > 1 ? `<div class="detail-thumbs">${Array.from({ length: mediaCount }, (_, idx) => {
             const img = images[idx];
-            return `<button class="${idx === imageIndex ? 'active' : ''}" data-action="detail-image-select" data-id="${esc(task.id)}" data-index="${esc(idx)}">${img ? `<img data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="${esc(idx)}" data-blob-id="${esc(img.blobId || '')}" data-remote-url="${esc(storedImageSource(img))}" alt="">` : renderTaskStreamPreviewImage(task, idx)}</button>`;
+            return `<button class="${idx === imageIndex ? 'active' : ''}" data-action="detail-image-select" data-id="${esc(task.id)}" data-index="${esc(idx)}">${img ? `<img data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="${esc(idx)}" data-blob-id="${esc(img.blobId || '')}" data-remote-url="${esc(storedImageSource(img))}"${cachedTaskImageSrcAttribute(img)} alt="">` : renderTaskStreamPreviewImage(task, idx)}</button>`;
           }).join('')}</div>` : ''}
         </div>
         <div class="detail-info">
           <button class="modal-close" aria-label="关闭" data-action="close-modal">×</button>
           <div class="detail-section-label">输入提示词</div>
           <div class="prompt-block">${esc(task.prompt || '未填写')}</div>
+          ${requestedNegativePrompt ? `<div class="detail-section-label">负面 Prompt（已提交请求参数）</div><div class="prompt-block">${esc(requestedNegativePrompt)}</div>` : ''}
           ${renderTaskReferenceStrip(task)}
           ${returnedPrompt ? `<div class="detail-section-label">返回提示词</div><div class="returned-prompt">${esc(returnedPrompt)}</div>` : ''}
           ${task.error || task.partialErrors?.length ? `<div class="detail-section-label">${task.status === 'partial_success' ? '部分失败信息' : '错误信息'}</div><div class="returned-prompt error-prompt">${esc(task.error || '部分图片生成失败')}${task.errorDetail && task.errorDetail !== task.error ? `\n\n${esc(task.errorDetail)}` : ''}${task.partialErrors?.length ? `\n\n${esc(task.partialErrors.map((item, idx) => `${idx + 1}. ${item.summary || item.error || item}`).join('\n'))}` : ''}</div>` : ''}
@@ -6609,7 +6650,7 @@ function renderViewer(viewer) {
       <button class="viewer-close" aria-label="关闭大图" data-modal-autofocus data-action="close-viewer">×</button>
       <div class="viewer-stage" data-action="viewer-stage">
         ${images.length > 1 ? `<button class="viewer-nav prev" data-action="viewer-prev" aria-label="上一张">‹</button><button class="viewer-nav next" data-action="viewer-next" aria-label="下一张">›</button>` : ''}
-        <img class="viewer-image" data-action="viewer-image" data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="${esc(safeIndex)}" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(storedImageSource(image))}" alt="生成图片 ${esc(safeIndex + 1)}">
+        <img class="viewer-image" data-action="viewer-image" data-image-kind="task-image" data-task-id="${esc(task.id)}" data-index="${esc(safeIndex)}" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(storedImageSource(image))}"${cachedTaskImageSrcAttribute(image, 'full')} alt="生成图片 ${esc(safeIndex + 1)}">
         ${images.length > 1 ? `<div class="viewer-index">${esc(safeIndex + 1)} / ${esc(images.length)}</div>` : ''}
       </div>
     </div>
@@ -6624,6 +6665,75 @@ function setViewerImage(delta) {
   state.viewer = { ...state.viewer, index: (current + Number(delta) + total) % total };
   render();
 }
+async function ensureTaskImageFullSource(blobId) {
+  const key = String(blobId || '');
+  if (!key) return '';
+  const cached = touchObjectUrl(state.imageUrls, key);
+  if (cached) return cached;
+  const blob = await getBlob(key).catch(() => null);
+  if (!blob) return '';
+  return rememberObjectUrl(state.imageUrls, key, URL.createObjectURL(blob), IMAGE_OBJECT_URL_CACHE_LIMIT);
+}
+async function decodeTaskImageSource(source) {
+  if (!source || typeof Image === 'undefined') return;
+  const preload = new Image();
+  preload.decoding = 'async';
+  preload.src = source;
+  try {
+    await preload.decode();
+  } catch {
+    if (preload.complete) return;
+    await new Promise((resolve) => {
+      preload.addEventListener('load', resolve, { once: true });
+      preload.addEventListener('error', resolve, { once: true });
+    });
+  }
+}
+async function hydrateTaskDetailImage(img, generation = taskDetailOverlayGeneration) {
+  const blobId = String(img?.dataset?.blobId || '');
+  if (!blobId || img?.isConnected === false) return;
+  const source = await ensureTaskImageFullSource(blobId);
+  if (!source || generation !== taskDetailOverlayGeneration || img?.isConnected === false || String(img.dataset.blobId || '') !== blobId) return;
+  if (String(img.currentSrc || img.src || '') === source) return;
+  await decodeTaskImageSource(source);
+  if (generation !== taskDetailOverlayGeneration || img?.isConnected === false || String(img.dataset.blobId || '') !== blobId) return;
+  img.src = source;
+}
+function warmTaskDetailImages(mount = $('#taskDetailMount')) {
+  const generation = ++taskDetailOverlayGeneration;
+  if (!mount || !state.modal) return generation;
+  $$('img[data-detail-task-image="1"]', mount).forEach((img) => {
+    void hydrateTaskDetailImage(img, generation);
+  });
+  return generation;
+}
+function syncTaskDetailOverlay(options = {}) {
+  const mount = $('#taskDetailMount');
+  if (!mount) return false;
+  const focusState = options.focusState || captureFocusState();
+  mount.innerHTML = state.modal ? renderDetailModal(state.modal) : '';
+  warmTaskDetailImages(mount);
+  const topDialog = syncModalAccessibility();
+  if (state.modal && topDialog) {
+    if (!restoreFocusState(focusState, topDialog)) focusTopModal(topDialog);
+  }
+  return true;
+}
+function openTaskDetail(taskId, opener) {
+  if (!state.tasks.some((task) => task.id === taskId)) return;
+  rememberModalOpener('task-detail', opener);
+  state.modal = taskId;
+  if (!syncTaskDetailOverlay()) render();
+}
+function closeTaskDetail() {
+  if (!state.modal) return;
+  state.modal = null;
+  if (!syncTaskDetailOverlay()) {
+    render();
+    return;
+  }
+  restoreModalOpener('task-detail');
+}
 function setDetailImage(taskId, value, isDelta = false) {
   const task = state.tasks.find((item) => item.id === taskId);
   if (!task) return;
@@ -6631,7 +6741,7 @@ function setDetailImage(taskId, value, isDelta = false) {
   if (!total) return;
   const current = Number(task.detailImageIndex) || 0;
   task.detailImageIndex = isDelta ? (current + Number(value) + total) % total : Math.max(0, Math.min(Number(value) || 0, total - 1));
-  render();
+  if (!syncTaskDetailOverlay()) render();
 }
 
 function renderImageContextMenu(menu) {
@@ -7090,7 +7200,7 @@ async function renderProWorkbenchTask() {
       requestedParams: {
         source: `${PROVIDER[provider]?.name || profile.provider} · ${profile.name || profileId(profile)} · ${profile.model || 'model'}`,
         provider,
-        profileId: profileId(profile),
+        profileId: profileSelectionKey(profile),
         profileName: profile.name,
         model: profile.model,
         size: sizeSummary(profile),
@@ -7137,7 +7247,7 @@ async function hydrateProResult(data, prompt) {
     status: 'success',
     mode: 'gallery',
     prompt,
-    profileId: activeProfile().id,
+    profileId: profileSelectionKey(activeProfile()),
     profileName: activeProfile().name,
     model: activeProfile().model,
     providerFamily: providerKey(),
@@ -7148,7 +7258,7 @@ async function hydrateProResult(data, prompt) {
     requestedParams: {
       source: `${PROVIDER[providerKey()]?.name || activeProfile().provider} · ${activeProfile().name || activeProfile().id} · ${activeProfile().model || 'model'}`,
       provider: providerKey(),
-      profileId: activeProfile().id,
+      profileId: profileSelectionKey(activeProfile()),
       profileName: activeProfile().name,
       model: activeProfile().model,
       size: sizeSummary(),
@@ -7291,13 +7401,14 @@ function isPopoverValueActive(type, value) {
 }
 function renderModelConfigMenu(pop) {
   const profiles = imageProfiles();
+  const current = imageProfile();
   const rect = pop.rect || { left: 40, top: window.innerHeight - 160 };
   const height = Math.min(340, 52 + Math.max(1, profiles.length) * 42);
   return `
     <div class="popover up-popover model-menu" style="${popoverStyle(rect, 300, height)}">
       <div class="popover-title">模型配置</div>
       ${profiles.length ? profiles.map((profile) => `
-        <button class="${profileId(profile) === profileId(imageProfile()) ? 'active' : ''}" data-action="switch-profile" data-value="${esc(profileId(profile))}">
+        <button class="${profile === current ? 'active' : ''}" role="menuitemradio" aria-checked="${profile === current ? 'true' : 'false'}" data-action="switch-profile" data-value="${esc(profileSelectionKey(profile))}">
           <strong>${esc(profile.name || profileId(profile))}</strong>
         </button>
       `).join('') : `<div class="popover-empty">暂无生图模型，请到后台添加 Images API 配置。</div>`}
@@ -7306,14 +7417,14 @@ function renderModelConfigMenu(pop) {
 }
 function renderAgentModelConfigMenu(pop) {
   const profiles = imageProfiles();
-  const current = profileId(agentImageProfile());
+  const current = agentImageProfile();
   const rect = pop.rect || { left: 40, top: window.innerHeight - 160 };
   const height = Math.min(340, 52 + Math.max(1, profiles.length) * 42);
   return `
     <div class="popover up-popover model-menu" style="${popoverStyle(rect, 300, height)}">
       <div class="popover-title">Agent 生图模型</div>
       ${profiles.length ? profiles.map((profile) => `
-        <button class="${profileId(profile) === current ? 'active' : ''}" data-action="set-agent-image-param" data-field="profileId" data-value="${esc(profileId(profile))}">
+        <button class="${profile === current ? 'active' : ''}" role="menuitemradio" aria-checked="${profile === current ? 'true' : 'false'}" data-action="set-agent-image-param" data-field="profileId" data-value="${esc(profileSelectionKey(profile))}">
           <strong>${esc(profile.name || profileId(profile))}</strong>
         </button>
       `).join('') : `<div class="popover-empty">暂无生图模型，请到后台添加 Images API 配置。</div>`}
@@ -7523,7 +7634,7 @@ function syncPromptRepoListOnly(options = {}) {
   if (options.virtualScroll && !promptRepoVirtualRangeChanged(promptWindow)) return false;
   const scrollTop = promptList.scrollTop;
   if (options.virtualScroll && !promptRepoVirtualWindowNeedsRefresh(state.promptRepo.items.length)) return false;
-  const focusedCardId = document.activeElement?.closest?.('.prompt-card')?.dataset?.id || '';
+  const focusedCardKey = document.activeElement?.closest?.('.prompt-card')?.dataset?.promptKey || '';
   const promptItems = state.promptRepo.items.slice(promptWindow.startIndex, promptWindow.endIndex);
   promptList.dataset.virtual = promptWindow.shouldVirtualize ? '1' : '0';
   promptList.classList.toggle('is-virtual', promptWindow.shouldVirtualize);
@@ -7539,8 +7650,8 @@ function syncPromptRepoListOnly(options = {}) {
     });
   }
   setScrollTopIfNeeded(promptList, scrollTop);
-  if (focusedCardId) {
-    const restoredCard = promptList.querySelector(`.prompt-card[data-id="${cssEscape(focusedCardId)}"]`);
+  if (focusedCardKey) {
+    const restoredCard = promptList.querySelector(`.prompt-card[data-prompt-key="${cssEscape(focusedCardKey)}"]`);
     if (restoredCard) {
       try { restoredCard.focus({ preventScroll: true }); } catch { restoredCard.focus(); }
     }
@@ -7553,7 +7664,7 @@ function syncPromptRepoListOnly(options = {}) {
   return true;
 }
 function patchPromptRepoVirtualDom(promptList, promptWindow, promptItems) {
-  const currentCards = new Map($$('.prompt-card', promptList).map((card) => [String(card.dataset.id || ''), card]));
+  const currentCards = new Map($$('.prompt-card', promptList).map((card) => [String(card.dataset.promptKey || ''), card]));
   const existingSpacers = $$('.prompt-spacer', promptList);
   let topSpacer = promptList.querySelector('[data-prompt-spacer="top"]') || existingSpacers[0];
   let bottomSpacer = promptList.querySelector('[data-prompt-spacer="bottom"]') || existingSpacers[existingSpacers.length - 1];
@@ -7571,11 +7682,13 @@ function patchPromptRepoVirtualDom(promptList, promptWindow, promptItems) {
   bottomSpacer.style.display = bottomHeight > 0 ? '' : 'none';
   desiredNodes.push(topSpacer);
   for (const [index, item] of promptItems.entries()) {
-    const id = String(item.id || '');
-    let card = currentCards.get(id);
-    if (!card) card = createElementFromHtml(renderPromptCard(item, promptWindow.startIndex + index));
+    const itemIndex = promptWindow.startIndex + index;
+    const key = promptItemStableKey(item, itemIndex);
+    let card = currentCards.get(key);
+    if (!card) card = createElementFromHtml(renderPromptCard(item, itemIndex));
     if (!card) continue;
-    card.dataset.index = String(promptWindow.startIndex + index);
+    card.dataset.index = String(itemIndex);
+    card.dataset.promptKey = key;
     desiredNodes.push(card);
   }
   desiredNodes.push(bottomSpacer);
@@ -7854,12 +7967,18 @@ function promptThumbUrl(originalUrl) {
     return normalized;
   }
 }
+function promptItemStableKey(item, index = 0) {
+  const category = String(firstDefined(item?.c, item?.category) || '');
+  const source = normalizePromptImageUrl(promptItemImageSource(item));
+  return JSON.stringify([category, source, String(item?.id || ''), Math.max(0, Number(index) || 0)]);
+}
 function renderPromptCard(item, index = 0) {
   const originalUrl = normalizePromptImageUrl(promptItemImageSource(item));
   const imageUrl = promptThumbUrl(originalUrl);
   const fetchPriority = index < 12 ? 'high' : 'low';
+  const promptKey = promptItemStableKey(item, index);
   return `
-    <button class="prompt-card" data-action="prompt-detail" data-id="${esc(item.id)}" data-index="${esc(index)}">
+    <button class="prompt-card" data-action="prompt-detail" data-id="${esc(item.id)}" data-index="${esc(index)}" data-prompt-key="${esc(promptKey)}">
       ${imageUrl ? `
         <span class="prompt-card-media">
           <img src="${esc(imageUrl)}" data-original-src="${esc(originalUrl)}" referrerpolicy="no-referrer" loading="${index < 12 ? 'eager' : 'lazy'}" decoding="async" fetchpriority="${fetchPriority}" width="420" height="263" alt="" onerror="var f=this.dataset.originalSrc;if(f&&this.src!==f){this.src=f;this.dataset.originalSrc='';return;}var c=this.closest('.prompt-card');if(c)c.classList.add('image-failed');this.remove();">
@@ -7873,6 +7992,10 @@ function renderPromptCard(item, index = 0) {
 }
 function renderPromptDetail(item) {
   const imageUrl = normalizePromptImageUrl(promptItemImageSource(item));
+  const configuredIndex = Number(state.promptRepo.detailIndex);
+  const itemIndex = Number.isInteger(configuredIndex) && state.promptRepo.items[configuredIndex]
+    ? configuredIndex
+    : state.promptRepo.items.indexOf(item);
   return `
     <div class="modal-layer" style="background:rgba(0,0,0,.18)" data-action="prompt-detail-close">
       <div class="size-modal prompt-full-modal" role="dialog" aria-modal="true" aria-labelledby="promptDetailTitle" tabindex="-1" data-modal-key="prompt-detail" data-stop>
@@ -7881,7 +8004,7 @@ function renderPromptDetail(item) {
         ${imageUrl ? `<button type="button" class="prompt-detail-image-button" data-action="prompt-image-view" aria-label="查看提示词原图"><img src="${esc(imageUrl)}" referrerpolicy="no-referrer" loading="eager" decoding="async" alt=""></button>` : ''}
         <div class="prompt-detail-text-label">完整提示词</div>
         <div class="prompt-detail-text">${esc(item.p || '')}</div>
-        <div class="detail-actions"><button class="reuse" data-action="use-prompt" data-id="${esc(item.id)}">使用提示词</button></div>
+        <div class="detail-actions"><button class="reuse" data-action="use-prompt" data-id="${esc(item.id)}" data-index="${esc(itemIndex)}">使用提示词</button></div>
       </div>
     </div>
   `;
@@ -8493,8 +8616,8 @@ document.addEventListener('click', async (event) => {
   if (action === 'confirm-dialog') { await runConfirmDialog(); return; }
   if (action === 'download-selected') { await downloadSelected(); return; }
   if (action === 'download-stream-preview') { await downloadStreamPreview(target.dataset.taskId, Number(target.dataset.index) || 0); return; }
-  if (action === 'open-detail') { state.modal = target.dataset.id; render(); return; }
-  if (action === 'close-modal' || action === 'close-modal-bg') { state.modal = null; render(); return; }
+  if (action === 'open-detail') { openTaskDetail(target.dataset.id, target); return; }
+  if (action === 'close-modal' || action === 'close-modal-bg') { closeTaskDetail(); return; }
   if (action === 'detail-image-prev' || action === 'detail-image-next' || action === 'detail-image-select') { setDetailImage(target.dataset.id, action === 'detail-image-select' ? Number(target.dataset.index) : action === 'detail-image-next' ? 1 : -1, action !== 'detail-image-select'); return; }
   if (action === 'open-task-reference-viewer') { event.preventDefault(); event.stopPropagation(); openTaskReferenceViewer(target.dataset.taskId, Number(target.dataset.refIndex) || 0); return; }
   if (action === 'open-viewer') { state.viewer = { taskId: target.dataset.taskId, index: Number(target.dataset.index) || 0 }; render(); return; }
@@ -8517,15 +8640,27 @@ document.addEventListener('click', async (event) => {
   if (action === 'mask-clear') { await maskClear(); return; }
   if (action === 'save-mask-editor') { await saveMaskEditor(); return; }
   if (action === 'open-prompt-repo') { rememberModalOpener('prompt-repo', target); openPromptRepo(); return; }
-  if (action === 'close-prompt-repo') { state.promptRepo.open = false; state.promptRepo.detail = null; render(); return; }
+  if (action === 'close-prompt-repo') {
+    state.promptRepo.open = false;
+    state.promptRepo.detail = null;
+    delete state.promptRepo.detailIndex;
+    delete state.promptRepo.detailKey;
+    render();
+    return;
+  }
   if (action === 'prompt-category') { setPromptCategory(target.dataset.cat || 'all'); return; }
   if (action === 'prompt-detail') {
-    const index = Number(target.dataset.index);
-    const item = Number.isFinite(index) ? state.promptRepo.items[index] : state.promptRepo.items.find((p) => String(p.id) === String(target.dataset.id));
+    const requestedIndex = Number(target.dataset.index);
+    const index = Number.isInteger(requestedIndex) && state.promptRepo.items[requestedIndex]
+      ? requestedIndex
+      : state.promptRepo.items.findIndex((p) => String(p.id) === String(target.dataset.id));
+    const item = index >= 0 ? state.promptRepo.items[index] : null;
     if (!item) return;
     const snapshot = consumePromptRepoPointerSnapshot() || capturePromptRepoViewportSnapshot();
     rememberModalOpener('prompt-detail', target);
     state.promptRepo.detailReturnSnapshot = snapshot;
+    state.promptRepo.detailIndex = index;
+    state.promptRepo.detailKey = promptItemStableKey(item, index);
     state.promptRepo.detail = item;
     if (!syncPromptRepoOverlays()) render();
     stabilizePromptRepoViewport(snapshot);
@@ -8533,7 +8668,7 @@ document.addEventListener('click', async (event) => {
     return;
   }
   if (action === 'prompt-detail-close') { closePromptRepoDetailOverlay(); return; }
-  if (action === 'use-prompt') { await usePrompt(target.dataset.id); return; }
+  if (action === 'use-prompt') { await usePrompt(target.dataset.id, target.dataset.index); return; }
   if (action === 'prompt-image-view') {
     rememberModalOpener('prompt-viewer', target);
     const image = target.matches?.('img') ? target : $('img', target);
@@ -8709,7 +8844,7 @@ document.addEventListener('keydown', (event) => {
     if (state.popover) { state.popover = null; render(); return; }
     if (state.promptRepo.imageViewer) { closePromptRepoImageViewerOverlay(); return; }
     if (state.promptRepo.detail) { closePromptRepoDetailOverlay(); return; }
-    if (state.modal) { state.modal = null; render(); return; }
+    if (state.modal) { closeTaskDetail(); return; }
     if (state.workflowInvoke) { state.workflowInvoke = null; render(); return; }
     if (state.workflowDraft) { state.workflowDraft = null; render(); return; }
     if (state.entryAdvancedModal) { state.entryAdvancedModal = null; render(); return; }
@@ -8769,10 +8904,10 @@ function setAgentImageParam(field, value) {
   if (field === 'profileId') {
     const profiles = imageProfiles();
     const specified = findImageProfileById(value);
-    const currentId = settings.profileId || profileId(profile);
-    const idx = profiles.findIndex((item) => profileId(item) === currentId);
+    const current = findImageProfileById(settings.profileId) || profile;
+    const idx = profiles.indexOf(current);
     const next = specified || (profiles.length ? profiles[(idx + 1 + profiles.length) % profiles.length] : null);
-    if (next) settings.profileId = profileId(next);
+    if (next) settings.profileId = profileSelectionKey(next);
   } else if (field === 'resolution') {
     const key = providerKey(profile);
     const next = value || nextFromList(agentImageResolutionOptions(profile), agentImageResolutionValue(profile, settings));
@@ -8924,6 +9059,8 @@ async function loadRuntime(options = {}) {
   if (!localStorage.getItem(THEME_KEY)) localStorage.setItem(THEME_KEY, state.preferences.themeMode || 'light');
   applyTheme();
   applyPromptPersistencePreference();
+  const previousActiveProfileId = state.activeProfileId;
+  const previousImageProfileId = state.activeImageProfileId;
   state.profiles = Array.isArray(runtime?.profiles) && runtime.profiles.length ? runtime.profiles : [{
     id: runtime?.activeProfileId || 'default-openai',
     name: 'OpenAI',
@@ -8931,8 +9068,12 @@ async function loadRuntime(options = {}) {
     model: runtime?.defaultModel || 'gpt-image-2',
     apiMode: runtime?.apiMode || 'images'
   }];
-  state.activeProfileId = runtime?.activeProfileId || state.activeProfileId || state.profiles[0].id;
-  state.activeImageProfileId = imageProfiles().find((p) => profileId(p) === runtime?.activeImageProfileId)?.id || imageProfiles().find((p) => profileId(p) === runtime?.activeProfileId)?.id || state.activeImageProfileId || imageProfiles()[0]?.id || state.activeProfileId;
+  const retainedActiveProfile = preserveComposerSession ? findProfileBySelectionKey(state.profiles, previousActiveProfileId) : null;
+  const runtimeActiveProfile = findProfileBySelectionKey(state.profiles, runtime?.activeProfileId);
+  state.activeProfileId = profileSelectionKey(retainedActiveProfile || runtimeActiveProfile || state.profiles[0]);
+  const retainedImageProfile = preserveComposerSession ? findImageProfileById(previousImageProfileId) : null;
+  const runtimeImageProfile = findImageProfileById(runtime?.activeImageProfileId) || findImageProfileById(runtime?.activeProfileId);
+  state.activeImageProfileId = profileSelectionKey(retainedImageProfile || runtimeImageProfile || imageProfiles()[0] || imageProfile());
   state.agentConfig = {
     mode: runtime?.agentApiConfigMode || 'off',
     textProfileId: runtime?.agentTextProfileId || null,
@@ -9601,20 +9742,38 @@ function releaseGalleryImageWork(card) {
   }
   for (const img of $$('img[data-gallery-preview="1"]', card)) galleryDeferredHydrations.delete(img);
 }
-async function hydrateGalleryPreviewImage(img, blobId, remoteUrl = '') {
+async function hydrateGalleryPreviewImage(img, blobId, remoteUrl = '', options = {}) {
   if (!img || !blobId) return hydrateBlobImage(img, blobId, remoteUrl);
-  if (imageHydrationScrollActive(img)) {
+  if (imageHydrationScrollActive(img) && options.allowDuringScroll !== true) {
     galleryDeferredHydrations.set(img, hydrateGalleryPreviewImage);
     scheduleGalleryHydrationFlush();
     return;
   }
   const key = String(blobId);
   const targetMatches = () => img?.isConnected !== false && String(img?.dataset?.blobId || '') === key;
+  const fallbackUrl = usableImageSource(remoteUrl);
   const cachedUrl = touchObjectUrl(state.galleryPreviewUrls, key);
   if (cachedUrl) {
     if (targetMatches()) {
       clearImageCacheMissing(img);
       img.src = cachedUrl;
+    }
+    return;
+  }
+  if (options.allowDuringScroll === true && imageHydrationScrollActive(img)) {
+    let fullSource = touchObjectUrl(state.imageUrls, key);
+    if (!fullSource) {
+      const blob = await getBlob(blobId).catch(() => null);
+      if (blob) fullSource = rememberObjectUrl(state.imageUrls, key, URL.createObjectURL(blob), IMAGE_OBJECT_URL_CACHE_LIMIT);
+    }
+    if (fullSource && targetMatches()) {
+      clearImageCacheMissing(img);
+      img.src = fullSource;
+    } else if (fallbackUrl && targetMatches()) {
+      clearImageCacheMissing(img);
+      img.src = fallbackUrl;
+    } else if (targetMatches()) {
+      markImageCacheMissing(img, blobId);
     }
     return;
   }
@@ -9662,7 +9821,6 @@ async function hydrateGalleryPreviewImage(img, blobId, remoteUrl = '') {
   job.consumers.add(consumer);
   galleryPreviewConsumers.set(consumer, job);
   const previewUrl = await job.promise;
-  const fallbackUrl = usableImageSource(remoteUrl);
   if (previewUrl && targetMatches()) {
     clearImageCacheMissing(img);
     img.src = previewUrl;
@@ -9717,7 +9875,7 @@ function deferredGalleryHydrationLimit() {
   for (const img of galleryDeferredHydrations.keys()) {
     if (img?.closest?.('.agent-log')) return 4;
   }
-  return 1;
+  return 4;
 }
 function scheduleGalleryHydrationFlush() {
   if (galleryScrollActivity || agentScrollActivity || galleryHydrationFlushScheduled || galleryHydrationFlushRunning || !galleryDeferredHydrations.size) return;
@@ -9752,6 +9910,10 @@ function observeGalleryImage(img) {
         observer.unobserve(entry.target);
         const hydrate = entry.target.dataset.galleryPreview === '1' ? hydrateGalleryPreviewImage : hydrateBlobImage;
         if (imageHydrationScrollActive(entry.target)) {
+          if (entry.target.dataset.galleryPreview === '1' && imageNearScrollViewport(entry.target)) {
+            void hydrateGalleryPreviewImage(entry.target, entry.target.dataset.blobId, entry.target.dataset.remoteUrl, { allowDuringScroll: true });
+            return;
+          }
           galleryDeferredHydrations.set(entry.target, hydrate);
           scheduleGalleryHydrationFlush();
           return;
@@ -9779,6 +9941,7 @@ async function hydrateAgentAttachmentImage(img) {
 async function hydrateImages(options = {}) {
   const galleryOnly = options.galleryOnly === true;
   const skipReferenceImages = options.skipReferenceImages === true;
+  const immediateHydrations = [];
   for (const img of $$('img[data-blob-id], img[data-remote-url]')) {
     if (galleryOnly && !img.closest('.gallery-scroll')) continue;
     if (img.complete && img.naturalWidth > 0) continue;
@@ -9793,12 +9956,17 @@ async function hydrateImages(options = {}) {
     if (shouldObserve) continue;
     unobserveGalleryImage(img);
     if (imageHydrationScrollActive(img)) {
+      if (img.dataset.galleryPreview === '1' && imageNearScrollViewport(img)) {
+        immediateHydrations.push(hydrateGalleryPreviewImage(img, blobId, img.dataset.remoteUrl, { allowDuringScroll: true }));
+        continue;
+      }
       galleryDeferredHydrations.set(img, img.dataset.galleryPreview === '1' ? hydrateGalleryPreviewImage : hydrateBlobImage);
       scheduleGalleryHydrationFlush();
       continue;
     }
-    await (img.dataset.galleryPreview === '1' ? hydrateGalleryPreviewImage : hydrateBlobImage)(img, blobId, img.dataset.remoteUrl);
+    immediateHydrations.push((img.dataset.galleryPreview === '1' ? hydrateGalleryPreviewImage : hydrateBlobImage)(img, blobId, img.dataset.remoteUrl));
   }
+  if (immediateHydrations.length) await Promise.all(immediateHydrations);
   if (galleryOnly && skipReferenceImages) return;
   if (galleryOnly) {
     for (const img of $$('img[data-task-ref-task-id]:not([src])')) {
@@ -10008,7 +10176,7 @@ async function generateImageTask(seedTask = null) {
     status: 'running',
     mode: 'gallery',
     prompt,
-    profileId: profileId(profile),
+    profileId: profileSelectionKey(profile),
     profileName: profile.name,
     model: profile.model,
     providerFamily: providerKey(profile),
@@ -10819,6 +10987,33 @@ async function fetchRemoteImageBlob(url, options = {}) {
   const externalSignal = options.signal;
   const abortFromExternal = () => controller.abort();
   externalSignal?.addEventListener?.('abort', abortFromExternal, { once: true });
+  const diagnostics = Array.isArray(options.diagnostics) ? options.diagnostics : null;
+  const remoteHost = (() => {
+    const baseUrl = typeof window !== 'undefined' && window.location?.href ? window.location.href : 'https://localhost/';
+    try { return new URL(String(url || ''), baseUrl).hostname.toLowerCase(); } catch { return ''; }
+  })();
+  const recordAttempt = (attempt) => {
+    if (!diagnostics || diagnostics.length >= 8) return;
+    diagnostics.push({
+      transport: attempt.transport || '',
+      host: remoteHost,
+      status: Number(attempt.status) || 0,
+      code: String(attempt.code || '').replace(/[^A-Z0-9_.-]/gi, '').slice(0, 96),
+      contentType: String(attempt.contentType || '').split(';')[0].toLowerCase().slice(0, 80)
+    });
+  };
+  const readFailureCode = async (response, fallback) => {
+    const contentType = String(response?.headers?.get?.('content-type') || '').toLowerCase();
+    if (!/json/.test(contentType)) return { code: fallback, contentType };
+    try {
+      const text = await response.clone().text();
+      const payload = JSON.parse(text.slice(0, 8192));
+      const code = firstDefined(payload?.error?.code, payload?.code, fallback);
+      return { code, contentType };
+    } catch {
+      return { code: fallback, contentType };
+    }
+  };
   try {
     if (externalSignal?.aborted) throw new DOMException('请求已停止', 'AbortError');
     const sources = [String(url || '')];
@@ -10828,13 +11023,17 @@ async function fetchRemoteImageBlob(url, options = {}) {
     let lastError = null;
     for (let index = 0; index < sources.length; index += 1) {
       const source = sources[index];
+      const transport = index === 0 ? 'browser-direct' : 'site-proxy';
       try {
         const response = await fetch(source, {
           credentials: index === 0 ? 'omit' : 'same-origin',
           cache: 'no-store',
+          referrerPolicy: 'no-referrer',
           signal: controller.signal
         });
         if (!response?.ok) {
+          const failure = await readFailureCode(response, `HTTP_${response?.status || 0}`);
+          recordAttempt({ transport, status: response?.status, code: failure.code, contentType: failure.contentType });
           lastError = new Error(`远程图片下载失败：HTTP ${response?.status || 0}`);
           continue;
         }
@@ -10842,9 +11041,14 @@ async function fetchRemoteImageBlob(url, options = {}) {
         const blob = await response.blob();
         const normalized = await normalizeImageBlobType(blob, contentType);
         if (normalized.blob && String(normalized.info?.type || '').startsWith('image/')) return normalized.blob;
+        recordAttempt({ transport, status: response?.status, code: 'REMOTE_IMAGE_NOT_IMAGE', contentType });
         lastError = new Error('远程响应不是可识别的图片');
       } catch (error) {
         if (error?.name === 'AbortError' || externalSignal?.aborted) throw error;
+        recordAttempt({
+          transport,
+          code: error?.code || (index === 0 ? 'BROWSER_NETWORK_OR_CORS' : 'REMOTE_IMAGE_FETCH_FAILED')
+        });
         lastError = error;
       }
     }
@@ -10867,6 +11071,17 @@ async function fetchRemoteImageBlob(url, options = {}) {
     clearTimeout(timeoutId);
     externalSignal?.removeEventListener?.('abort', abortFromExternal);
   }
+}
+function remoteImageFetchFailureSummary(attempts = []) {
+  const list = Array.isArray(attempts) ? attempts : [];
+  const codes = list.map((attempt) => String(attempt?.code || '').toUpperCase());
+  if (codes.some((code) => code.includes('DNS'))) return '远程图片域名解析失败';
+  if (codes.some((code) => code.includes('REDIRECT'))) return '远程图片重定向被安全策略拒绝';
+  if (codes.some((code) => code.includes('TIMEOUT'))) return '远程图片下载超时';
+  if (codes.includes('REMOTE_IMAGE_NOT_IMAGE')) return '远程图片响应不是可识别的图片';
+  if (list.some((attempt) => Number(attempt?.status) >= 400)) return '远程图片地址返回上游错误状态';
+  if (codes.includes('BROWSER_NETWORK_OR_CORS')) return '浏览器无法跨域读取远程图片，本站代理也未返回可用图片';
+  return '远程图片下载失败';
 }
 function imageCandidateMime(candidate, fallback = 'image/png') {
   const dataUrl = String(firstDefined(candidate?.data_url, candidate?.dataUrl) || '');
@@ -10924,6 +11139,7 @@ async function persistResponseImages(response, options = {}) {
   }
   let remoteFetchFailures = 0;
   let invalidImageCandidates = 0;
+  const remoteImageAttempts = [];
   try {
     const images = (await Promise.all(unique.map(async ({ b64, dataUrl, remoteUrl, ...candidate }) => {
       try {
@@ -10933,7 +11149,8 @@ async function persistResponseImages(response, options = {}) {
         else if (dataUrl) blob = dataUrlToBlob(dataUrl);
         else if (remoteUrl) blob = await fetchRemoteImageBlob(remoteUrl, {
           signal: options.signal,
-          timeoutMs: options.remoteTimeoutMs
+          timeoutMs: options.remoteTimeoutMs,
+          diagnostics: remoteImageAttempts
         });
          const normalized = await normalizeImageBlobType(blob, candidateMime);
          if (!normalized.blob) {
@@ -10995,12 +11212,17 @@ async function persistResponseImages(response, options = {}) {
     }))).filter(Boolean);
     if (!images.length) {
       if (remoteFetchFailures && remoteFetchFailures === unique.length) {
-        throw imageResponseError(
-          `图片响应包含 ${remoteFetchFailures} 个图片地址，但本站无法下载`,
+        const detail = remoteImageAttempts.slice(0, 8)
+          .map((attempt) => `${attempt.transport || 'remote'} ${attempt.host || '未知主机'} ${attempt.code || 'FAILED'}${attempt.status ? ` HTTP ${attempt.status}` : ''}`)
+          .join('；');
+        const error = imageResponseError(
+          `${remoteImageFetchFailureSummary(remoteImageAttempts)}：图片响应包含 ${remoteFetchFailures} 个图片地址，但本站无法下载`,
           'IMAGE_RESPONSE_REMOTE_FETCH_FAILED',
           'image-fetch',
-          `图片候选数：${unique.length}；远程图片下载失败：${remoteFetchFailures}。请检查中转站图片地址是否已过期、是否允许跨域访问。`
+          `图片候选数：${unique.length}；远程图片下载失败：${remoteFetchFailures}。${detail || '未获得可用的远程图片响应。'}`
         );
+        error.remoteImageAttempts = remoteImageAttempts.slice(0, 8);
+        throw error;
       }
       if (invalidImageCandidates && invalidImageCandidates === unique.length) {
         throw imageResponseError(
@@ -11413,6 +11635,10 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     collectObjectsDeep,
     imageInfoFromBlob,
     detectImageMimeFromBytes,
+    imageProfile,
+    profileSelectionKey,
+    findImageProfileById,
+    appendAdvancedHeaders,
     resolveTaskProfile,
     retryTask,
     collectImageCandidates,
@@ -11455,6 +11681,7 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     galleryVirtualRangeChanged,
     galleryVirtualWindowNeedsRefresh,
     promptRepoVirtualWindowNeedsRefresh,
+    promptItemStableKey,
     renderGalleryListOnly,
     promptRepoVirtualWindow,
     measurePromptRepoVirtualLayout,
@@ -11493,6 +11720,7 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     consumeImageHttpResponse,
     classifyImageResponse,
     fetchRemoteImageBlob,
+    remoteImageFetchFailureSummary,
     rememberObjectUrl,
     revokeAllObjectUrls,
     hydrateBlobImage,
@@ -12429,6 +12657,8 @@ function closePromptRepoDetailOverlay() {
   const snapshot = state.promptRepo.detailReturnSnapshot || state.promptRepo.pointerOpenSnapshot || capturePromptRepoViewportSnapshot();
   delete state.promptRepo.pointerOpenSnapshot;
   delete state.promptRepo.detailReturnSnapshot;
+  delete state.promptRepo.detailIndex;
+  delete state.promptRepo.detailKey;
   state.promptRepo.detail = null;
   if (!syncPromptRepoOverlays()) render();
   restoreModalOpener('prompt-detail');
@@ -12727,19 +12957,31 @@ async function fullPromptItem(item) {
   return full ? { ...full, partial: false, d: item.d || full.d || '' } : item;
 }
 async function hydratePromptDetailItem(item) {
+  const itemIndex = Number(state.promptRepo.detailIndex);
+  const detailKey = String(state.promptRepo.detailKey || '');
+  if (!Number.isInteger(itemIndex) || !state.promptRepo.items[itemIndex]) return;
+  if (detailKey && promptItemStableKey(state.promptRepo.items[itemIndex], itemIndex) !== detailKey) return;
   const full = await fullPromptItem(item);
-  if (!state.promptRepo.open || !state.promptRepo.detail || String(state.promptRepo.detail.id) !== String(item.id)) return;
+  if (!state.promptRepo.open || !state.promptRepo.detail || !state.promptRepo.items[itemIndex]) return;
+  if (detailKey && promptItemStableKey(state.promptRepo.items[itemIndex], itemIndex) !== detailKey) return;
+  if (state.promptRepo.detailIndex !== itemIndex) return;
   state.promptRepo.detail = full;
-  state.promptRepo.items = state.promptRepo.items.map((prompt) => String(prompt.id) === String(full.id) ? full : prompt);
+  state.promptRepo.detailKey = promptItemStableKey(full, itemIndex);
+  state.promptRepo.items = state.promptRepo.items.map((prompt, index) => index === itemIndex ? full : prompt);
   if (!syncPromptRepoOverlays()) render();
 }
-async function usePrompt(id) {
-  const item = state.promptRepo.items.find((p) => String(p.id) === String(id));
+async function usePrompt(id, index = '') {
+  const itemIndex = Number(index);
+  const item = Number.isInteger(itemIndex) && state.promptRepo.items[itemIndex]
+    ? state.promptRepo.items[itemIndex]
+    : state.promptRepo.items.find((p) => String(p.id) === String(id));
   if (!item) return;
   const full = await fullPromptItem(item);
   state.composerPrompt = full?.p || item.p || '';
   state.promptRepo.open = false;
   state.promptRepo.detail = null;
+  delete state.promptRepo.detailIndex;
+  delete state.promptRepo.detailKey;
   persistRender();
 }
 
@@ -12789,7 +13031,7 @@ function buildAgentRequestPayload(input, options = {}) {
       '负面 Prompt 必须单独给出；如果没有明确禁用项，也要给出简短的避免项。',
       '多方案时请在最终推荐方案标题中标记“（推荐）”；用户点击生成图片时只会使用推荐方案或第一个方案的正向和负面 Prompt。',
       '高影响不确定项先问，最多 3 个问题；低影响不确定项直接采用合理默认，并用一句话注明假设。',
-      '涉及版权角色或受保护风格时，先用一句话说明不可复刻，再直接给原创替代 Prompt，不要长篇免责声明。',
+      '保留用户输入中的品牌、角色、作品名、原创等原词；不要添加免责声明、原创替代词或自行改写这些名称。',
       'Prompt 以中文为主；如英文表达更稳定，可在正向 Prompt 内附英文原文。',
       `当前项目：${project.name || '默认项目'}`,
       `项目专属提示词：${project.prompt || '无'}`,
@@ -12861,7 +13103,7 @@ async function postAgentResponsesRequest(payload, textProfile) {
       : { ...requestBody, stream: false };
     const responsePayload = await fetchJson('/api-proxy/responses', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-GPT-Image-Profile-Id': profileId(textProfile) },
+      headers: { 'Content-Type': 'application/json', 'X-GPT-Image-Profile-Id': profileSelectionKey(textProfile) },
       body: JSON.stringify(requestBodyWithStream),
       signal: controller.signal
     });
@@ -12986,7 +13228,7 @@ async function generateAgentImageFromMessage(messageId, prompt = '', options = {
   const sourceMessage = messages.find((message) => message.id === messageId);
   const promptBundle = agentMessageImagePrompts(sourceMessage, prompt, options);
   const cleanPrompt = promptBundle.prompt;
-  const negativePrompt = promptBundle.negativePrompt;
+  const negativePrompt = cleanNegativeAgentPrompt(promptBundle.negativePrompt);
   const option = promptBundle.option || null;
   if (!cleanPrompt) return toast('没有可用于生图的提示词');
   if (!threadId) return toast('当前 Agent 会话无效');
@@ -13083,7 +13325,6 @@ function cleanAgentImagePrompt(text) {
     .replace(/^(可以|当然|好的)[，,。\s]*/i, '')
     .replace(/^我不能直接[^，。；;]*[，。；;]\s*/i, '')
     .replace(/^但可以(?:立刻)?(?:给你|为你)?(?:一份|一个)?/i, '')
-    .replace(/^(?:可直接出图的|表情包夸张风|原创|原创提示词|原创新提示词)\s*/i, '')
     .replace(/\s+/g, ' ')
     .trim();
   const stop = prompt.search(/(?:负面提示词|negative prompt|如果你想|如果你愿意|我还可以|以下任一种|适合图像模型|Midjourney|SD\s*\/\s*Flux|直接改成|可复制粘贴)/i);
@@ -13150,7 +13391,7 @@ function extractMarkdownPromptSection(source) {
 }
 function cleanNegativeAgentPrompt(text) {
   let prompt = stripPromptMarkdown(text)
-    .replace(/^(?:#{1,6}\s*)?(?:负面提示词|negative prompt|反向提示词|negative)\s*[:：]?\s*/i, '')
+    .replace(/^(?:#{1,6}\s*)?(?:负面\s*(?:Prompt|提示词)?|反向\s*(?:Prompt|提示词)?|negative(?:\s*prompt)?)(?:\s*[（(][^()（）\n]{0,48}[)）])?\s*[:：]?\s*/i, '')
     .replace(/\s+/g, ' ')
     .trim();
   const stop = prompt.search(/(?:英文版|English|超短版|Midjourney|SDXL|Flux|如果你想|如果你要|如果你愿意|我可以继续|我还可以|以下任一种|你回复)/i);
@@ -13165,7 +13406,7 @@ function looksLikeUsableNegativePrompt(prompt) {
 }
 function extractNegativePromptFromAgentText(source) {
   const text = String(source || '').replace(/\r\n?/g, '\n');
-  const sectionPattern = /(?:^|\n)\s*(?:-{3,}\s*)?#{0,6}\s*(负面提示词|negative prompt|反向提示词|negative)\s*[:：]?\s*/ig;
+  const sectionPattern = /(?:^|\n)\s*(?:-{3,}\s*)?(?:#{0,6}\s*)?(?:\*\*)?(负面\s*(?:Prompt|提示词)?|反向\s*(?:Prompt|提示词)?|negative(?:\s*prompt)?)(?:\s*[（(][^()（）\n]{0,48}[)）])?(?:\*\*)?\s*[:：]?\s*/ig;
   const candidates = [];
   let match;
   while ((match = sectionPattern.exec(text))) {
@@ -13196,7 +13437,7 @@ function extractCompactQuotedVisualPrompt(source) {
 function looksLikeUsableImagePrompt(prompt) {
   const value = String(prompt || '').trim();
   if (value.length < 24) return false;
-  if (/我不能|不能直接|版权|受版权保护|但可以|你可以|如果你想|我还可以|以下|说明一点/.test(value.slice(0, 80))) return false;
+  if (/我不能|不能直接|但可以|你可以|如果你想|我还可以|以下|说明一点/.test(value.slice(0, 80))) return false;
   const hits = ['角色', '画面', '背景', '构图', '风格', '透明', 'PNG', '插画', '海报', '表情', '追', '全身', '色彩', '线条', 'portrait', 'background', 'style'].filter((word) => value.includes(word)).length;
   return hits >= 2;
 }

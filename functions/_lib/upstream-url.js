@@ -365,7 +365,8 @@ export async function fetchWithPinnedAddress(rawUrl, address, init = {}, options
     throw publicDnsError('上游 API 域名解析到了内部网络', 'UPSTREAM_DNS_REJECTED');
   }
   const current = await resolvePublicAddresses(normalizedHostname(url), init?.signal, { preferredResolverId: options.preferredResolverId });
-  if (!sameAddresses(current.addresses, expectedAddresses)) {
+  // CDN 可能在安全校验与实际请求之间切换公网地址；私网地址仍会在此之前被拒绝。
+  if (options.allowPublicAddressRotation !== true && !sameAddresses(current.addresses, expectedAddresses)) {
     throw publicDnsError('上游 API 域名解析在请求期间发生变化', 'UPSTREAM_DNS_REBOUND');
   }
   return fetch(url.toString(), pinUpstreamFetchInit(init, current.addresses));

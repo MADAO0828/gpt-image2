@@ -31,7 +31,7 @@ ok(!indexShellHtml.includes('id="root"'), 'legacy React #root must not be presen
 ok(!/assets\/index-[^"']+\.js/.test(indexShellHtml), 'legacy React homepage bundle must not be loaded on /');
 ok(!/modulepreload[^>]+assets\/index-/.test(indexShellHtml), 'legacy modulepreload entries must not remain on /');
 ok(homeJs.includes('crossedMobileBreakpoint') && homeJs.includes('(viewportWidth <= 760) !== (measuredViewportWidth <= 760)'), 'prompt virtualization must invalidate layout when crossing the 760px column breakpoint');
-ok(homeJs.includes('focusedCardId') && homeJs.includes('restoredCard.focus({ preventScroll: true })'), 'prompt virtualization must restore focus when the focused card remains visible');
+ok(homeJs.includes('focusedCardKey') && homeJs.includes('data-prompt-key') && homeJs.includes('restoredCard.focus({ preventScroll: true })'), 'prompt virtualization must restore focus through the stable prompt key when the focused card remains visible');
 ok(homeJs.includes('data-modal-key="gallery-viewer"') && homeJs.includes('aria-label="关闭大图"'), 'gallery viewer must participate in modal focus management');
 ok(homeJs.includes('class="image-context-menu" role="menu"') && !homeJs.includes('data-modal-key="image-context-menu"') && homeJs.includes('class="viewer-stage"'), 'image context menu must not enter the modal inert stack');
 ok(homeJs.includes("if (action === 'close-viewer') { closeImageContextMenu(); state.viewer = null;"), 'closing the gallery viewer must also clear any open image context menu');
@@ -47,7 +47,7 @@ ok(homeJs.includes('id="imageMenuMount" data-modal-inert-exempt') && homeJs.incl
 ok(homeJs.includes('data-modal-key="task-detail"') && homeJs.includes('data-modal-key="confirm-dialog"') && homeJs.includes('data-modal-key="entry-advanced"'), 'homepage dialogs must expose stable modal keys');
 ok(upstreamUrl.includes('cloudflare-dns.com/dns-query') && upstreamUrl.includes('dns.google/resolve') && upstreamUrl.includes("Promise.allSettled(['A', 'AAAA']") && upstreamUrl.includes('Promise.race([...pending.values()])'), 'upstream DNS validation must keep both public resolvers and parallel resolver/A/AAAA checks');
 ok(upstreamUrl.includes('allowPlatformDnsFallback') && upstreamUrl.includes("resolverId: 'platform-fallback'") && upstreamUrl.includes('UPSTREAM_DNS_REBOUND'), 'configured API profiles may use a platform DNS fallback without weakening DNS rebinding rejection');
-ok(localPreviewServer.includes("from 'node:dns/promises'") && localPreviewServer.includes('__GPT_IMAGE2_PUBLIC_DNS_LOOKUP__') && localPreviewServer.includes('resolveLocalPublicDns'), 'local preview must use the system DNS resolver when DNS-over-HTTPS is unavailable');
+ok(localPreviewServer.includes("from 'node:dns/promises'") && localPreviewServer.includes('__GPT_IMAGE2_PUBLIC_DNS_LOOKUP__') && localPreviewServer.includes('resolveLocalPublicDns') && localPreviewServer.includes('lookup(hostname, { all: true, verbatim: true })') && !localPreviewServer.includes('resolve4(hostname)'), 'local preview must use the operating-system resolver instead of an intercepted c-ares DNS response');
 ok(promptsHtml.includes('id="imgViewer" role="dialog" aria-modal="true"') && promptsHtml.includes('id="ivclose"') && promptsHtml.includes('function closeImageViewer'), 'standalone prompt image viewer must expose dialog semantics and keyboard-close behavior');
 
 for (const marker of [

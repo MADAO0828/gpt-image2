@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { resolve4, resolve6 } from 'node:dns/promises';
+import { lookup } from 'node:dns/promises';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -73,17 +73,22 @@ function abortLocalDnsLookup() {
 
 async function resolveLocalPublicDns(hostname, signal) {
   if (signal?.aborted) throw abortLocalDnsLookup();
-  const queries = await Promise.allSettled([resolve4(hostname), resolve6(hostname)]);
-  if (signal?.aborted) throw abortLocalDnsLookup();
-  const addresses = [];
-  let successfulQueries = 0;
-  for (const query of queries) {
-    if (query.status !== 'fulfilled') continue;
-    successfulQueries += 1;
-    addresses.push(...query.value);
+  let abortFromSignal = null;
+  const abortPromise = signal ? new Promise((_, reject) => {
+    abortFromSignal = () => reject(abortLocalDnsLookup());
+    signal.addEventListener('abort', abortFromSignal, { once: true });
+  }) : null;
+  try {
+    const records = await (abortPromise
+      ? Promise.race([lookup(hostname, { all: true, verbatim: true }), abortPromise])
+      : lookup(hostname, { all: true, verbatim: true }));
+    if (signal?.aborted) throw abortLocalDnsLookup();
+    const addresses = [...new Set((records || []).map((record) => record?.address).filter(Boolean))];
+    if (!addresses.length) throw new Error('本地系统 DNS 未返回可用记录');
+    return addresses;
+  } finally {
+    if (abortFromSignal) signal?.removeEventListener?.('abort', abortFromSignal);
   }
-  if (!successfulQueries) throw new Error('本地系统 DNS 未返回可用记录');
-  return [...new Set(addresses)];
 }
 
 // 本地 Node 可能无法访问公共 DNS-over-HTTPS；后续仍由共享安全逻辑校验系统 DNS 返回的地址。

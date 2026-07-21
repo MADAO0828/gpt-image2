@@ -368,7 +368,10 @@ async function proxyRemoteImage(request, value, env) {
         method: request.method,
         redirect: 'manual',
         signal: controller.signal
-      }, { preferredResolverId: resolvedBeforeFetch.resolverId });
+      }, {
+        preferredResolverId: resolvedBeforeFetch.resolverId,
+        allowPublicAddressRotation: true
+      });
       if (upstream.status < 300 || upstream.status >= 400) break;
       const location = upstream.headers.get('Location');
       if (!location) break;
@@ -1043,10 +1046,10 @@ export async function onRequest(ctx) {
     if (e?.code === 'UPSTREAM_HOST_ALLOWLIST_MISSING' || e?.code === 'UPSTREAM_HOST_ALLOWLIST_INVALID' || e?.code === 'UPSTREAM_HOST_NOT_ALLOWED') {
       return upstreamError(ctx.request, e.message || '上游 API 域名未通过允许列表校验。', e.code, 'upstream_host_policy', 400, null, { proxyMs: Date.now() - proxyStart });
     }
-    if (e?.code === 'UPSTREAM_DNS_REBOUND' || e?.code === 'UPSTREAM_DNS_FAILED') {
+    if (e?.code === 'UPSTREAM_DNS_REBOUND' || e?.code === 'UPSTREAM_DNS_FAILED' || e?.code === 'UPSTREAM_DNS_TIMEOUT') {
       return upstreamError(ctx.request, e.message || '上游地址 DNS 校验失败。', e.code, 'upstream_dns', 502, null, { proxyMs: Date.now() - proxyStart });
     }
-    if (e?.name === 'AbortError' || e?.code === 'UPSTREAM_DNS_TIMEOUT' || (proxyController?.signal?.aborted && !ctx.request.signal?.aborted)) {
+    if (e?.name === 'AbortError' || (proxyController?.signal?.aborted && !ctx.request.signal?.aborted)) {
       if (proxyClientAbort?.wasAborted()) {
         return upstreamError(ctx.request, '客户端已取消图片请求。', 'PROXY_CLIENT_ABORTED', 'client_abort', 499, null, { proxyMs: Date.now() - proxyStart });
       }

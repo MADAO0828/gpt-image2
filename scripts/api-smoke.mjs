@@ -7,7 +7,7 @@ const BASE_URL = String(process.env.BASE_URL || 'http://127.0.0.1:8788').replace
 const TEST_USER = process.env.TEST_USER || '';
 const TEST_PASS = process.env.TEST_PASS || '';
 const EXPECTED_PROMPT_TOTAL = Number(process.env.EXPECTED_PROMPT_TOTAL || 10311);
-const EXPECTED_ASSET_VERSION = process.env.EXPECTED_ASSET_VERSION || 'home-v3-20260720-stability-r192';
+const EXPECTED_ASSET_VERSION = process.env.EXPECTED_ASSET_VERSION || 'home-v3-20260721-controls-r194';
 
 if (!TEST_USER || !TEST_PASS) {
   console.error('[api-smoke] TEST_USER and TEST_PASS are required and must be provided via environment variables.');

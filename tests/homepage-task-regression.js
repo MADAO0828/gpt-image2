@@ -207,6 +207,9 @@ for (const entry of ['gallery', 'agent', 'workflow', 'pro']) {
 }
 ok(source.includes("if (action === 'open-entry-advanced')")
   && source.includes("if (action === 'close-entry-advanced') { state.entryAdvancedModal = null; render(); return; }"), 'advanced settings modal open and close actions must remain wired');
+ok(homeCss.includes(':root[data-theme="dark"] .entry-advanced-grid select option')
+  && homeCss.includes('background: #202631;')
+  && homeCss.includes('color: #f7fbff;'), 'dark advanced select options must define a readable native popup palette');
 ok(typeof hooks.captureGalleryScrollState === 'function', 'captureGalleryScrollState hook missing');
 ok(typeof hooks.restoreGalleryScrollState === 'function', 'restoreGalleryScrollState hook missing');
 ok(typeof hooks.sanitizeReferenceSnapshots === 'function', 'sanitizeReferenceSnapshots hook missing');
@@ -240,6 +243,14 @@ ok(typeof hooks.estimateGalleryCardHeight === 'function', 'estimateGalleryCardHe
 ok(typeof hooks.galleryVirtualRangeChanged === 'function', 'galleryVirtualRangeChanged hook missing');
 ok(typeof hooks.galleryVirtualWindowNeedsRefresh === 'function', 'galleryVirtualWindowNeedsRefresh hook missing');
 ok(typeof hooks.promptRepoVirtualWindowNeedsRefresh === 'function', 'promptRepoVirtualWindowNeedsRefresh hook missing');
+ok(typeof hooks.promptItemStableKey === 'function', 'promptItemStableKey hook missing');
+const duplicatePromptKeyA = hooks.promptItemStableKey({ id: 1, c: '分类 A', i: 'https://example.com/a.webp' }, 4);
+const duplicatePromptKeyB = hooks.promptItemStableKey({ id: 1, c: '分类 B', i: 'https://example.com/b.webp' }, 4);
+ok(duplicatePromptKeyA !== duplicatePromptKeyB, 'prompt virtual DOM keys must distinguish duplicate IDs from different categories or sources');
+ok(source.includes('data-prompt-key') && source.includes('currentCards.get(key)'), 'prompt virtual DOM should reuse cards through stable prompt keys instead of raw IDs');
+const standalonePromptGridCss = (promptPage.match(/\.grid\{[^}]*\}/) || [''])[0];
+const standalonePromptCardCss = (promptPage.match(/\.card\{[^}]*\}/) || [''])[0];
+ok(!standalonePromptGridCss.includes('content-visibility') && !standalonePromptCardCss.includes('content-visibility') && !standalonePromptCardCss.includes('animation:'), 'standalone prompt cards must not toggle content visibility or entry animations while scrolling');
 ok(source.includes('function scheduleGalleryScrollRender()') && source.includes('function schedulePromptRepoScrollRender()'), 'scroll-specific virtual render schedulers should be present');
 ok(source.includes('function cancelGalleryVirtualRender(options = {})') && source.includes('function cancelPromptRepoVirtualRender(options = {})'), 'virtual render cancellation guards should be present');
 ok(source.includes('function requestRenderFrame(fn)') && source.includes('function cancelRenderFrame(frameId)'), 'scroll render frame helpers should be present');
@@ -314,11 +325,11 @@ ok(homeCss.includes('.prompt-list.is-scrolling > .prompt-card')
 ok(!promptPage.includes('html.is-scrolling .card')
   && !promptPage.includes('html.is-scrolling .card-img img')
   && !macosCss.includes('html.is-scrolling .c .grid .card'), 'standalone prompt repository scrolling must not mutate card visuals');
-ok(!promptPage.includes('content-visibility: visible;')
-  && !promptPage.includes('contain: none;')
-  && !promptPage.includes('contain-intrinsic-size: none;')
-  && promptPage.includes('content-visibility:auto;')
-  && promptPage.includes('contain:layout paint style;'), 'standalone prompt repository should preserve layout containment while scrolling');
+ok(!promptPage.includes('content-visibility:auto;')
+  && !promptPage.includes('content-visibility: visible;')
+  && !promptPage.includes('contain-intrinsic-size:')
+  && !promptPage.includes('animation:cardIn')
+  && promptPage.includes('contain:layout paint style;'), 'standalone prompt repository should keep layout containment without scroll-time visibility or animation changes');
 ok(!macosCss.includes('html.is-scrolling'), 'shared macOS CSS must not override prompt card visuals during scroll');
 ok(promptPage.includes('scroller.addEventListener("scroll",markPromptScrolling,{passive:true})')
   && !promptPage.includes('document.documentElement.classList.add("is-scrolling")')
@@ -366,9 +377,9 @@ ok(source.includes('function scheduleGalleryHydrationFlush()') && source.include
   && source.includes('function deferredGalleryHydrationLimit()')
   && source.includes('return 4;')
   && source.includes('flushDeferredGalleryHydrations(deferredGalleryHydrationLimit())'), 'gallery preview hydration should yield to scrolling while Agent images resume in bounded idle batches');
-ok(source.includes('const GALLERY_POST_SCROLL_HYDRATION_DELAY = 360;')
-  && source.includes('galleryHydrationDeferUntil = Date.now() + GALLERY_POST_SCROLL_HYDRATION_DELAY')
-  && source.includes('const delay = Math.max(0, galleryHydrationDeferUntil - Date.now())'), 'gallery hydration should remain deferred briefly after scrolling settles to avoid a Chromium decode burst');
+ok(source.includes('galleryHydrationDeferUntil = Date.now();')
+  && !source.includes('galleryHydrationDeferUntil = Date.now() + GALLERY_POST_SCROLL_HYDRATION_DELAY')
+  && source.includes('const delay = Math.max(0, galleryHydrationDeferUntil - Date.now())'), 'gallery hydration should resume immediately after scrolling settles while retaining bounded idle scheduling');
 ok(source.includes('function scrollInteractionActive()') && source.includes('const scrolling = scrollInteractionActive()') && source.includes('if (scrollInteractionActive())') && source.includes('scheduleStoreWrite(delay);'), 'deferred state writes and full renders should wait until scrolling settles');
 ok(source.includes('deferredRenderPending') && source.includes('scheduleDeferredRender()'), 'full renders should be deferred while a scroll interaction is active');
 ok(source.includes('function markUserInteractionRender()')
@@ -427,6 +438,9 @@ ok(typeof hooks.normalizeImageQuality === 'function', 'normalizeImageQuality hoo
 ok(hooks.classifyImageResponse('application/json', 'da') === 'undetermined', 'split SSE data prefix should remain undetermined until more bytes arrive');
 ok(hooks.classifyImageResponse('text/event-stream', '{"data":[]}') === 'json', 'JSON content must win over a conflicting event-stream header after body sniffing');
 ok(typeof hooks.fetchRemoteImageBlob === 'function', 'fetchRemoteImageBlob hook missing');
+ok(typeof hooks.remoteImageFetchFailureSummary === 'function', 'remoteImageFetchFailureSummary hook missing');
+ok(hooks.remoteImageFetchFailureSummary([{ code: 'UPSTREAM_DNS_FAILED' }]) === '远程图片域名解析失败', 'remote image DNS failures should have a distinct summary');
+ok(hooks.remoteImageFetchFailureSummary([{ code: 'BROWSER_NETWORK_OR_CORS' }, { code: 'REMOTE_IMAGE_NOT_IMAGE' }]) === '远程图片响应不是可识别的图片', 'remote image diagnostics should prefer the proxy image response outcome over a direct CORS failure');
 ok(typeof hooks.hydrateBlobImage === 'function', 'hydrateBlobImage hook missing');
 ok(typeof hooks.rememberObjectUrl === 'function', 'rememberObjectUrl hook missing');
 ok(typeof hooks.mergeGenerationPartialErrors === 'function', 'mergeGenerationPartialErrors hook missing');
@@ -1748,6 +1762,23 @@ if (typeof hooks.openAiSizePayload === 'function') {
   const missingRetryProfile = typeof hooks.resolveTaskProfile === 'function' ? hooks.resolveTaskProfile({ profileId: 'deleted-profile', requestedParams: { profileId: 'deleted-profile' } }) : undefined;
   ok(missingRetryProfile === null, 'retry should not silently fall back to the current composer profile when the original profile is missing');
 
+  const duplicateProfileIdProfiles = [
+    { id: 'shared-image', name: 'Shared Image', provider: 'openai', apiMode: 'images', model: 'gpt-image-2' },
+    { id: 'shared-image', name: 'Shared Image Native', provider: 'openai', apiMode: 'images', model: 'gpt-image-2' }
+  ];
+  hooks.setTestState({
+    profiles: duplicateProfileIdProfiles,
+    activeImageProfileId: 'shared-image',
+    activeProfileId: 'shared-image'
+  });
+  const duplicateIdMenu = hooks.renderPopover({ type: 'model-config', rect: { left: 20, top: 20, bottom: 60 } });
+  ok((duplicateIdMenu.match(/class="active"/g) || []).length === 1, 'duplicate profile IDs must not mark multiple model menu items active');
+  ok(duplicateIdMenu.includes('data-value="Shared Image Native"'), 'duplicate profile IDs should use a unique profile name as the selectable request key');
+  hooks.setTestState({ activeImageProfileId: 'Shared Image Native', activeProfileId: 'Shared Image Native' });
+  ok(hooks.imageProfile()?.name === 'Shared Image Native', 'duplicate profile IDs should remain individually selectable by their unique names');
+  const duplicateProfileHeaders = hooks.appendAdvancedHeaders({}, 'gallery', hooks.imageProfile());
+  ok(duplicateProfileHeaders['X-GPT-Image-Profile-Id'] === 'Shared Image Native', 'duplicate profile selection must reach the API proxy with the unambiguous key');
+
   hooks.setTestState({
     profiles: [
       { id: 'fallback-text', name: 'Fallback Text', provider: 'openai', apiMode: 'responses', model: 'gpt-5.1' },
@@ -1923,10 +1954,23 @@ if (typeof hooks.openAiSizePayload === 'function') {
     '**负面 Prompt：**',
     '不要哆啦A梦，不要大雄，不要熊，不要动物。'
   ].join('\n');
-  const promptOptions = hooks.extractAgentPromptOptions(fiveOptionReply);
+const promptOptions = hooks.extractAgentPromptOptions(fiveOptionReply);
   ok(promptOptions.length === 5, 'Agent prompt option parser should still extract five options when the model provides them');
   ok(promptOptions[0].recommended === true && hooks.recommendedAgentPromptOption(promptOptions).index === 1, 'Agent prompt option parser should mark the recommended option');
-  ok(promptOptions[2].prompt.includes('极简贴纸') && promptOptions[2].negativePrompt.includes('不要复杂背景'), 'Agent prompt option parser should keep per-option positive and negative prompts');
+ok(promptOptions[2].prompt.includes('极简贴纸') && promptOptions[2].negativePrompt.includes('不要复杂背景'), 'Agent prompt option parser should keep per-option positive and negative prompts');
+const markdownFieldOptionReply = [
+  '**方案 1（推荐）**',
+  '**正向提示词（Prompt）**：保留 Marvel、原创角色和作品名原词的电影海报，主体清晰，强对比构图。',
+  '**负面提示词（Negative Prompt）**：不要水印，不要错别字，不要裁切。'
+].join('\n');
+const markdownFieldOptions = hooks.extractAgentPromptOptions(markdownFieldOptionReply);
+ok(markdownFieldOptions.length === 1 && markdownFieldOptions[0].negativePrompt.includes('不要水印') && markdownFieldOptions[0].prompt.includes('Marvel'), 'Agent option parser should accept bold bilingual positive and negative labels without changing user terms');
+const preservedTermsPayload = hooks.buildAgentRequestPayload('生成 Marvel 原创角色海报', {
+  project: { id: 'project-1', name: '测试项目', prompt: '' },
+  history: [],
+  textProfile: strictTextProfile
+});
+ok(String(preservedTermsPayload.instructions).includes('保留用户输入中的品牌、角色、作品名、原创等原词') && !String(preservedTermsPayload.instructions).includes('涉及版权角色或受保护风格时'), 'Agent instructions should preserve user terms instead of requiring an original-content substitution');
   ok(hooks.parseAgentOptionSelection('/1') === 1 && hooks.parseAgentOptionSelection('用第3个') === 3 && hooks.parseAgentOptionSelection('5') === 5, 'Agent option selector should parse slash, Chinese ordinal, and bare number forms');
   const agentMessageHtml = hooks.renderAgentMessage({ id: 'msg-options', role: 'assistant', text: fiveOptionReply, createdAt: 0 });
   ok(agentMessageHtml.includes('agent-prose') && agentMessageHtml.includes('agent-prompt-option-card'), 'Agent message should render Markdown prose and prompt option cards');
