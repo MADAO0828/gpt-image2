@@ -161,9 +161,12 @@ function streamResponse(chunks, options = {}) {
   assert(untypedError, 'untyped SSE error objects must reject');
   assert.strictEqual(untypedError.code, 'IMAGE_STREAM_UPSTREAM_FAILED');
   assert.match(untypedError.message, /gateway rejected stream parameters/);
-  assert.strictEqual(untypedError.lastStreamEventType, '');
+  assert.strictEqual(untypedError.lastStreamEventType, 'error');
+  assert.strictEqual(untypedError.streamEventCount, 1);
+  assert.strictEqual(untypedError.streamEvents[0].type, 'error');
   assert.deepStrictEqual(untypedError.streamEvents[0].keys, ['error']);
   assert.strictEqual(untypedError.streamEvents[0].hasError, true);
+  assert(!JSON.stringify(untypedError.streamEvents).includes('gateway rejected stream parameters'), 'stream error metadata must not retain the error message payload');
 
   const resultObject = await runtime.consumeImageStream(streamResponse([
     sseEvent({

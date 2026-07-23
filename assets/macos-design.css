@@ -1532,3 +1532,9 @@ html:not(.gpt-agent-mode) #root > div.fixed.sm\:bottom-6 .mt-3 > div:last-child 
     transform: none !important;
   }
 }
+
+/* Prompt cards render inside their own scrolling container for reliable lazy loading. */
+.c .grid .card {
+  content-visibility: visible !important;
+  contain-intrinsic-size: none !important;
+}

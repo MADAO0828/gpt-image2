@@ -1,5 +1,6 @@
 import { currentUser, json } from '../_lib/auth.js';
 import { maskSecrets } from '../_lib/settings-secrets.js';
+import { findProfileBySelectionKey, profileSelectionKey } from '../_lib/profile-header.js';
 async function loadSettings(db, userId) { const rows = await db.prepare('SELECT key, value FROM user_settings WHERE user_id = ?').bind(userId).all(); const settings = {}; (rows.results || []).forEach(row => { try { settings[row.key] = JSON.parse(row.value); } catch (e) { settings[row.key] = row.value; } }); return settings; }
 function asBool(value, fallback = false) { return value === undefined || value === null ? fallback : !!value; }
 function asNum(value, fallback) { const n = Number(value); return Number.isFinite(n) ? n : fallback; }
@@ -8,7 +9,7 @@ function firstDefined() { for (let i = 0; i < arguments.length; i++) { if (argum
 function normalizeImageQuality(value, fallback = 'high') { const normalized = String(value || '').trim().toLowerCase(); if (['auto', 'low', 'medium', 'high'].includes(normalized)) return normalized; if (normalized === 'hd') return 'high'; if (normalized === 'standard') return 'medium'; return ['auto', 'low', 'medium', 'high'].includes(fallback) ? fallback : 'high'; }
 function normalizeAgentMode(value) { value = String(value || 'off'); if (value === 'same') return 'native'; if (value === 'custom') return 'hybrid'; return value === 'native' || value === 'hybrid' ? value : 'off'; }
 function normalizeBaseUrl(raw) { let value = String(raw || '').trim().replace(/\/+$/, ''); if (!value) return ''; if (!/^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(value)) value = 'https://' + value; try { const url = new URL(value); const parts = url.pathname.split('/').filter(Boolean); if (!parts.includes('v1')) parts.push('v1'); url.pathname = '/' + parts.join('/'); url.search = ''; url.hash = ''; return url.toString().replace(/\/+$/, ''); } catch (e) { return value.replace(/\/+$/, '') + '/v1'; } }
-function selectedProfile(settings) { const profiles = Array.isArray(settings.profiles) ? settings.profiles : []; const imageProfiles = profiles.filter(p => p && (p.apiMode || 'images') === 'images'); const activeImageId = settings.activeImageProfileId || ''; const activeId = settings.activeProfileId || ''; const found = imageProfiles.find(p => p.id === activeImageId || p.name === activeImageId) || imageProfiles.find(p => p.id === activeId || p.name === activeId) || imageProfiles[0] || null; const base = found || {}; return {
+function selectedProfile(settings) { const profiles = Array.isArray(settings.profiles) ? settings.profiles : []; const imageProfiles = profiles.filter(p => p && (p.apiMode || 'images') === 'images'); const activeImageId = settings.activeImageProfileId || ''; const activeId = settings.activeProfileId || ''; const found = findProfileBySelectionKey(imageProfiles, activeImageId) || findProfileBySelectionKey(imageProfiles, activeId) || imageProfiles[0] || null; const base = found || {}; return {
   id: base.id || activeId || 'default-openai',
   name: base.name || '云端配置',
   provider: base.provider || 'openai',
@@ -49,10 +50,14 @@ export async function onRequest(ctx) {
   if (!user) return json({ error: 'Unauthorized' }, 401);
   const settings = await loadSettings(ctx.env.gpt_image2_db, user.id);
   const active = selectedProfile(settings);
+  const configuredProfiles = Array.isArray(settings.profiles) ? settings.profiles.filter(Boolean) : [];
+  const configuredActive = findProfileBySelectionKey(configuredProfiles, settings.activeProfileId || '');
+  const activeProfileKey = configuredProfiles.length ? (profileSelectionKey(configuredActive || active, configuredProfiles) || 'default-openai') : String(settings.activeProfileId || active.id || 'default-openai');
+  const activeImageProfileKey = configuredProfiles.length ? (profileSelectionKey(active, configuredProfiles) || activeProfileKey) : String(settings.activeImageProfileId || active.id || activeProfileKey);
   let profiles = sanitizeProfiles(settings, ctx.env);
   const clientActive = clientProfile(active, ctx.env);
   const useProxy = clientActive.apiProxy !== false;
-  const activeProfileIndex = profiles.findIndex(p => p && p.id === clientActive.id);
+  const activeProfileIndex = profiles.findIndex(p => profileSelectionKey(p, profiles) === activeImageProfileKey);
   if (activeProfileIndex >= 0) profiles[activeProfileIndex] = clientActive;
   else if (clientActive && clientActive.id) profiles.unshift(clientActive);
   const config = {
@@ -105,8 +110,8 @@ export async function onRequest(ctx) {
     themeMode: settings.themeMode || 'light',
     customProviders: Array.isArray(settings.customProviders) ? settings.customProviders : [],
     profiles: profiles.length ? profiles : [clientActive],
-    activeProfileId: settings.activeProfileId || clientActive.id || 'default-openai',
-    activeImageProfileId: settings.activeImageProfileId || clientActive.id || profiles.find(profile => (profile?.apiMode || 'images') === 'images')?.id || 'default-openai'
+    activeProfileId: activeProfileKey,
+    activeImageProfileId: activeImageProfileKey
   };
   return json(maskSecrets(config, '', 'cloudflare-proxy'));
 }

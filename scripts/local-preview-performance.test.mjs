@@ -149,6 +149,28 @@ test('unfiltered prompt pages 2-12 use the prebuilt page files without loading p
   }
 });
 
+test('prompt repository thumbnails use bounded prewarm and invalidate stale image work', async () => {
+  const promptPage = await fs.readFile(path.join(root, 'prompts.html'), 'utf8');
+  assert.match(promptPage, /var IMAGE_PREWARM_MAX = 40;/);
+  assert.match(promptPage, /var IMAGE_PREWARM_CONCURRENCY = 4;/);
+  assert.match(promptPage, /function cancelImagePrewarm\(\)/);
+  assert.match(promptPage, /imagePrewarmRun!==run&&run\.generation!==imagePrewarmGeneration|run\.generation!==imagePrewarmGeneration/);
+  assert.match(promptPage, /queue\.length<IMAGE_PREWARM_MAX/);
+  assert.match(promptPage, /image\.fetchPriority="low"/);
+  assert.match(promptPage, /image\.referrerPolicy="no-referrer"/);
+  assert.match(promptPage, /function imageRootMargin\(\)\{return isMobileViewport\(\)\?"1400px 0px":"1800px 0px"\}/);
+  assert.match(promptPage, /if\(src\)\{img\.loading="eager";img\.src=src;img\.removeAttribute\('data-src'\)\}/);
+  const scrollSource = promptPage.slice(promptPage.indexOf('var scrollingLastAt=0;'));
+  assert.doesNotMatch(scrollSource, /innerHTML|replaceChildren|renderItems/);
+  const inlineScripts = [...promptPage.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi)]
+    .map((match) => match[1].trim())
+    .filter(Boolean);
+  assert.ok(inlineScripts.length > 0, 'prompt page must retain an inline script block');
+  inlineScripts.forEach((script, index) => {
+    assert.doesNotThrow(() => new Function(script), `prompt inline script ${index + 1} must parse`);
+  });
+});
+
 test('preview sources keep streaming and diagnostic fallback invariants', async () => {
   const serverSource = await fs.readFile(path.join(root, 'scripts', 'local-preview-server.mjs'), 'utf8');
   const startSource = await fs.readFile(path.join(root, 'scripts', 'start-local-preview.ps1'), 'utf8');
@@ -158,11 +180,17 @@ test('preview sources keep streaming and diagnostic fallback invariants', async 
   assert.match(startSource, /Wrangler stderr/);
   assert.match(startSource, /\[string\]\$Engine = 'Node'/);
   assert.match(startSource, /System\.Threading\.Mutex/);
+  assert.match(startSource, /function Get-ListeningProcessId/);
+  assert.match(startSource, /function Test-LocalPreviewIdentity/);
   assert.match(startSource, /Get-ProcessAncestry/);
   assert.match(startSource, /Stop-ProcessTree -ProcessId/);
+  assert.match(startSource, /Get-ListeningProcessId -HostName \$HostName -Port \$Port/);
   assert.match(startSource, /launcher-latest\.log/);
   assert.match(startSource, /status\.json/);
   assert.doesNotMatch(startSource, /throw 'Wrangler is not installed\.'/);
+
+  const nodeStart = startSource.slice(startSource.indexOf('function Start-NodePreview'), startSource.indexOf('function Start-WranglerPreview'));
+  assert.ok(nodeStart.indexOf('$process.HasExited') >= 0 && nodeStart.indexOf('$process.HasExited') < nodeStart.indexOf('Test-HttpReady'), 'Node launcher must detect an exited child before accepting HTTP from a stale listener');
 
   const shell = spawnSync('pwsh.exe', [
     '-NoProfile',
@@ -170,4 +198,14 @@ test('preview sources keep streaming and diagnostic fallback invariants', async 
     `[scriptblock]::Create((Get-Content -Raw -LiteralPath '${path.join(root, 'scripts', 'start-local-preview.ps1').replaceAll("'", "''")}')) | Out-Null`
   ], { encoding: 'utf8' });
   assert.equal(shell.status, 0, shell.stderr || shell.stdout);
+});
+
+test('Node preview wires an inbound disconnect to the function Request signal', async () => {
+  const serverSource = await fs.readFile(path.join(root, 'scripts', 'local-preview-server.mjs'), 'utf8');
+  assert.match(serverSource, /function createIncomingRequestSignal\(req, res\)/);
+  assert.match(serverSource, /req\.once\('aborted', onAborted\)/);
+  assert.match(serverSource, /req\.once\('close', onClose\)/);
+  assert.match(serverSource, /req\.socket\?\.once\('close', onSocketClose\)/);
+  assert.match(serverSource, /init\.signal = clientSignal\.signal/);
+  assert.match(serverSource, /return await relayFetchResponse\(req, res, apiRes\);\s*\} finally \{\s*cleanup\(\);/s);
 });

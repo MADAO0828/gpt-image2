@@ -1,4 +1,5 @@
 import { currentUser, json } from '../../_lib/auth.js';
+import { findProfileBySelectionKey } from '../../_lib/profile-header.js';
 import { bindClientAbort, fetchPinnedUpstream, isUpstreamTimeoutStatus, normalizeSafeBaseUrl, normalizeUpstreamTimeoutSeconds, safeUpstreamEndpoint } from '../../_lib/upstream-url.js';
 const MAX_WORKBENCH_REQUEST_BYTES = 64 * 1024 * 1024;
 const MAX_WORKBENCH_FILE_BYTES = 20 * 1024 * 1024;
@@ -145,7 +146,7 @@ async function readResponseText(body, onChunk = null) {
   const bytes = await readResponseBytes(body, IMAGE_RESPONSE_LIMIT, onChunk);
   return new TextDecoder().decode(bytes);
 }
-function selectedProfile(settings, explicitProfileId = '') { const profiles = Array.isArray(settings.profiles) ? settings.profiles : []; const find = id => profiles.find(p => p && (p.id === id || p.name === id)) || null; let base = null; let preferredId = ''; if (explicitProfileId) { preferredId = explicitProfileId; base = find(explicitProfileId); if (!base || (base.apiMode || 'images') !== 'images') throw new Error('Selected render profile is missing or does not support Images API'); } else if (settings.activeImageProfileId) { preferredId = settings.activeImageProfileId; base = find(preferredId); if (!base || (base.apiMode || 'images') !== 'images') throw new Error('Active image profile is missing or does not support Images API'); } else { preferredId = settings.activeProfileId || (profiles[0] && profiles[0].id) || 'default-openai'; const active = find(preferredId); base = active && (active.apiMode || 'images') === 'images' ? active : profiles.find(p => p && (p.apiMode || 'images') === 'images') || null; } base = base || {}; return { id: base.id || preferredId, name: base.name || '云端配置', provider: base.provider || 'openai', baseUrl: firstString(base.baseUrl, settings.baseUrl), nativeBaseUrl: firstString(base.nativeBaseUrl, base.googleNativeBaseUrl, settings.nativeBaseUrl, settings.googleNativeBaseUrl), apiKey: firstString(base.apiKey, settings.apiKey), nativeApiKey: firstString(base.nativeApiKey, base.googleNativeApiKey, settings.nativeApiKey, settings.googleNativeApiKey), model: firstString(base.model, settings.model) || 'gpt-image-2', codexCli: asBool(base.codexCli, asBool(settings.codexCli, false)), timeout: asNum(base.timeout, asNum(settings.timeout, 600)), responseFormatB64Json: asBool(base.responseFormatB64Json, asBool(settings.responseFormatB64Json, false)), streamImages: asBool(base.streamImages, asBool(settings.streamImages, false)), streamPartialImages: asNum(base.streamPartialImages, asNum(settings.streamPartialImages, 1)) }; }
+function selectedProfile(settings, explicitProfileId = '') { const profiles = Array.isArray(settings.profiles) ? settings.profiles : []; const find = id => findProfileBySelectionKey(profiles, id); let base = null; let preferredId = ''; if (explicitProfileId) { preferredId = explicitProfileId; base = find(explicitProfileId); if (!base || (base.apiMode || 'images') !== 'images') throw new Error('Selected render profile is missing or does not support Images API'); } else if (settings.activeImageProfileId) { preferredId = settings.activeImageProfileId; base = find(preferredId); if (!base || (base.apiMode || 'images') !== 'images') throw new Error('Active image profile is missing or does not support Images API'); } else { preferredId = settings.activeProfileId || (profiles[0] && profiles[0].id) || 'default-openai'; const active = find(preferredId); base = active && (active.apiMode || 'images') === 'images' ? active : profiles.find(p => p && (p.apiMode || 'images') === 'images') || null; } base = base || {}; return { id: base.id || preferredId, name: base.name || '云端配置', provider: base.provider || 'openai', baseUrl: firstString(base.baseUrl, settings.baseUrl), nativeBaseUrl: firstString(base.nativeBaseUrl, base.googleNativeBaseUrl, settings.nativeBaseUrl, settings.googleNativeBaseUrl), apiKey: firstString(base.apiKey, settings.apiKey), nativeApiKey: firstString(base.nativeApiKey, base.googleNativeApiKey, settings.nativeApiKey, settings.googleNativeApiKey), model: firstString(base.model, settings.model) || 'gpt-image-2', codexCli: asBool(base.codexCli, asBool(settings.codexCli, false)), timeout: asNum(base.timeout, asNum(settings.timeout, 600)), responseFormatB64Json: asBool(base.responseFormatB64Json, asBool(settings.responseFormatB64Json, false)), streamImages: asBool(base.streamImages, asBool(settings.streamImages, false)), streamPartialImages: asNum(base.streamPartialImages, asNum(settings.streamPartialImages, 1)) }; }
 function providerKey(profile) { const raw = String(profile.provider || '').toLowerCase(); if (raw.includes('google') || /gemini|banana/i.test(profile.model || '')) return 'google'; if (raw.includes('xai') || raw.includes('grok') || /grok/i.test(profile.model || '')) return 'xai'; return 'openai'; }
 function formBool(form, key, fallback) { const value = form.get(key); if (value === null || value === undefined || value === '') return fallback; return /^(1|true|yes|on|b64_json)$/i.test(String(value)); }
 function formNum(form, key, fallback) { const n = Number(form.get(key)); return Number.isFinite(n) ? n : fallback; }
@@ -496,55 +497,60 @@ async function readImageResponsePayload(response, options = {}) {
     throw new Error('专业工作台返回了无法解析的图片响应');
   }
 }
-function providerPayload(provider, params) {
+const GOOGLE_NANO_COMMON_RESOLUTIONS = Object.freeze(['1K', '2K', '4K']);
+const GOOGLE_NANO_COMMON_ASPECT_RATIOS = Object.freeze(['1:1', '3:2', '2:3', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']);
+const GOOGLE_NANO_IMAGE_CAPABILITIES = Object.freeze([
+  Object.freeze({
+    modelIds: Object.freeze(['gemini-3-pro-image', 'gemini-3-pro-image-preview']),
+    resolutions: GOOGLE_NANO_COMMON_RESOLUTIONS,
+    aspectRatios: GOOGLE_NANO_COMMON_ASPECT_RATIOS
+  }),
+  Object.freeze({
+    modelIds: Object.freeze(['gemini-3.1-flash-image', 'gemini-3.1-flash-image-preview']),
+    resolutions: GOOGLE_NANO_COMMON_RESOLUTIONS,
+    aspectRatios: GOOGLE_NANO_COMMON_ASPECT_RATIOS
+  })
+]);
+function normalizedGoogleModelId(value) {
+  return String(value || '').trim().toLowerCase().replace(/^models\//, '');
+}
+function googleNanoCapabilities(model = '') {
+  const normalized = normalizedGoogleModelId(model);
+  return GOOGLE_NANO_IMAGE_CAPABILITIES.find((entry) => entry.modelIds.includes(normalized)) || {
+    resolutions: GOOGLE_NANO_COMMON_RESOLUTIONS,
+    aspectRatios: GOOGLE_NANO_COMMON_ASPECT_RATIOS
+  };
+}
+function googleToolbarValue(value, allowed, fallback) {
+  const raw = String(value || '').trim();
+  const match = allowed.find((item) => item.toLowerCase() === raw.toLowerCase());
+  return match || fallback;
+}
+function providerPayload(provider, params, model = '') {
+  const requestParams = params && typeof params === 'object' ? params : {};
   if (provider === 'google') {
-    const imageSize = params.resolution || params.image_size || params.size || '2K';
-    const aspectRatio = params.aspectRatio || params.aspect_ratio || '1:1';
-    const targetSize = googleOfficialImageSize(imageSize, aspectRatio);
-    const normalizedImageSize = String(imageSize || '').toUpperCase();
+    const capabilities = googleNanoCapabilities(model);
+    const imageSize = googleToolbarValue(requestParams.resolution || requestParams.image_size || requestParams.size, capabilities.resolutions, '2K');
+    const aspectRatio = googleToolbarValue(requestParams.aspectRatio || requestParams.aspect_ratio, capabilities.aspectRatios, '1:1');
     return {
       resolution: imageSize,
       aspect_ratio: aspectRatio,
       image_size: imageSize,
       size: imageSize,
-      target_size: targetSize || undefined,
       extra_body: {
         generationConfig: {
-          response_modalities: ['IMAGE', 'TEXT'],
           responseModalities: ['IMAGE', 'TEXT'],
           imageConfig: {
-            imageSize: normalizedImageSize,
-            aspectRatio,
-            image_size: normalizedImageSize,
-            aspect_ratio: aspectRatio
-          }
-        },
-        generation_config: {
-          response_modalities: ['IMAGE', 'TEXT'],
-          responseModalities: ['IMAGE', 'TEXT'],
-          imageConfig: {
-            imageSize: normalizedImageSize,
-            aspectRatio,
-            image_size: normalizedImageSize,
-            aspect_ratio: aspectRatio
+            imageSize,
+            aspectRatio
           }
         }
       },
       response_format: 'url'
     };
   }
-  if (provider === 'xai') return { resolution: params.resolution || '2k', aspect_ratio: params.aspect_ratio || params.aspectRatio || '1:1' };
-  return { size: params.size || 'auto' };
-}
-const GOOGLE_OFFICIAL_IMAGE_SIZES = {
-  '1K': { '1:1': '1024x1024', '3:2': '1264x848', '2:3': '848x1264', '16:9': '1376x768', '9:16': '768x1376', '4:3': '1200x896', '3:4': '896x1200', '4:5': '928x1152', '5:4': '1152x928', '21:9': '1584x672' },
-  '2K': { '1:1': '2048x2048', '3:2': '2528x1696', '2:3': '1696x2528', '16:9': '2752x1536', '9:16': '1536x2752', '4:3': '2400x1792', '3:4': '1792x2400', '4:5': '1856x2304', '5:4': '2304x1856', '21:9': '3168x1344' },
-  '4K': { '1:1': '4096x4096', '3:2': '5056x3392', '2:3': '3392x5056', '16:9': '5504x3072', '9:16': '3072x5504', '4:3': '4800x3584', '3:4': '3584x4608', '4:5': '3712x4608', '5:4': '4608x3712', '21:9': '6336x2688' }
-};
-function googleOfficialImageSize(resolution, aspectRatio) {
-  const tier = String(resolution || '').trim().toUpperCase();
-  const ratio = String(aspectRatio || '1:1').trim() || '1:1';
-  return GOOGLE_OFFICIAL_IMAGE_SIZES[tier]?.[ratio] || '';
+  if (provider === 'xai') return { resolution: requestParams.resolution || '2k', aspect_ratio: requestParams.aspect_ratio || requestParams.aspectRatio || '1:1' };
+  return { size: requestParams.size || 'auto' };
 }
 function modeLabel(mode) {
   return mode === 'styleTransfer' ? '灵感迁移' : mode === 'manual' ? '手动模式' : 'AI 模式';
@@ -631,7 +637,7 @@ export async function onRequestPost(ctx) {
   fd.append('model', profile.model || 'gpt-image-2');
   fd.append('prompt', renderPrompt);
   if (negativePrompt) fd.append('negative_prompt', negativePrompt);
-  Object.entries(providerPayload(provider, params)).forEach(([k, v]) => fd.append(k, v && typeof v === 'object' ? JSON.stringify(v) : String(v)));
+  Object.entries(providerPayload(provider, params, profile.model)).forEach(([k, v]) => fd.append(k, v && typeof v === 'object' ? JSON.stringify(v) : String(v)));
   const outputFormat = String(params.output_format || params.format || settings.output_format || 'png').toLowerCase();
   if (!profile.codexCli) fd.append('quality', normalizeImageQuality(params.quality || settings.quality));
   fd.append('n', String(provider === 'google' ? 1 : asNum(params.count || params.n || settings.n, 1)));
@@ -657,7 +663,7 @@ export async function onRequestPost(ctx) {
     const body = {
       model: profile.model || 'gpt-image-2',
       prompt: renderPrompt,
-      ...providerPayload(provider, params),
+      ...providerPayload(provider, params, profile.model),
       output_format: outputFormat,
       moderation: String(params.moderation || settings.moderation || 'auto')
     };
@@ -733,7 +739,8 @@ export async function onRequestPost(ctx) {
     }, {
       allowedHosts: ctx.env?.UPSTREAM_ALLOWED_HOSTS,
       requireAllowlist: String(ctx.env?.UPSTREAM_ALLOWLIST_REQUIRED || '').toLowerCase() === 'true',
-      allowPlatformDnsFallback: true
+      allowPlatformDnsFallback: true,
+      fetchImpl: typeof ctx.env?.LOCAL_UPSTREAM_FETCH === 'function' ? ctx.env.LOCAL_UPSTREAM_FETCH : undefined
     });
     upstream = pinned.response;
     responseHeaderMs = Date.now() - upstreamStartedAt;

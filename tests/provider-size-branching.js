@@ -1,10 +1,12 @@
 const fs = require('fs');
 const path = require('path');
+const vm = require('vm');
 
 const root = path.join(__dirname, '..');
 const indexHtml = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 const home = fs.readFileSync(path.join(root, 'assets', 'homepage-v3.js'), 'utf8');
 const proxy = fs.readFileSync(path.join(root, 'functions', 'api-proxy', '[[path]].js'), 'utf8');
+const proRender = fs.readFileSync(path.join(root, 'functions', 'api', 'pro-workbench', 'render.js'), 'utf8');
 const failures = [];
 
 function ok(cond, message) {
@@ -15,6 +17,9 @@ function includes(needle, message) {
 }
 function proxyIncludes(needle, message) {
   ok(proxy.includes(needle), message);
+}
+function renderIncludes(needle, message) {
+  ok(proRender.includes(needle), message);
 }
 function matches(pattern, message) {
   ok(pattern.test(home), message);
@@ -36,20 +41,81 @@ includes("ratios25: ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '1
 includes("ratios31: ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9']", 'Google 3.1 ratio table should be present');
 matches(/function googleVersion\(profile = activeProfile\(\)\)[\s\S]*3\.1[\s\S]*2\.5/, 'Google model version helper should distinguish 3.1 from 2.5');
 matches(/if \(provider === 'google'\) \{[\s\S]*resolution: imageSize,[\s\S]*aspect_ratio: aspectRatio,[\s\S]*image_size: imageSize[\s\S]*\}/, 'Google payload should send task snapshot fields with flat image_size for OpenAI-compatible providers');
-includes('const GOOGLE_OFFICIAL_IMAGE_SIZES', 'Google payload should use an official Gemini image size table');
-includes("'3:2': '5056x3392'", 'Google 4K + 3:2 should map to the official Gemini dimensions');
+includes('const NANO_BANANA_CAPABILITIES', 'Google payload should use the Nano Banana capability table');
+includes('gemini-3-pro-image-preview', 'Google payload should recognize Nano Banana Pro preview model');
+includes('gemini-3.1-flash-image-preview', 'Google payload should recognize Nano Banana 2 preview model');
 includes('const OPENAI_RESOLUTION_TABLE', 'OpenAI concrete resolution table should be available for detail mismatch display');
 includes('const XAI_RESOLUTION_TABLE', 'Xai/Grok concrete resolution table should be available for detail mismatch display');
 includes('function expectedProviderResolution(params = {})', 'Provider-specific expected resolution helper should exist');
 includes('function isTierResolutionMatch(requested = {}, actualValue = \'\', images = [])', 'Tier resolution matching helper should exist');
 includes("response_format: 'url'", 'Google payload should use a gateway-compatible string response_format');
-matches(/extra_body:\s*\{[\s\S]*generationConfig:[\s\S]*imageConfig:[\s\S]*imageSize:[\s\S]*aspectRatio/s, 'Google payload should send Gemini imageConfig controls');
-includes('target_size: officialSize || undefined', 'Google payload should include the official target pixel size for prompt enforcement');
+matches(/extra_body:\s*\{[\s\S]*generationConfig:[\s\S]*imageConfig:\s*\{[\s\S]*imageSize(?:,|:)[\s\S]*aspectRatio(?:,|:)/s, 'Google payload should send Gemini imageConfig controls');
+ok(!home.includes('target_size: officialSize || undefined'), 'Google payload must not send target pixel estimation');
+ok(!home.includes('generation_config:'), 'Google payload must not send duplicate snake-case generation config');
+ok(!home.includes('image_size: normalizedImageSize'), 'Google payload must not send duplicate snake-case imageConfig fields');
+
+// The professional workbench must use the same Google mapping as the main composer.
+renderIncludes('const GOOGLE_NANO_IMAGE_CAPABILITIES', 'Professional workbench should recognize Nano Banana model capabilities');
+renderIncludes('gemini-3-pro-image-preview', 'Professional workbench should recognize Nano Banana Pro preview model');
+renderIncludes('gemini-3.1-flash-image-preview', 'Professional workbench should recognize Nano Banana 2 preview model');
+renderIncludes("responseModalities: ['IMAGE', 'TEXT']", 'Professional workbench should use camelCase Gemini response modalities');
+renderIncludes('imageConfig: {', 'Professional workbench should send Gemini imageConfig');
+ok(!proRender.includes('target_size:'), 'Professional workbench must not send target pixel estimation');
+ok(!proRender.includes('generation_config:'), 'Professional workbench must not send duplicate snake-case generation config');
+ok(!proRender.includes('image_size: normalizedImageSize'), 'Professional workbench must not send duplicate snake-case imageConfig fields');
+
+// Exercise the workflow mapper directly so toolbar strings cannot silently become pixel sizes.
+const renderContext = {
+  Object,
+  Array,
+  String,
+  Number,
+  Math,
+  Set,
+  Map,
+  Uint8Array,
+  ArrayBuffer,
+  TextEncoder,
+  TextDecoder,
+  URL,
+  URLSearchParams,
+  Request,
+  Response,
+  Headers,
+  FormData,
+  Blob,
+  ReadableStream,
+  AbortController,
+  setTimeout,
+  clearTimeout
+};
+renderContext.globalThis = renderContext;
+const renderModule = proRender
+  .replace(/^import[^\n]*\r?\n/gm, '')
+  .replace(/^export\s+/gm, '');
+vm.runInNewContext(`${renderModule}\nthis.__providerPayload = providerPayload;`, renderContext);
+const workflowGooglePayload = renderContext.__providerPayload('google', { resolution: '4K', aspectRatio: '3:4' }, 'gemini-3-pro-image-preview');
+ok(workflowGooglePayload.resolution === '4K', 'Professional workbench should preserve Google resolution tier');
+ok(workflowGooglePayload.image_size === '4K', 'Professional workbench should preserve flat Google image_size');
+ok(workflowGooglePayload.size === '4K', 'Professional workbench should preserve Google size tier');
+ok(workflowGooglePayload.aspect_ratio === '3:4', 'Professional workbench should preserve Google aspect ratio');
+ok(!Object.prototype.hasOwnProperty.call(workflowGooglePayload, 'target_size'), 'Professional workbench payload should omit target_size');
+ok(!Object.prototype.hasOwnProperty.call(workflowGooglePayload.extra_body, 'generation_config'), 'Professional workbench payload should omit generation_config');
+ok(JSON.stringify(workflowGooglePayload.extra_body.generationConfig.imageConfig) === JSON.stringify({ imageSize: '4K', aspectRatio: '3:4' }), 'Professional workbench payload should use one authoritative camelCase imageConfig');
+for (const model of ['gemini-3-pro-image', 'gemini-3-pro-image-preview', 'gemini-3.1-flash-image', 'gemini-3.1-flash-image-preview']) {
+  for (const aspectRatio of ['4:3', '3:4']) {
+    const payload = renderContext.__providerPayload('google', { resolution: '2K', aspectRatio }, model);
+    ok(payload.resolution === '2K' && payload.image_size === '2K' && payload.size === '2K', `${model} should preserve 2K toolbar tier`);
+    ok(payload.aspect_ratio === aspectRatio, `${model} should preserve ${aspectRatio} toolbar ratio`);
+    ok(payload.extra_body?.generationConfig?.imageConfig?.imageSize === '2K', `${model} should pass imageSize directly to Gemini imageConfig`);
+    ok(payload.extra_body?.generationConfig?.imageConfig?.aspectRatio === aspectRatio, `${model} should pass aspectRatio directly to Gemini imageConfig`);
+  }
+}
 proxyIncludes('function sanitizeGoogleImageBody(body)', 'API proxy should defensively sanitize cached/legacy Google image request bodies');
 proxyIncludes('if (body.googleExactSizeUnsupported || body.legacy_google_size) delete body.response_format', 'API proxy should only remove object response_format for explicit legacy fallback');
-proxyIncludes('body.image_size = body.resolution', 'API proxy should preserve Google image_size as a flat field');
+proxyIncludes('body.image_size = imageSize', 'API proxy should preserve Google image_size as a flat field');
 proxyIncludes('googleCompatExtraBody', 'Google reference image requests should keep SkyAPI-compatible imageConfig controls');
-proxyIncludes("out.append('response_format', 'url')", 'Google reference image requests should use gateway-compatible response_format');
+proxyIncludes("out.append('response_format', String(firstValue('response_format') || 'url'))", 'Google reference image requests should use gateway-compatible response_format');
 proxyIncludes("out.append('extra_body', JSON.stringify(googleCompatExtraBody", 'Google reference image requests should forward imageConfig in multipart extra_body');
 ok(!/proxyGoogleImageEditViaNative/.test(proxy), 'Google reference image requests must not be intercepted by native Gemini proxy');
 ok(!new RegExp('google-' + 'native-generate-content').test(proxy), 'Google reference image requests must not use the Gemini generateContent compatibility marker');
@@ -74,7 +140,7 @@ includes('negative_prompt: negativePrompt', 'Workflow image params should forwar
 includes('await generateImageTask(taskSeed)', 'Workflow execution should reuse the normal image generation task path');
 includes('providerPayload(provider, requestParams)', 'Workflow generation path should keep provider-specific payload branching through task snapshot params');
 includes('function buildWorkflowAgentRequestPayload(input, options = {})', 'Workflow planning/rewrite should use a dedicated Responses payload builder');
-includes('function postAgentResponsesRequest(payload, textProfile)', 'Workflow planning/rewrite should use the shared Agent Responses request helper with timeout handling');
+includes('async function postAgentResponsesRequest(payload, textProfile, externalSignal = null)', 'Workflow planning/rewrite should use the shared Agent Responses request helper with timeout and cancellation handling');
 includes('agentRequestTimeoutSeconds(textProfile)', 'Workflow Responses requests should use configured Agent timeouts');
 includes('referenceLimit()', 'Workflow/reference UI should continue to rely on provider reference limits');
 

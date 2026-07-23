@@ -41,6 +41,7 @@ ok(homeJs.includes('async function detectImageBlobType(blob)') && homeJs.include
 ok(homeJs.includes('if (options?.confirm !== true) return { deleted: 0, skipped: true') && !/async function init\([\s\S]*?cleanupOrphanBlobs\s*\(/.test(homeJs), 'orphan Blob cleanup must require explicit confirmation and never run during homepage startup');
 ok(homeJs.includes('async function prepareImageContextMenuCopy(menu)') && homeJs.includes("new ClipboardItem({ 'image/png': preparedBlob })"), 'image context menu must provide Firefox with a resolved PNG Blob instead of only a promised ClipboardItem payload');
 ok(homeJs.includes("if (event.target.closest?.('.image-context-menu')) return;") && homeJs.includes("state.imageContextMenu ? $('.image-context-menu') : topVisibleModal()"), 'image context menu must have an independent keyboard focus scope without locking the viewer');
+ok(homeJs.includes("closeImageContextMenu();\n  if (keepsViewerClick) return;\n  event.preventDefault();\n}, true);") && !homeJs.includes('closeImageContextMenu();\n  if (keepsViewerClick) return;\n  event.preventDefault();\n  event.stopImmediatePropagation();'), 'closing a stale image menu must not consume the following control click');
 ok(homeJs.includes('id="imageMenuMount"') && homeJs.includes('function syncImageContextMenu()') && homeJs.includes("state.imageContextMenu = { ...menu, copyRequestId: uid('copy'), copyState: 'loading' };") && homeJs.includes('prepareImageContextMenuCopy(state.imageContextMenu);'), 'opening the image context menu must update only its dedicated mount and preload the clipboard image');
 ok(!homeJs.includes('state.imageContextMenu = menu;\n  render();'), 'opening the image context menu must not re-render the gallery or viewer');
 ok(homeJs.includes('id="imageMenuMount" data-modal-inert-exempt') && homeJs.includes("if (child.matches?.('[data-modal-inert-exempt]')) return;"), 'image context menu mount must not become inert under the active detail or viewer modal');
@@ -186,7 +187,22 @@ ok(!/\b(alert|confirm|prompt)\s*\(/.test(promptsHtml), 'prompts page must not us
 const proxyJs = fs.readFileSync(path.join(root, 'functions', 'api-proxy', '[[path]].js'), 'utf8');
 ok(proxyJs.includes('X-GPT-Image-Timeout-Seconds') && proxyJs.includes('X-GPT-Image-Stream') && proxyJs.includes('partial_images'), 'API proxy must honor timeout and stream advanced headers');
 ok(proxyJs.includes('isStreamCompatibleImageProfile') && proxyJs.includes('delete body.stream'), 'API proxy must disable stream fields for incompatible providers');
-ok(proxyJs.includes('googleCompatExtraBody') && proxyJs.includes("out.append('response_format', 'url')") && proxyJs.includes("out.append('extra_body', JSON.stringify(googleCompatExtraBody"), 'API proxy must pass Google reference image edits through the SkyAPI-compatible multipart path with imageConfig');
+ok(proxyJs.includes('googleCompatExtraBody') && proxyJs.includes("out.append('response_format'") && proxyJs.includes("|| 'url'") && proxyJs.includes("out.append('extra_body', JSON.stringify(googleCompatExtraBody"), 'API proxy must pass Google reference image edits through the SkyAPI-compatible multipart path with imageConfig');
+ok(proxyJs.includes('removeGoogleLegacySizeFields') && proxyJs.includes('delete normalized.generation_config'), 'API proxy must remove legacy Google target-size and duplicate nested config fields');
+const providerPayloadStart = homeJs.indexOf('function providerPayload');
+const providerPayloadEnd = homeJs.indexOf('function appendProviderParams', providerPayloadStart + 1);
+const providerPayloadSource = providerPayloadStart >= 0 && providerPayloadEnd > providerPayloadStart
+  ? homeJs.slice(providerPayloadStart, providerPayloadEnd)
+  : '';
+ok(providerPayloadSource.includes('generationConfig') && providerPayloadSource.includes('imageConfig'), 'homepage must use one canonical Google generationConfig.imageConfig mapper');
+ok(!providerPayloadSource.includes('target_size') && !providerPayloadSource.includes('targetSize'), 'homepage Nano Banana mapper must not emit target pixel dimensions');
+const imageConfigStart = providerPayloadSource.indexOf('imageConfig:');
+const imageConfigEnd = imageConfigStart >= 0 ? providerPayloadSource.indexOf('}', imageConfigStart) : -1;
+const imageConfigSource = imageConfigStart >= 0 && imageConfigEnd > imageConfigStart
+  ? providerPayloadSource.slice(imageConfigStart, imageConfigEnd)
+  : '';
+ok(!providerPayloadSource.includes('generation_config') && !imageConfigSource.includes('image_size:') && !imageConfigSource.includes('aspect_ratio:'), 'homepage Nano Banana mapper must not emit duplicate snake_case nested config');
+ok(homeJs.includes('gemini-3-pro-image-preview') && homeJs.includes('gemini-3.1-flash-image-preview'), 'homepage must recognize stable and preview Nano Banana model IDs');
 ok(!/proxyGoogleImageEditViaNative|:generateContent|inlineData|generativelanguage\.googleapis\.com/.test(proxyJs), 'API proxy must not route Google reference image edits through native Gemini generateContent');
 ok(!/type:\s*'input_image'/.test(proxyJs) && !/image_url:\s*imageUrl/.test(proxyJs), 'API proxy must not build OpenAI Responses-style image_url payloads for Google reference images');
 const middlewareJs = fs.readFileSync(path.join(root, 'functions', '_middleware.js'), 'utf8');

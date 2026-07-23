@@ -14,18 +14,28 @@ export function isSecretPlaceholder(value) {
     || /^\*+REDACTED\*+$/i.test(input);
 }
 
-function itemIdentity(value) {
+function itemIdentityPart(value, field) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return '';
-  return String(value.id || value.name || value.key || '').trim();
+  return String(value[field] ?? '').trim();
+}
+
+function uniqueArrayItem(existing, field, value) {
+  if (!value) return undefined;
+  const matches = existing.filter(item => itemIdentityPart(item, field) === value);
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 function existingArrayItem(incoming, existing, index) {
-  const identity = itemIdentity(incoming);
-  if (identity) {
-    const matched = existing.find(item => itemIdentity(item) === identity);
-    if (matched !== undefined) return matched;
+  const id = itemIdentityPart(incoming, 'id');
+  const name = itemIdentityPart(incoming, 'name');
+  if (id && name) {
+    const exact = existing.filter(item => itemIdentityPart(item, 'id') === id && itemIdentityPart(item, 'name') === name);
+    if (exact.length === 1) return exact[0];
   }
-  return existing[index];
+  return uniqueArrayItem(existing, 'id', id)
+    || uniqueArrayItem(existing, 'name', name)
+    || uniqueArrayItem(existing, 'key', itemIdentityPart(incoming, 'key'))
+    || existing[index];
 }
 
 export function preserveSecretPlaceholders(incoming, existing, key = '') {

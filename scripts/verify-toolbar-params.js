@@ -22,6 +22,14 @@ function assertPattern(name, pattern) {
     console.log(`OK   ${name}`);
   }
 }
+function assertAbsent(name, needle) {
+  if (home.includes(needle)) {
+    console.error(`FAIL ${name}: unexpected ${needle}`);
+    failed = true;
+  } else {
+    console.log(`OK   ${name}`);
+  }
+}
 function assertProxyContains(name, needle) {
   if (!proxy.includes(needle)) {
     console.error(`FAIL ${name}: missing ${needle}`);
@@ -35,7 +43,7 @@ function assertProxyContains(name, needle) {
 assertContains('JSON sends image output params', 'appendImageOutputParams(body, requestParams, profile)');
 assertContains('multipart sends image output params', 'appendImageOutputParams(fd, requestParams, profile)');
 assertContains('OpenAI-compatible edits default to repeated image[] fields', "IMAGE_STREAM_RUNTIME?.defaultEditImageField?.(currentProvider) || 'image[]'");
-assertContains('legacy image field retry is guarded', "if (imageFieldName === 'image' || !shouldRetryEditImageField(error)) throw error");
+assertContains('streaming edit compatibility retry is guarded', 'if (!shouldRetryStreamingEdit(error)) throw error');
 assertContains('JSON sends provider payload', 'Object.assign(body, providerPayload(provider, requestParams))');
 assertContains('multipart sends provider payload', 'appendProviderParams(fd, provider, requestParams)');
 assertPattern('output params include normalized quality', /out\.quality\s*=\s*normalizeImageQuality\(firstDefined\(/);
@@ -50,20 +58,23 @@ assertContains('edit n respects Google split', "fd.append('n', String(provider =
 
 // Per-entry advanced profile fields must affect the active request path.
 assertContains('advanced b64 is read', 'responseFormatB64Json');
-assertContains('JSON b64 guarded by provider', "advanced.responseFormatB64Json && provider !== 'google' && provider !== 'xai'");
+assertContains('JSON b64 delivery guarded by provider', "advanced.responseDelivery === 'b64_json' && provider !== 'google' && provider !== 'xai'");
 assertContains('multipart b64 guarded by provider', "form.append('response_format', 'b64_json')");
 assertContains('JSON stream flags injected', 'body.stream = true');
 assertContains('multipart stream flags injected', "form.append('stream', 'true')");
 assertContains('partial images injected', 'partial_images');
 assertContains('advanced timeout header injected', 'X-GPT-Image-Timeout-Seconds');
 
-// Google/Nano must use the official 4K size table and the SkyAPI-compatible imageConfig shape.
-assertContains('Google 4K 3:2 maps to official Gemini dimensions', "'3:2': '5056x3392'");
+// Google/Nano must preserve toolbar tiers/ratios and use one authoritative camelCase imageConfig shape.
+assertPattern('Google capability table recognizes stable and preview models', /gemini-3-pro-image(?:-preview)?[\s\S]*gemini-3\.1-flash-image(?:-preview)?/);
 assertContains('Google request uses string response_format', "response_format: 'url'");
 assertContains('Google request sends image tier as size', 'size: imageSize');
 assertContains('Google request includes Gemini imageConfig', 'imageConfig: {');
 assertContains('Google request includes Gemini imageConfig aspect ratio', 'aspectRatio,');
-assertContains('Google request includes target_size', 'target_size: officialSize');
+assertContains('Google request includes Gemini imageConfig image tier', 'imageSize,');
+assertAbsent('Google request omits target pixel estimation', 'target_size: officialSize');
+assertAbsent('Google request omits duplicate snake-case nested config', 'generation_config:');
+assertAbsent('Google request omits duplicate snake-case imageConfig fields', 'image_size: normalizedImageSize');
 assertProxyContains('proxy streams successful image JSON', 'X-GPT-Image-Proxy-Streamed');
 
 if (failed) process.exit(1);

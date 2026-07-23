@@ -95,7 +95,20 @@ function Test-HttpReady {
   }
 }
 
-function Get-ListeningProcessInfo {
+function Test-LocalPreviewIdentity {
+  param([string]$Url)
+
+  try {
+    $resp = Invoke-WebRequest -Uri ($Url.TrimEnd('/') + '/api/ping') -UseBasicParsing -TimeoutSec 5
+    if ([int]$resp.StatusCode -lt 200 -or [int]$resp.StatusCode -ge 300) { return $false }
+    $payload = $resp.Content | ConvertFrom-Json -ErrorAction Stop
+    return $payload.localPreview -eq $true
+  } catch {
+    return $false
+  }
+}
+
+function Get-ListeningProcessId {
   param(
     [string]$HostName,
     [int]$Port
@@ -105,8 +118,44 @@ function Get-ListeningProcessInfo {
     $conn = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction Stop |
       Where-Object { $_.LocalAddress -eq $HostName -or $_.LocalAddress -eq '0.0.0.0' -or $_.LocalAddress -eq '::' -or $_.LocalAddress -eq '::0' } |
       Select-Object -First 1
-    if (-not $conn) { return $null }
-    return Get-CimInstance Win32_Process -Filter ("ProcessId = {0}" -f [int]$conn.OwningProcess) -ErrorAction SilentlyContinue
+    if ($conn) { return [int]$conn.OwningProcess }
+  } catch {}
+
+  try {
+    foreach ($line in (& netstat.exe -ano -p tcp)) {
+      $parts = @($line -split '\s+' | Where-Object { $_ })
+      if ($parts.Count -lt 5 -or $parts[0] -ne 'TCP' -or $parts[3] -ne 'LISTENING') { continue }
+      if (-not $parts[1].EndsWith(":$Port")) { continue }
+      $processId = 0
+      if ([int]::TryParse($parts[4], [ref]$processId)) { return $processId }
+    }
+  } catch {}
+  return 0
+}
+
+function Get-ListeningProcessInfo {
+  param(
+    [string]$HostName,
+    [int]$Port
+  )
+
+  $listenerProcessId = Get-ListeningProcessId -HostName $HostName -Port $Port
+  if ($listenerProcessId -le 0) { return $null }
+  try {
+    $info = Get-CimInstance Win32_Process -Filter ("ProcessId = {0}" -f $listenerProcessId) -ErrorAction Stop
+    if ($info) { return $info }
+  } catch {}
+
+  try {
+    $process = Get-Process -Id $listenerProcessId -ErrorAction Stop
+    return [pscustomobject]@{
+      ProcessId = $listenerProcessId
+      ParentProcessId = 0
+      Name = $process.ProcessName
+      CommandLine = ''
+      ExecutablePath = $process.Path
+      LimitedInfo = $true
+    }
   } catch {
     return $null
   }
@@ -123,6 +172,7 @@ function Get-ProcessAncestry {
     if ($seen.ContainsKey($pidValue)) { break }
     $seen[$pidValue] = $true
     $chain += $current
+    if ($current.PSObject.Properties['LimitedInfo'] -and $current.LimitedInfo) { break }
     $parentId = [int]$current.ParentProcessId
     if ($parentId -le 0) { break }
     $current = Get-CimInstance Win32_Process -Filter ("ProcessId = {0}" -f $parentId) -ErrorAction SilentlyContinue
@@ -149,14 +199,24 @@ function Stop-ExistingPreviewProcess {
   )
 
   $proc = Get-ListeningProcessInfo -HostName $HostName -Port $Port
-  if (-not $proc) { return }
+  if (-not $proc) {
+    if (Test-PortOpen -HostName $HostName -Port $Port) {
+      throw "Port $Port is open, but its listening process could not be identified."
+    }
+    return
+  }
   $chain = @(Get-ProcessAncestry -ProcessInfo $proc)
   $owned = @($chain | Where-Object { Test-IsProjectPreviewCommand -CommandLine ([string]$_.CommandLine) })
   if (-not $owned.Count) {
-    throw ("Port {0} is already in use by another process: PID {1} {2}`nCommandLine: {3}" -f $Port, $proc.ProcessId, $proc.Name, ([string]$proc.CommandLine))
+    if (-not (Test-LocalPreviewIdentity -Url $Url)) {
+      throw ("Port {0} is already in use by another process: PID {1} {2}`nCommandLine: {3}" -f $Port, $proc.ProcessId, $proc.Name, ([string]$proc.CommandLine))
+    }
+    Write-LauncherLog -Level 'WARN' -Message "Process ancestry is unavailable; stopping the verified local preview listener PID $($proc.ProcessId)."
+    Stop-Process -Id ([int]$proc.ProcessId) -Force -ErrorAction Stop
+  } else {
+    $root = $owned[-1]
+    Stop-ProcessTree -ProcessId ([int]$root.ProcessId)
   }
-  $root = $owned[-1]
-  Stop-ProcessTree -ProcessId ([int]$root.ProcessId)
   $deadline = (Get-Date).AddSeconds(5)
   while ((Get-Date) -lt $deadline) {
     if (-not (Test-PortOpen -HostName $HostName -Port $Port)) { return }
@@ -168,7 +228,10 @@ function Stop-ExistingPreviewProcess {
 function Stop-ProcessTree {
   param([int]$ProcessId)
 
-  $children = @(Get-CimInstance Win32_Process -Filter ("ParentProcessId = {0}" -f $ProcessId) -ErrorAction SilentlyContinue)
+  $children = @()
+  try {
+    $children = @(Get-CimInstance Win32_Process -Filter ("ParentProcessId = {0}" -f $ProcessId) -ErrorAction Stop)
+  } catch {}
   foreach ($child in $children) {
     Stop-ProcessTree -ProcessId ([int]$child.ProcessId)
   }
@@ -285,10 +348,10 @@ function Start-NodePreview {
   $process = Start-NodeFallbackHidden
   $deadline = (Get-Date).AddSeconds(20)
   while ((Get-Date) -lt $deadline) {
+    if ($process.HasExited) { break }
     if (Test-HttpReady -Url ($Url + 'login')) {
       return $process
     }
-    if ($process.HasExited) { break }
     Start-Sleep -Milliseconds 300
   }
 
@@ -310,11 +373,11 @@ function Start-WranglerPreview {
   $process = Start-WranglerHidden -Command $command
   $deadline = (Get-Date).AddSeconds(45)
   while ((Get-Date) -lt $deadline) {
-    if (Test-HttpReady -Url ($Url + 'login')) {
-      return $process
-    }
     if ($process.HasExited) {
       throw "Wrangler exited with code $($process.ExitCode)."
+    }
+    if (Test-HttpReady -Url ($Url + 'login')) {
+      return $process
     }
     Start-Sleep -Milliseconds 500
   }
@@ -330,8 +393,7 @@ function Invoke-LocalPreview {
 
   if (Test-PortOpen -HostName $HostName -Port $Port) {
     if ($ReuseExisting -and (Test-HttpReady -Url ($Url + 'login'))) {
-      $existingProcess = Get-ListeningProcessInfo -HostName $HostName -Port $Port
-      $existingProcessId = if ($existingProcess) { [int]$existingProcess.ProcessId } else { 0 }
+      $existingProcessId = Get-ListeningProcessId -HostName $HostName -Port $Port
       Write-LauncherLog -Message "Reusing the healthy local preview at $Url"
       Write-PreviewStatus -State 'ready' -ActiveEngine 'existing' -ProcessId $existingProcessId
       if (-not $NoBrowser) { Start-Process $Url }
@@ -339,6 +401,9 @@ function Invoke-LocalPreview {
     }
     Write-LauncherLog -Message "Stopping the existing project preview on port $Port."
     Stop-ExistingPreviewProcess -HostName $HostName -Port $Port
+    if (Test-PortOpen -HostName $HostName -Port $Port) {
+      throw "The previous service is still listening on port $Port."
+    }
   }
 
   $activeEngine = $null
@@ -363,12 +428,15 @@ function Invoke-LocalPreview {
     }
   }
 
-  if (-not (Test-HttpReady -Url ($Url + 'api/ping'))) {
+  if ($activeProcess.HasExited) {
+    throw "Local preview process exited before the final health check."
+  }
+  if (-not (Test-LocalPreviewIdentity -Url $Url)) {
     throw "Local preview started but failed the final health check at $($Url)api/ping."
   }
 
-  $listenerProcess = Get-ListeningProcessInfo -HostName $HostName -Port $Port
-  $listenerProcessId = if ($listenerProcess) { [int]$listenerProcess.ProcessId } else { [int]$activeProcess.Id }
+  $listenerProcessId = Get-ListeningProcessId -HostName $HostName -Port $Port
+  if ($listenerProcessId -le 0) { $listenerProcessId = [int]$activeProcess.Id }
   Write-PreviewStatus -State 'ready' -ActiveEngine $activeEngine -ProcessId $listenerProcessId
   Write-LauncherLog -Message "Local preview ready via $activeEngine at $Url"
   if (-not $NoBrowser) { Start-Process $Url }

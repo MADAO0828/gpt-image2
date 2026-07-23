@@ -8,6 +8,7 @@
   const DEFAULT_METADATA_LIMIT = 24;
   const DEFAULT_SCAN_DEPTH = 12;
   const DEFAULT_SCAN_NODES = 20000;
+  const MAX_STREAM_EVENT_COUNT = 1000000;
 
   function firstValue(...values) {
     return values.find((value) => value !== undefined && value !== null && value !== '');
@@ -69,7 +70,7 @@
     const terminalPattern = /(?:image[._](?:edit|generation)\.(?:result|completed|failed|error|incomplete|cancelled|canceled)|response\.)/;
     if (terminalPattern.test(object)) return object;
     if (terminalPattern.test(upstreamType)) return upstreamType;
-    return type || object || upstreamType;
+    return type || object || upstreamType || (payload?.error || payload?.response?.error ? 'error' : '');
   }
 
   function eventErrorMessage(payload) {
@@ -309,10 +310,11 @@
 
     const partialCandidates = () => [...candidatesByOutput.values()].sort((a, b) => a.outputIndex - b.outputIndex);
     const terminalCandidates = () => [...terminalCandidatesByOutput.values()].sort((a, b) => a.outputIndex - b.outputIndex);
+    const boundedEventCount = () => Math.min(eventCount, MAX_STREAM_EVENT_COUNT);
     const context = () => ({
       partialCandidates: partialCandidates(),
       streamEvents: [...streamEvents],
-      streamEventCount: eventCount,
+      streamEventCount: boundedEventCount(),
       partialCount,
       lastStreamEventType: streamEvents.at(-1)?.type || '',
       completionReason
@@ -460,7 +462,7 @@
       return {
         data,
         streamEvents,
-        streamEventCount: eventCount,
+        streamEventCount: boundedEventCount(),
         partialCount,
         lastStreamEventType: streamEvents.at(-1)?.type || '',
         streamed: true,
@@ -489,7 +491,20 @@
     const status = Number(details.status || 0);
     if (status < 400 || status >= 500) return false;
     if (Number(details.streamEventCount || 0) > 0 || Number(details.partialCount || 0) > 0) return false;
-    return /(?:unknown|invalid|unexpected|missing|unsupported).{0,40}(?:image\[\]|image)|(?:image\[\]|image).{0,40}(?:field|parameter|required)/i.test(String(details.message || details.detail || ''));
+    const fieldNames = Array.isArray(details.fieldNames) && details.fieldNames.length
+      ? details.fieldNames
+      : ['image[]', 'image'];
+    const escapePattern = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const fieldPattern = fieldNames
+      .map((value) => escapePattern(value).replace(/[_-]/g, '[_\\s-]+'))
+      .filter(Boolean)
+      .join('|');
+    if (!fieldPattern) return false;
+    const message = [details.message, details.detail, details.param]
+      .filter((value) => typeof value === 'string' && value.trim())
+      .join('\n');
+    if (!new RegExp(`(?:${fieldPattern})`, 'i').test(message)) return false;
+    return /(?:unknown|invalid|unexpected|missing|unsupported|unrecognized|forbidden|extra)\b|\bnot\s+(?:allowed|supported)\b|\b(?:field|parameter|property)\b/i.test(message);
   }
 
   return {

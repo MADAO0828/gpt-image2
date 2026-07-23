@@ -18,7 +18,8 @@ param(
   [string]$D1DatabaseName = $env:D1_DATABASE_NAME,
   [switch]$SkipProductionDeploy,
   [switch]$InstallBrowsers,
-  [switch]$AllowDirtyDeploy
+  [switch]$AllowDirtyDeploy,
+  [switch]$RemoveLegacyUpstreamAllowlistSecret
 )
 
 $ErrorActionPreference = 'Stop'
@@ -248,7 +249,7 @@ function Invoke-ProductionSecretPreflight {
     throw 'Production blocked: Pages secret JWT_SECRET is not configured.'
   }
   if ($output -match '(?i)\bUPSTREAM_ALLOWED_HOSTS\b') {
-    Write-Host 'Legacy Pages secret UPSTREAM_ALLOWED_HOSTS will be removed after the new dynamic-upstream runtime passes production verification.' -ForegroundColor Yellow
+    Write-Host 'Legacy Pages secret UPSTREAM_ALLOWED_HOSTS is present and will be preserved unless -RemoveLegacyUpstreamAllowlistSecret is explicitly provided.' -ForegroundColor Yellow
   }
   if ($output -match '(?i)\bALLOW_INSECURE_JWT_FALLBACK\b') {
     throw 'Production blocked: insecure local JWT fallback must not be configured in Pages.'
@@ -464,7 +465,11 @@ try {
     $productionUrl = Invoke-PagesDeploy -Branch $ProductionBranch -Label 'production'
     Invoke-StaticDeployChecks -Url $productionUrl -Label 'production'
     Invoke-QualityTests -Url $productionUrl -Label 'production'
-    Remove-LegacyUpstreamAllowlistSecret
+    if ($RemoveLegacyUpstreamAllowlistSecret) {
+      Remove-LegacyUpstreamAllowlistSecret
+    } else {
+      Write-Host 'Preserving existing Pages secrets; legacy upstream host allowlist secret remains unchanged.' -ForegroundColor Yellow
+    }
   } else {
     Write-Host 'Skipping production deploy by parameter.' -ForegroundColor Yellow
   }

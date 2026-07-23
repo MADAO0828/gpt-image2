@@ -77,6 +77,7 @@ const requiredFiles = [
   'assets/shell-ui.js',
   'assets/shell-ui.css',
   'functions/_middleware.js',
+  'functions/_lib/profile-header.js',
   'functions/api-proxy/[[path]].js',
   'functions/api/prompts/index.js',
   'functions/api/pro-workbench/analyze.js',
@@ -84,6 +85,8 @@ const requiredFiles = [
   'functions/api/settings/save.js',
   'functions/api/settings/backup.js',
   'scripts/api-smoke.mjs',
+  'scripts/local-upstream-fetch.mjs',
+  'scripts/local-upstream-fetch.test.mjs',
   'tests/homepage-task-regression.js',
   'tests/provider-size-branching.js',
   'tests/e2e-quality.js'
@@ -112,9 +115,9 @@ for (const name of allowedAssets) {
 }
 
 const index = read('index.html');
-assertContains(index, '/assets/homepage-v3.css?v=home-v3-20260721-controls-r194', 'Index must load cache-busted homepage v3 CSS r194.');
-assertContains(index, '/assets/image-stream-runtime.js?v=home-v3-20260721-controls-r194', 'Index must load cache-busted stream runtime r194.');
-assertContains(index, '/assets/homepage-v3.js?v=home-v3-20260721-controls-r194', 'Index must load cache-busted homepage v3 JS r194.');
+assertContains(index, '/assets/homepage-v3.css?v=home-v3-20260721-profile-header-r197', 'Index must load cache-busted homepage v3 CSS r197.');
+assertContains(index, '/assets/image-stream-runtime.js?v=home-v3-20260721-profile-header-r197', 'Index must load cache-busted stream runtime r197.');
+assertContains(index, '/assets/homepage-v3.js?v=home-v3-20260721-profile-header-r197', 'Index must load cache-busted homepage v3 JS r197.');
 for (const old of ['homepage-v2', 'index-CZHhOunP', 'index-BR6pbS6i', 'fast-workbench-skeleton', 'home-v3-20260703', 'home-v3-20260704-cache-recovery-agent-viewer-r8', 'home-v3-20260704-cache-recovery-agent-viewer-r9', 'home-v3-20260704-cache-recovery-agent-viewer-r10', 'home-v3-20260704-cache-recovery-agent-viewer-r11', 'home-v3-20260704-cache-recovery-agent-viewer-r12', 'home-v3-20260704-cache-recovery-agent-viewer-r13', 'home-v3-20260704-cache-recovery-agent-viewer-r14', 'home-v3-20260704-cache-recovery-agent-viewer-r15', 'home-v3-20260704-cache-recovery-agent-viewer-r16', 'home-v3-20260704-cache-recovery-agent-viewer-r17', 'home-v3-20260704-cache-recovery-agent-viewer-r18', 'home-v3-20260704-cache-recovery-agent-viewer-r19', 'home-v3-20260704-cache-recovery-agent-viewer-r20', 'home-v3-20260704-cache-recovery-agent-viewer-r21', 'home-v3-20260704-cache-recovery-agent-viewer-r22', 'home-v3-20260704-cache-recovery-agent-viewer-r23', 'home-v3-20260704-cache-recovery-agent-viewer-r24']) {
   assertNotContains(index, old, `Index still references obsolete shell marker: ${old}`);
 }
@@ -143,6 +146,12 @@ assertContains(deploy, "'.git'", 'Deploy staging must exclude worktree .git file
 
 const homepage = read('assets/homepage-v3.js');
 const imageStreamRuntime = read('assets/image-stream-runtime.js');
+const profileHeaderCodec = read('functions/_lib/profile-header.js');
+assertContains(profileHeaderCodec, 'export function encodeProfileHeaderValue', 'Profile header codec must expose the ASCII-safe encoder.');
+assertContains(profileHeaderCodec, 'export function decodeProfileHeaderValue', 'Profile header codec must expose the proxy decoder.');
+assertContains(profileHeaderCodec, 'gpt-image-profile-utf8-v1:', 'Profile header codec must use the versioned UTF-8 marker.');
+assertContains(profileHeaderCodec, 'encodeURIComponent', 'Profile header codec must percent-encode non-ASCII selection keys.');
+assertContains(profileHeaderCodec, 'decodeURIComponent', 'Profile header codec must decode the versioned selection keys.');
 for (const marker of [
   'function normalizeRestoredTask',
   'function compactTaskForStorage',
@@ -158,14 +167,19 @@ for (const marker of [
   'referenceSnapshots',
   'function composeReferenceWithMask',
   'function expectedProviderResolution',
+  'function providerPayload',
+  'gemini-3-pro-image-preview',
+  'gemini-3.1-flash-image-preview',
   'function renderImageContextMenu',
   'open-task-reference-viewer',
   'function maskCanvasHasPaint',
-  '5056x3392',
   'response_format',
   'googleCompatResponseFormatFallback',
   "type: 'web_search'",
   'function agentTextProfile',
+  'function encodeProfileHeaderValue',
+  "out['X-GPT-Image-Profile-Id'] = encodeProfileHeaderValue(profileSelectionKey(profile))",
+  "'X-GPT-Image-Profile-Id': encodeProfileHeaderValue(profileSelectionKey(textProfile))",
   'function buildAgentRequestPayload',
   'function branchAgentThreadFromMessage',
   'function clearAgentThreadMessages',
@@ -195,20 +209,39 @@ for (const marker of [
   'function selectedProfile',
   'X-GPT-Image-Profile-Id',
   'function sanitizeGoogleImageBody',
-  'function googleOfficialImageSize',
-  '5056x3392',
   'function googleCompatExtraBody',
+  'function removeGoogleLegacySizeFields',
+  'delete normalized.generation_config',
   'X-GPT-Image-Proxy-Streamed',
   'function isStreamCompatibleImageProfile'
 ]) {
   assertContains(proxy, marker, `API proxy is missing required behavior marker: ${marker}`);
+}
+assertMatch(proxy, /removeGoogleLegacySizeFields\(body\)/, 'API proxy must remove legacy Google target-size fields before forwarding.');
+const providerPayloadStart = homepage.indexOf('function providerPayload');
+const providerPayloadEnd = homepage.indexOf('function appendProviderParams', providerPayloadStart + 1);
+if (providerPayloadStart >= 0 && providerPayloadEnd > providerPayloadStart) {
+  const providerPayloadSource = homepage.slice(providerPayloadStart, providerPayloadEnd);
+  assertNotContains(providerPayloadSource, 'target_size', 'Nano Banana provider payload must not emit target_size.');
+  assertNotContains(providerPayloadSource, 'targetSize', 'Nano Banana provider payload must not emit targetSize.');
+  assertNotContains(providerPayloadSource, 'generation_config', 'Nano Banana provider payload must not emit duplicate generation_config.');
+  const imageConfigStart = providerPayloadSource.indexOf('imageConfig:');
+  const imageConfigEnd = imageConfigStart >= 0 ? providerPayloadSource.indexOf('}', imageConfigStart) : -1;
+  const imageConfigSource = imageConfigStart >= 0 && imageConfigEnd > imageConfigStart
+    ? providerPayloadSource.slice(imageConfigStart, imageConfigEnd)
+    : '';
+  assertNotContains(imageConfigSource, 'image_size:', 'Nano Banana imageConfig must not contain snake_case image_size.');
+  assertNotContains(imageConfigSource, 'aspect_ratio:', 'Nano Banana imageConfig must not contain snake_case aspect_ratio.');
+  assertContains(providerPayloadSource, 'generationConfig', 'Nano Banana provider payload must include generationConfig.');
+  assertContains(providerPayloadSource, 'imageConfig', 'Nano Banana provider payload must include imageConfig.');
 }
 
 const proAnalyze = read('functions/api/pro-workbench/analyze.js');
 const proRender = read('functions/api/pro-workbench/render.js');
 assertContains(proAnalyze, 'formData()', 'Pro workbench analyze must accept multipart FormData image uploads.');
 assertContains(proRender, 'profileId', 'Pro workbench render must forward selected image profile.');
-assertContains(proRender, '5056x3392', 'Pro workbench render must use Google official 4K size table.');
+assertContains(proRender, 'providerPayload', 'Pro workbench render must share the Google provider payload mapper.');
+assertContains(proRender, 'imageConfig', 'Pro workbench render must pass canonical Google imageConfig fields.');
 
 const e2e = read('tests/e2e-quality.js');
 for (const marker of [

@@ -6,10 +6,12 @@ const path = require('path');
 const root = path.resolve(__dirname, '..');
 const runtimePath = path.join(root, 'assets', 'image-stream-runtime.js');
 const homepagePath = path.join(root, 'assets', 'homepage-v3.js');
+const localPreviewPath = path.join(root, 'scripts', 'local-preview-server.mjs');
 
 const runtime = require(runtimePath);
 const homepageSource = fs.readFileSync(homepagePath, 'utf8');
 const proxySource = fs.readFileSync(path.join(root, 'functions', 'api-proxy', '[[path]].js'), 'utf8');
+const localPreviewSource = fs.readFileSync(localPreviewPath, 'utf8');
 
 assert.strictEqual(runtime.defaultEditImageField('openai'), 'image[]');
 assert.strictEqual(runtime.defaultEditImageField('google'), 'image[]');
@@ -32,18 +34,38 @@ assert.strictEqual(runtime.shouldRetryEditImageField({
   streamEventCount: 0,
   partialCount: 0
 }), false);
+assert.strictEqual(runtime.shouldRetryEditImageField({
+  status: 400,
+  message: 'Unknown parameter: partial_images',
+  streamEventCount: 0,
+  partialCount: 0,
+  fieldNames: ['stream', 'partial_images', 'response_format']
+}), true);
+assert.strictEqual(runtime.shouldRetryEditImageField({
+  status: 400,
+  message: 'Invalid prompt content',
+  streamEventCount: 0,
+  partialCount: 0,
+  fieldNames: ['stream', 'partial_images', 'response_format']
+}), false);
 
 assert(
   /defaultEditImageField\(provider\)/.test(homepageSource),
   'reference image requests must select their multipart field through the shared compatibility helper'
 );
 assert(
-  /shouldRetryEditImageField/.test(homepageSource),
-  'reference image requests must guard compatibility retries'
+  /IMAGE_STREAM_RUNTIME\?\.shouldRetryEditImageField\?\./.test(homepageSource)
+    && /upstream-response-headers/.test(homepageSource),
+  'reference image retries must reuse the shared field validator and require a pre-acceptance proxy stage'
 );
 assert(
   /async function inspectMultipartModel/.test(proxySource) && /const \[probeBody, replayBody\] = body\.tee\(\)/.test(proxySource),
   'OpenAI multipart model validation should tee a bounded probe instead of cloning the full request'
+);
+assert(
+  /LOCAL_ORIGINAL_REQUEST_BODY: originalBody/.test(localPreviewSource)
+    && /localOriginalMultipartBody\(ctx\.env, ctx\.request\)/.test(proxySource),
+  'the local preview must hand the original multipart bytes to the proxy only through its local request context'
 );
 assert(
   !/const input = await request\.clone\(\)\.formData\(\);\s*const requestedModel/.test(proxySource),

@@ -18,6 +18,7 @@ import {
   validateNewPassword,
   verifyPassword
 } from '../functions/_lib/password.js';
+import { createLocalUpstreamFetch } from './local-upstream-fetch.mjs';
 import {
   checkLoginLimit,
   clearLoginFailures,
@@ -26,6 +27,7 @@ import {
   recordLoginFailure
 } from '../functions/_lib/rate-limit.js';
 import { maskSecrets, preserveSecretPlaceholders } from '../functions/_lib/settings-secrets.js';
+import { findProfileBySelectionKey, profileSelectionKey } from '../functions/_lib/profile-header.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const host = process.env.LOCAL_PREVIEW_HOST || '127.0.0.1';
@@ -46,6 +48,7 @@ const MAX_SETTINGS_KEYS = 64;
 const MAX_SETTING_KEY_LENGTH = 96;
 const MAX_SETTING_VALUE_BYTES = 128 * 1024;
 const SETTING_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_.-]{0,95}$/;
+const LOCAL_UPSTREAM_FETCH = createLocalUpstreamFetch();
 const pageRoutes = new Map([
   ['/', 'index.html'],
   ['/login', 'login.html'],
@@ -249,16 +252,36 @@ function isProxyPlaceholder(value) {
   const text = String(value || '').trim();
   return text === 'cloudflare-proxy' || text === 'placeholder' || /^\*+MASKED\*+$/i.test(text) || /^\*+REDACTED\*+$/i.test(text);
 }
-function profileKey(profile) {
-  return String(profile?.id || profile?.name || '').trim();
+function profileIdentityPart(profile, field) {
+  if (!profile || typeof profile !== 'object' || Array.isArray(profile)) return '';
+  return String(profile[field] ?? '').trim();
+}
+function uniqueProfileByField(profiles, field, value) {
+  if (!value) return null;
+  const matches = (Array.isArray(profiles) ? profiles : [])
+    .filter((profile) => profileIdentityPart(profile, field) === value);
+  return matches.length === 1 ? matches[0] : null;
+}
+function existingProfileForSecrets(incoming, existingProfiles, index) {
+  const existing = Array.isArray(existingProfiles) ? existingProfiles : [];
+  const id = profileIdentityPart(incoming, 'id');
+  const name = profileIdentityPart(incoming, 'name');
+  if (id && name) {
+    const exact = existing.filter((profile) =>
+      profileIdentityPart(profile, 'id') === id && profileIdentityPart(profile, 'name') === name);
+    if (exact.length === 1) return exact[0];
+  }
+  return uniqueProfileByField(existing, 'id', id)
+    || uniqueProfileByField(existing, 'name', name)
+    || existing[index]
+    || null;
 }
 function preserveProfileSecrets(incomingProfiles, existingProfiles) {
   if (!Array.isArray(incomingProfiles)) return incomingProfiles;
-  const oldMap = new Map((Array.isArray(existingProfiles) ? existingProfiles : []).map((profile) => [profileKey(profile), profile]));
-  return incomingProfiles.map((profile) => {
+  return incomingProfiles.map((profile, index) => {
     if (!profile || typeof profile !== 'object' || Array.isArray(profile)) return profile;
     const next = { ...profile };
-    const old = oldMap.get(profileKey(profile));
+    const old = existingProfileForSecrets(profile, existingProfiles, index);
     if (isProxyPlaceholder(next.apiKey)) next.apiKey = old && !isProxyPlaceholder(old.apiKey) ? (old.apiKey || '') : '';
     if (isProxyPlaceholder(next.nativeApiKey)) next.nativeApiKey = old && !isProxyPlaceholder(old.nativeApiKey) ? (old.nativeApiKey || '') : '';
     if (isProxyPlaceholder(next.googleNativeApiKey)) next.googleNativeApiKey = old && !isProxyPlaceholder(old.googleNativeApiKey) ? (old.googleNativeApiKey || '') : '';
@@ -306,8 +329,8 @@ function activeLocalProfile(settings) {
     : profiles;
   const activeImageId = settings?.activeImageProfileId || '';
   const activeId = settings?.activeProfileId || '';
-  return imageProfiles.find((profile) => profile.id === activeImageId || profile.name === activeImageId)
-    || imageProfiles.find((profile) => profile.id === activeId || profile.name === activeId)
+  return findProfileBySelectionKey(imageProfiles, activeImageId)
+    || findProfileBySelectionKey(imageProfiles, activeId)
     || imageProfiles[0]
     || profiles[0];
 }
@@ -319,7 +342,15 @@ function normalizeAgentMode(value) {
 }
 function localRuntimeConfig(user) {
   const settings = loadSettingsForUser(user.id);
+  const configuredProfiles = Array.isArray(settings.profiles) ? settings.profiles.filter(Boolean) : [];
   const active = activeLocalProfile(settings);
+  const activeProfile = findProfileBySelectionKey(configuredProfiles, settings.activeProfileId || '');
+  const activeProfileKey = configuredProfiles.length
+    ? (profileSelectionKey(activeProfile || active, configuredProfiles) || 'default-openai')
+    : String(settings.activeProfileId || active?.id || 'default-openai');
+  const activeImageProfileKey = configuredProfiles.length
+    ? (profileSelectionKey(active, configuredProfiles) || activeProfileKey)
+    : String(settings.activeImageProfileId || active?.id || activeProfileKey);
   const useProxy = !!active?.apiKey || active?.apiProxy !== false;
   const config = {
     userId: user.id,
@@ -371,8 +402,8 @@ function localRuntimeConfig(user) {
     themeMode: settings.themeMode || 'dark',
     customProviders: Array.isArray(settings.customProviders) ? settings.customProviders : [],
     profiles: Array.isArray(settings.profiles) && settings.profiles.length ? settings.profiles : [active],
-    activeProfileId: settings.activeProfileId || active?.id || 'default-openai',
-    activeImageProfileId: settings.activeImageProfileId || active?.id || 'default-openai'
+    activeProfileId: activeProfileKey,
+    activeImageProfileId: activeImageProfileKey
   };
   return maskSecrets(config, '', 'cloudflare-proxy');
 }
@@ -482,7 +513,43 @@ function createD1Binding() {
     }
   };
 }
-async function createFunctionRequest(req, url) {
+function createIncomingRequestSignal(req, res) {
+  const controller = new AbortController();
+  const abort = () => {
+    if (controller.signal.aborted) return;
+    const error = new Error('Local preview client disconnected');
+    error.name = 'AbortError';
+    controller.abort(error);
+  };
+  const onAborted = abort;
+  const onError = abort;
+  const onClose = () => {
+    // `close` also follows a normally completed request, so only an
+    // incomplete message is a cancellation here. A completed request that
+    // disconnects before response headers uses the socket listener below.
+    if (!req.complete) abort();
+  };
+  const onSocketClose = () => {
+    if (!res.headersSent) abort();
+  };
+  req.once('aborted', onAborted);
+  req.once('error', onError);
+  req.once('close', onClose);
+  req.socket?.once('close', onSocketClose);
+  if (req.aborted || (!req.complete && req.destroyed)) abort();
+  return {
+    signal: controller.signal,
+    cleanup() {
+      req.off('aborted', onAborted);
+      req.off('error', onError);
+      req.off('close', onClose);
+      req.socket?.off('close', onSocketClose);
+    }
+  };
+}
+
+async function createFunctionRequest(req, res, url) {
+  const clientSignal = createIncomingRequestSignal(req, res);
   const headers = new Headers();
   Object.entries(req.headers || {}).forEach(([key, value]) => {
     if (value === undefined) return;
@@ -501,18 +568,30 @@ async function createFunctionRequest(req, url) {
     headers.set('Cookie', `session=${encodeURIComponent(jwt)}`);
   }
   const init = { method: req.method, headers };
-  if (req.method !== 'GET' && req.method !== 'HEAD') {
-    init.body = await readBodyBuffer(req);
-    init.duplex = 'half';
+  let originalBody = null;
+  try {
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      originalBody = await readBodyBuffer(req);
+      init.body = originalBody;
+      init.duplex = 'half';
+    }
+    init.signal = clientSignal.signal;
+    return {
+      request: new Request(url.toString(), init),
+      originalBody,
+      cleanup: clientSignal.cleanup
+    };
+  } catch (error) {
+    clientSignal.cleanup();
+    throw error;
   }
-  return new Request(url.toString(), init);
 }
 async function dispatchFunction(req, res, url, moduleRelativePath) {
   const mod = await import(pathToFileUrl(path.join(root, moduleRelativePath)));
   const exportName = `onRequest${req.method[0]}${req.method.slice(1).toLowerCase()}`;
   const handler = mod.onRequest || mod[exportName];
   if (typeof handler !== 'function') return json(res, 405, { error: 'Method not allowed' });
-  const request = await createFunctionRequest(req, url);
+  const { request, originalBody, cleanup } = await createFunctionRequest(req, res, url);
   const ctx = {
     request,
     env: {
@@ -521,13 +600,21 @@ async function dispatchFunction(req, res, url, moduleRelativePath) {
       ALLOW_PUBLIC_REGISTRATION: LOCAL_PUBLIC_REGISTRATION ? 'true' : 'false',
       UPSTREAM_ALLOWED_HOSTS: process.env.UPSTREAM_ALLOWED_HOSTS || '',
       UPSTREAM_ALLOWLIST_REQUIRED: process.env.UPSTREAM_ALLOWLIST_REQUIRED || 'false',
+      LOCAL_UPSTREAM_FETCH,
+      ...(moduleRelativePath === 'functions/api-proxy/[[path]].js' && originalBody
+        ? { LOCAL_ORIGINAL_REQUEST_BODY: originalBody }
+        : {}),
       gpt_image2_db: createD1Binding(),
       ASSETS: createAssetsBinding(url.toString())
     },
     waitUntil() {}
   };
-  const apiRes = await handler(ctx);
-  return relayFetchResponse(req, res, apiRes);
+  try {
+    const apiRes = await handler(ctx);
+    return await relayFetchResponse(req, res, apiRes);
+  } finally {
+    cleanup();
+  }
 }
 
 async function handleApi(req, res, url) {

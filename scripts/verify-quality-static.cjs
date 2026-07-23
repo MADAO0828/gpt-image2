@@ -14,6 +14,7 @@ function read(rel) {
 
 const index = read('index.html');
 const prompts = read('prompts.html');
+const promptsCss = read('assets/macos-design.css');
 const home = read('assets/homepage-v3.js');
 
 ok(index.includes('/assets/homepage-v3.js?v=home-v3-'), '/ must load the standalone homepage v3 module with a cache-busted URL.');
@@ -26,6 +27,9 @@ ok(prompts.includes('function updatePager()'), '/prompts pager state function mi
 ok(prompts.includes('sessionStorage.setItem("prompt_to_use"'), '/prompts use-prompt handoff missing.');
 ok(prompts.includes('localStorage.setItem("gpt-image2-pending-prompt"'), '/prompts localStorage prompt handoff missing.');
 ok(prompts.includes('escHtml') && prompts.includes('escAttr'), '/prompts escaping helpers missing.');
+ok(prompts.includes('root:document.getElementById("grid")||null'), '/prompts image lazy-loader must use the inner grid as its IntersectionObserver root.');
+ok(promptsCss.includes('.c .grid .card {\n  content-visibility: visible !important;\n  contain-intrinsic-size: none !important;\n}'), '/prompts cards must disable content-visibility skipping and intrinsic sizing.');
+ok(!prompts.includes('gpt-image2-cache-cleaned-mobile-b36') && !prompts.includes('navigator.serviceWorker.getRegistrations') && !prompts.includes('caches.keys'), '/prompts must not clear caches or unregister service workers during initialization.');
 
 ok(home.includes('const PROMPT_PAGE_SIZE = 36'), 'Homepage v3 prompt repository page size should be bounded.');
 ok(home.includes('requestSeq') && home.includes('debouncedPromptSearch'), 'Homepage v3 prompt search should guard stale async results.');

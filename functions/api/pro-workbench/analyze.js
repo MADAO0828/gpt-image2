@@ -1,4 +1,5 @@
 import { currentUser, json } from '../../_lib/auth.js';
+import { decodeProfileHeaderValue, findProfileBySelectionKey } from '../../_lib/profile-header.js';
 import { bindClientAbort, fetchPinnedUpstream, isUpstreamTimeoutStatus, normalizeSafeBaseUrl, normalizeUpstreamTimeoutSeconds, safeUpstreamEndpoint } from '../../_lib/upstream-url.js';
 const MAX_WORKBENCH_REQUEST_BYTES = 64 * 1024 * 1024;
 const MAX_WORKBENCH_FILE_BYTES = 20 * 1024 * 1024;
@@ -69,7 +70,7 @@ function normalizeBaseUrl(raw) { return normalizeSafeBaseUrl(raw, true); }
 function selectedProfile(settings, explicitProfileId = '') {
   const profiles = Array.isArray(settings.profiles) ? settings.profiles : [];
   const responsesProfiles = profiles.filter(profile => profile && profile.apiMode === 'responses');
-  const byId = profileId => responsesProfiles.find(profile => profile.id === profileId || profile.name === profileId);
+  const byId = profileId => findProfileBySelectionKey(responsesProfiles, profileId);
   const configMode = String(settings.agentApiConfigMode || 'off').toLowerCase();
   let preferredId = '';
   let base = null;
@@ -159,7 +160,7 @@ export async function onRequestPost(ctx) {
     return json({ error: error.message, code: error.code }, error.status || 413);
   }
   const settings = await loadSettings(ctx.env.gpt_image2_db, user.id);
-  const profile = selectedProfile(settings, ctx.request.headers.get('X-GPT-Image-Profile-Id') || '');
+  const profile = selectedProfile(settings, decodeProfileHeaderValue(ctx.request.headers.get('X-GPT-Image-Profile-Id') || ''));
   let baseUrl = '';
   try {
     baseUrl = normalizeBaseUrl(profile.baseUrl);
@@ -222,13 +223,17 @@ export async function onRequestPost(ctx) {
     }, {
       allowedHosts: ctx.env?.UPSTREAM_ALLOWED_HOSTS,
       requireAllowlist: String(ctx.env?.UPSTREAM_ALLOWLIST_REQUIRED || '').toLowerCase() === 'true',
-      allowPlatformDnsFallback: true
+      allowPlatformDnsFallback: true,
+      fetchImpl: typeof ctx.env?.LOCAL_UPSTREAM_FETCH === 'function' ? ctx.env.LOCAL_UPSTREAM_FETCH : undefined
     });
     upstream = pinned.response;
-    const text = await upstream.text();
     if (upstream.status >= 300 && upstream.status < 400) {
+      try {
+        await upstream.body?.cancel?.();
+      } catch {}
       return json({ error: '专业分析上游重定向已阻止', code: 'UPSTREAM_REDIRECT_BLOCKED', stage: 'upstream-redirect', analysis: fallbackAnalysis(body) }, 502);
     }
+    const text = await upstream.text();
     if (!upstream.ok) {
       const detail = safeUpstreamDetail(text, apiKey);
       if (isUpstreamTimeoutStatus(upstream.status, text)) {

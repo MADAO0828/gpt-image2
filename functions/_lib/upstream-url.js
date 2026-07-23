@@ -185,7 +185,11 @@ function localPublicDnsLookup() {
   return typeof lookup === 'function' ? lookup : null;
 }
 
-async function queryPublicDnsResolver(resolver, hostname, signal) {
+function resolveFetchImpl(fetchImpl) {
+  return typeof fetchImpl === 'function' ? fetchImpl : globalThis.fetch;
+}
+
+async function queryPublicDnsResolver(resolver, hostname, signal, fetchImpl) {
   if (signal?.aborted) throw publicDnsError('公共 DNS 解析已取消', 'UPSTREAM_DNS_TIMEOUT');
   const controller = new AbortController();
   let attemptTimedOut = false;
@@ -213,7 +217,7 @@ async function queryPublicDnsResolver(resolver, hostname, signal) {
       const dnsUrl = new URL(resolver.endpoint);
       dnsUrl.searchParams.set('name', hostname);
       dnsUrl.searchParams.set('type', recordType);
-      const response = await fetch(dnsUrl.toString(), {
+      const response = await resolveFetchImpl(fetchImpl)(dnsUrl.toString(), {
         cache: 'no-store',
         headers: { Accept: 'application/dns-json', 'Cache-Control': 'no-cache' },
         redirect: 'error',
@@ -265,7 +269,7 @@ export async function resolvePublicAddresses(hostname, signal, options = {}) {
   try {
     const pending = new Map(orderedPublicDnsResolvers(options.preferredResolverId).map((resolver, index) => [
       index,
-      queryPublicDnsResolver(resolver, normalizedHost, controller.signal).then(
+      queryPublicDnsResolver(resolver, normalizedHost, controller.signal, options.fetchImpl).then(
         addresses => ({ index, resolver, addresses }),
         error => ({ index, resolver, error })
       )
@@ -344,32 +348,34 @@ export async function fetchPinnedUpstream(rawUrl, init = {}, options = {}) {
   const url = requireAllowlist
     ? assertUpstreamHostAllowed(rawUrl, options.allowedHosts)
     : assertSafeUpstreamUrl(rawUrl);
+  const fetchImpl = resolveFetchImpl(options.fetchImpl);
   try {
-    const resolved = await resolvePublicAddresses(normalizedHostname(url), init?.signal);
+    const resolved = await resolvePublicAddresses(normalizedHostname(url), init?.signal, { fetchImpl });
     const response = resolved.addresses.length
-      ? await fetchWithPinnedAddress(url.toString(), resolved.addresses, init, { preferredResolverId: resolved.resolverId })
-      : await fetch(url.toString(), pinUpstreamFetchInit(init, resolved.addresses));
+      ? await fetchWithPinnedAddress(url.toString(), resolved.addresses, init, { preferredResolverId: resolved.resolverId, fetchImpl })
+      : await fetchImpl(url.toString(), pinUpstreamFetchInit(init, resolved.addresses));
     return { response, addresses: resolved.addresses, resolverId: resolved.resolverId, dnsFallback: false };
   } catch (error) {
     if (init?.signal?.aborted || !canUsePlatformDnsFallback(error, options)) throw error;
-    const response = await fetch(url.toString(), pinUpstreamFetchInit(init));
+    const response = await fetchImpl(url.toString(), pinUpstreamFetchInit(init));
     return { response, addresses: [], resolverId: 'platform-fallback', dnsFallback: true };
   }
 }
 
 export async function fetchWithPinnedAddress(rawUrl, address, init = {}, options = {}) {
   const url = assertSafeUpstreamUrl(rawUrl);
+  const fetchImpl = resolveFetchImpl(options.fetchImpl);
   const expectedAddresses = normalizedAddresses(Array.isArray(address) ? address : [address]);
-  if (isReservedTestHostname(normalizedHostname(url))) return fetch(url.toString(), pinUpstreamFetchInit(init, expectedAddresses));
+  if (isReservedTestHostname(normalizedHostname(url))) return fetchImpl(url.toString(), pinUpstreamFetchInit(init, expectedAddresses));
   if (!expectedAddresses.length || expectedAddresses.some((candidate) => isPrivateIp(candidate))) {
     throw publicDnsError('上游 API 域名解析到了内部网络', 'UPSTREAM_DNS_REJECTED');
   }
-  const current = await resolvePublicAddresses(normalizedHostname(url), init?.signal, { preferredResolverId: options.preferredResolverId });
+  const current = await resolvePublicAddresses(normalizedHostname(url), init?.signal, { preferredResolverId: options.preferredResolverId, fetchImpl });
   // CDN 可能在安全校验与实际请求之间切换公网地址；私网地址仍会在此之前被拒绝。
   if (options.allowPublicAddressRotation !== true && !sameAddresses(current.addresses, expectedAddresses)) {
     throw publicDnsError('上游 API 域名解析在请求期间发生变化', 'UPSTREAM_DNS_REBOUND');
   }
-  return fetch(url.toString(), pinUpstreamFetchInit(init, current.addresses));
+  return fetchImpl(url.toString(), pinUpstreamFetchInit(init, current.addresses));
 }
 
 export function bindClientAbort(request, controller) {

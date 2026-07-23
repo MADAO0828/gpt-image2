@@ -195,7 +195,6 @@ html.dark .prompt-detail-media{background:radial-gradient(circle at 26% 20%,rgba
 <script src="/assets/shell-ui.js?v=nexgen-shared-20260705-theme-sync"></script>
 <script>
 (function(){
-  try{var ck='gpt-image2-cache-cleaned-mobile-b36';var wx=/MicroMessenger|WeChat|MQQBrowser|TBS|XWEB/i.test(navigator.userAgent||'');if(localStorage.getItem(ck)!=='1'){localStorage.setItem(ck,'1');if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(regs){regs.forEach(function(reg){reg.unregister()})}).catch(function(){})}if(!wx&&window.caches&&caches.keys){caches.keys().then(function(keys){keys.forEach(function(key){caches.delete(key)})}).catch(function(){})}}}catch(e){}
   window.__themeState={themeKey:(window.GptShellTheme&&window.GptShellTheme.key)||'gpt-image2.theme'};
   function isWeChatBrowser(){try{return /MicroMessenger|WeChat|MQQBrowser|TBS|XWEB/i.test(navigator.userAgent||'')}catch(e){return false}}
   function consumeTokenFromHash(){try{var m=(location.hash||'').match(/(?:^#|[&#])gi2token=([^&]+)/);if(m&&m[1]){sessionStorage.setItem('gpt-image2-session-token',decodeURIComponent(m[1]));history.replaceState(null,document.title,location.pathname+location.search)}}catch(e){}}
@@ -292,7 +291,7 @@ var CATEGORY_CACHE_KEY = "nexgen-prompts-categories-v3";
 function isMobileViewport(){try{return !!(window.matchMedia&&window.matchMedia("(max-width: 760px)").matches)}catch(e){return (window.innerWidth||1024)<=760}}
 function firstPaintCards(){return isMobileViewport()?3:8}
 function renderBatchSize(){return isMobileViewport()?8:12}
-function imageRootMargin(){return isMobileViewport()?"560px 0px":"960px 0px"}
+function imageRootMargin(){return isMobileViewport()?"1400px 0px":"1800px 0px"}
 var filteredData = [], currentCat = "all", currentPage = 1, totalItems = 0, currentPrompt = -1, isPageLoading = false;
 var modalHistoryActive = false, suppressModalHistory = false;
 var modalOpener = null;
@@ -353,6 +352,66 @@ function hydratePromptItem(index){
   }).catch(function(){return item});
 }
 function imgProxyUrl(u){return u||""}
+var IMAGE_PREWARM_MAX = 40;
+var IMAGE_PREWARM_CONCURRENCY = 4;
+var IMAGE_PREWARM_DELAY = 90;
+var imagePrewarmGeneration = 0;
+var imagePrewarmRun = null;
+function cancelImagePrewarm(){
+  imagePrewarmGeneration++;
+  var run=imagePrewarmRun;
+  imagePrewarmRun=null;
+  if(!run)return;
+  run.cancelled=true;
+  if(run.timer){clearTimeout(run.timer);run.timer=0}
+  Array.prototype.forEach.call(run.active,function(entry){
+    entry.done=true;
+    entry.image.onload=null;
+    entry.image.onerror=null;
+    try{entry.image.removeAttribute("src")}catch(e){try{entry.image.src=""}catch(ignore){}}
+  });
+  run.active.length=0;
+  run.queue.length=0;
+}
+function startImagePrewarmEntry(run,src){
+  var image=new Image(),entry={image:image,done:false};
+  run.active.push(entry);
+  image.referrerPolicy="no-referrer";
+  image.decoding="async";
+  image.fetchPriority="low";
+  image.onload=image.onerror=function(){
+    if(entry.done)return;
+    entry.done=true;
+    var activeIndex=run.active.indexOf(entry);
+    if(activeIndex>=0)run.active.splice(activeIndex,1);
+    image.onload=null;
+    image.onerror=null;
+    if(!run.cancelled&&imagePrewarmRun===run&&run.generation===imagePrewarmGeneration)pumpImagePrewarm(run);
+  };
+  image.src=src;
+}
+function pumpImagePrewarm(run){
+  if(run.cancelled||imagePrewarmRun!==run||run.generation!==imagePrewarmGeneration)return;
+  while(run.active.length<IMAGE_PREWARM_CONCURRENCY&&run.index<run.queue.length)startImagePrewarmEntry(run,run.queue[run.index++]);
+  if(run.index>=run.queue.length&&!run.active.length)imagePrewarmRun=null;
+}
+function scheduleImagePrewarm(rows,startIdx){
+  if(!rows||!rows.length||typeof Image==="undefined")return;
+  if(imagePrewarmRun)cancelImagePrewarm();
+  var first=firstPaintCards(),queue=[],seen=Object.create(null);
+  for(var i=0;i<rows.length&&queue.length<IMAGE_PREWARM_MAX;i++){
+    var idx=startIdx+i,p=rows[i]||{};
+    if(idx<first||!p.i)continue;
+    var src=imgProxyUrl(p.i);
+    if(!src||seen[src])continue;
+    seen[src]=true;
+    queue.push(src);
+  }
+  if(!queue.length)return;
+  var run={generation:imagePrewarmGeneration,queue:queue,index:0,active:[],timer:0,cancelled:false};
+  imagePrewarmRun=run;
+  run.timer=setTimeout(function(){run.timer=0;pumpImagePrewarm(run)},IMAGE_PREWARM_DELAY);
+}
 var imageObserver=null;
 function ensureImageObserver(){
   if(imageObserver||!('IntersectionObserver' in window))return imageObserver;
@@ -360,10 +419,10 @@ function ensureImageObserver(){
     entries.forEach(function(entry){
       if(!entry.isIntersecting)return;
       var img=entry.target,src=img.getAttribute('data-src');
-      if(src){img.src=src;img.removeAttribute('data-src')}
+      if(src){img.loading="eager";img.src=src;img.removeAttribute('data-src')}
       if(imageObserver)imageObserver.unobserve(img);
     });
-  },{rootMargin:imageRootMargin(),threshold:0.01});
+  },{root:document.getElementById("grid")||null,rootMargin:imageRootMargin(),threshold:0.01});
   return imageObserver;
 }
 function resetImageObserver(){
@@ -374,7 +433,7 @@ try{window.addEventListener("resize",function(){resetImageObserver();observeProm
 function observePromptImages(root){
   var imgs=(root||document).querySelectorAll('img[data-src]');
   var obs=ensureImageObserver();
-  Array.prototype.forEach.call(imgs,function(img){if(obs)obs.observe(img);else{img.src=img.getAttribute('data-src');img.removeAttribute('data-src')}});
+  Array.prototype.forEach.call(imgs,function(img){if(obs)obs.observe(img);else{img.loading="eager";img.src=img.getAttribute('data-src');img.removeAttribute('data-src')}});
 }
 function setLoading(text){document.getElementById("cats").innerHTML='<div class="ld">'+escHtml(text)+'</div>'}
 function sessionCacheKeys(){
@@ -474,6 +533,7 @@ function fetchWithAbort(url,opt,name){
   });
 }
 function renderSkeletonCards(count){
+  cancelImagePrewarm();
   var grid=document.getElementById("grid"),html="";
   for(var i=0;i<count;i++){
     html+='<div class="skeleton-card"><div class="skeleton-media"></div><div class="skeleton-body"><div class="skeleton-chip"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div></div>';
@@ -481,6 +541,7 @@ function renderSkeletonCards(count){
   grid.innerHTML=html;
 }
 function renderEmptyState(title,body){
+  cancelImagePrewarm();
   document.getElementById("grid").innerHTML='<div class="empty-state"><div><strong>'+escHtml(title)+'</strong><span>'+escHtml(body)+'</span></div></div>';
 }
 function setInfoLoading(text){
@@ -530,6 +591,7 @@ function applyPagePayload(d,page,cacheKey){
 }
 function loadPage(page, reset){
   if(isPageLoading&&!reset)return;
+  cancelImagePrewarm();
   var key=cachePageKey(page),cached=recallPageCache(key);
   activePageKey=key;
   var requestSeq=++pageRequestSeq;
@@ -569,6 +631,7 @@ function fetchPrebuiltPage(page,cacheKey,requestSeq){
   });
 }
 function renderItems(rows, startIdx){
+  cancelImagePrewarm();
   var grid=document.getElementById("grid");
   grid.innerHTML="";
   if(renderFrame){cancelAnimationFrame(renderFrame);renderFrame=0;}
@@ -591,6 +654,7 @@ function renderItems(rows, startIdx){
     if(i<rows.length)renderFrame=requestAnimationFrame(pump);
   }
   pump();
+  scheduleImagePrewarm(rows,startIdx);
 }
 
 function updateInfo(){
@@ -606,7 +670,7 @@ function updatePager(){
   btn.disabled=!hasNext;
   btn.textContent=hasNext?"下一页":"已到最后一页";
 }
-function reloadList(){filteredData=[];document.getElementById("grid").innerHTML="";loadPage(1,true)}
+function reloadList(){cancelImagePrewarm();filteredData=[];document.getElementById("grid").innerHTML="";loadPage(1,true)}
 document.getElementById("pb").addEventListener("click",function(){if(currentPage>1)loadPage(currentPage-1,true)});
 document.getElementById("lb").addEventListener("click",function(){loadPage(currentPage+1,false)});
 var sentinelObserver=null;
@@ -767,7 +831,7 @@ function markPromptScrolling(){scrollingLastAt=Date.now()}
     scroller.addEventListener("scroll",markPromptScrolling,{passive:true});
   }
 });
-window.addEventListener("pagehide",function(){scrollingLastAt=0});
+window.addEventListener("pagehide",function(){scrollingLastAt=0;cancelImagePrewarm()});
 fetch('/api/auth/me',{cache:'no-store',credentials:'same-origin'}).then(function(r){if(!r.ok){authFailed();return null}return r.json()}).then(function(u){var el=document.getElementById('promptAccountInfo');if(el&&u){if(window.GptShell)window.GptShell.setAccount(el,u,u.role);else{el.textContent=(u.role==='admin'?'\u7ba1\u7406\u5458 ':'\u7528\u6237 ')+u.username;el.title=el.textContent}}}).catch(function(){authFailed()});
 loadCategories();
 </script></body></html>

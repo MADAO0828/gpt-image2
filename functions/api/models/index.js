@@ -1,4 +1,5 @@
 import { currentUser, json, readJsonBody } from '../../_lib/auth.js';
+import { findProfileBySelectionKey } from '../../_lib/profile-header.js';
 import { bindClientAbort, fetchPinnedUpstream, isUpstreamTimeoutStatus, normalizeSafeBaseUrl, normalizeUpstreamTimeoutSeconds, safeUpstreamEndpoint } from '../../_lib/upstream-url.js';
 async function loadSettings(db, userId) { const rows = await db.prepare('SELECT key, value FROM user_settings WHERE user_id = ?').bind(userId).all(); const settings = {}; (rows.results || []).forEach(row => { try { settings[row.key] = JSON.parse(row.value); } catch (e) { settings[row.key] = row.value; } }); return settings; }
 function asBool(value, fallback = false) { return value === undefined || value === null ? fallback : !!value; }
@@ -6,8 +7,20 @@ function asNum(value, fallback) { const n = Number(value); return Number.isFinit
 function firstString() { for (let i = 0; i < arguments.length; i++) { const v = arguments[i]; if (typeof v === 'string' && v.trim()) return v.trim(); } return ''; }
 function isSecretPlaceholder(value) { const input = String(value || '').trim(); return input === 'cloudflare-proxy' || input === 'placeholder' || /^\*+MASKED\*+$/i.test(input) || /^\*+REDACTED\*+$/i.test(input); }
 function safeProviderDetail(value, secret) { const text = String(value || ''); return (secret ? text.split(secret).join('[redacted]') : text).slice(0, 500); }
-function findProfileById(settings, profileId) { const profiles = Array.isArray(settings.profiles) ? settings.profiles : []; if (!profileId) return null; return profiles.find(p => p && (p.id === profileId || p.name === profileId)) || null; }
-function selectedProfile(settings, requestedId = '') { const profiles = Array.isArray(settings.profiles) ? settings.profiles : []; const imageProfiles = profiles.filter(p => p && (p.apiMode || 'images') === 'images'); const activeId = requestedId || settings.activeImageProfileId || settings.activeProfileId || ''; const found = imageProfiles.find(p => p.id === activeId || p.name === activeId) || imageProfiles[0] || null; const base = found || {}; return {
+function findProfileById(settings, profileId) { const profiles = Array.isArray(settings.profiles) ? settings.profiles : []; return findProfileBySelectionKey(profiles, profileId); }
+function normalizeApiMode(value, fallback = 'images') { const mode = String(value || '').trim().toLowerCase(); return mode === 'responses' || mode === 'images' ? mode : fallback; }
+function profileApiMode(profile, settings) { return normalizeApiMode(profile?.apiMode, normalizeApiMode(settings?.apiMode)); }
+function selectedProfile(settings, requestedId = '', requestedApiMode = '') {
+  const profiles = Array.isArray(settings.profiles) ? settings.profiles : [];
+  const mode = normalizeApiMode(requestedApiMode, normalizeApiMode(settings.apiMode));
+  const requested = requestedId ? findProfileBySelectionKey(profiles, requestedId) : null;
+  const eligible = profiles.filter(profile => profile && profileApiMode(profile, settings) === mode);
+  const activeId = requestedId || (mode === 'responses' ? settings.agentTextProfileId : settings.activeImageProfileId) || settings.activeProfileId || '';
+  const found = requested
+    ? (profileApiMode(requested, settings) === mode ? requested : null)
+    : findProfileBySelectionKey(eligible, activeId) || eligible[0] || null;
+  const base = found || {};
+  return {
   id: base.id || activeId || 'default-openai',
   name: base.name || '云端配置',
   provider: base.provider || 'openai',
@@ -15,7 +28,7 @@ function selectedProfile(settings, requestedId = '') { const profiles = Array.is
   apiKey: firstString(base.apiKey, settings.apiKey),
   model: firstString(base.model, settings.model) || 'gpt-image-2',
   timeout: asNum(base.timeout, asNum(settings.timeout, 600)),
-  apiMode: base.apiMode || settings.apiMode || 'images',
+  apiMode: profileApiMode(base, { ...settings, apiMode: mode }),
   codexCli: asBool(base.codexCli, asBool(settings.codexCli, false)),
   apiProxy: asBool(base.apiProxy, asBool(settings.apiProxy, true)),
   responseFormatB64Json: asBool(base.responseFormatB64Json, asBool(settings.responseFormatB64Json, false)),
@@ -45,11 +58,23 @@ async function handleModelsRequest(ctx, input = {}) {
   let baseUrl = input.baseUrl || '';
   let apiKey = input.apiKey || '';
   const requestedProfileId = firstString(input.profileId);
+  const requestedApiMode = firstString(input.apiMode, input.mode);
   let timeoutSeconds = normalizeUpstreamTimeoutSeconds(input.timeout);
   if (!baseUrl || !apiKey || isSecretPlaceholder(apiKey) || requestedProfileId) {
     const settings = await loadSettings(ctx.env.gpt_image2_db, user.id);
-    const profile = selectedProfile(settings, requestedProfileId);
-    if (requestedProfileId && !findProfileById(settings, requestedProfileId)) return json({ error: 'Selected profile was not found' }, 400);
+    const requested = requestedProfileId ? findProfileById(settings, requestedProfileId) : null;
+    if (requestedProfileId && !requested) return json({ error: 'Selected profile was not found' }, 400);
+    const apiMode = normalizeApiMode(requestedApiMode || requested?.apiMode || settings.apiMode);
+    if (requested && profileApiMode(requested, settings) !== apiMode) {
+      const label = apiMode === 'responses' ? 'Responses API' : 'Images API';
+      return json({ error: `Selected profile does not support ${label}`, code: 'PROFILE_API_MODE_MISMATCH', apiMode }, 400);
+    }
+    const hasEligibleProfile = Array.isArray(settings.profiles)
+      && settings.profiles.some(profile => profile && profileApiMode(profile, settings) === apiMode);
+    if (!requestedProfileId && Array.isArray(settings.profiles) && settings.profiles.length && !hasEligibleProfile && (!baseUrl || !apiKey || isSecretPlaceholder(apiKey))) {
+      return json({ error: `没有可用的 ${apiMode === 'responses' ? 'Responses' : 'Images'} API 配置`, code: 'PROFILE_API_MODE_UNAVAILABLE', apiMode }, 400);
+    }
+    const profile = selectedProfile(settings, requestedProfileId, apiMode);
     baseUrl = baseUrl || profile.baseUrl;
     apiKey = !apiKey || isSecretPlaceholder(apiKey) ? profile.apiKey : apiKey;
     timeoutSeconds = normalizeUpstreamTimeoutSeconds(profile.timeout, timeoutSeconds);
@@ -69,7 +94,8 @@ async function handleModelsRequest(ctx, input = {}) {
     }, {
       allowedHosts: ctx.env?.UPSTREAM_ALLOWED_HOSTS,
       requireAllowlist: String(ctx.env?.UPSTREAM_ALLOWLIST_REQUIRED || '').toLowerCase() === 'true',
-      allowPlatformDnsFallback: true
+      allowPlatformDnsFallback: true,
+      fetchImpl: typeof ctx.env?.LOCAL_UPSTREAM_FETCH === 'function' ? ctx.env.LOCAL_UPSTREAM_FETCH : undefined
     });
     upstream = pinned.response;
     if (upstream.status >= 300 && upstream.status < 400) {

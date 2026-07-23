@@ -152,7 +152,15 @@ const sandbox = {
   URL: TestURL,
   FormData: class {
     constructor() { this.fields = []; }
-    append(key, value, filename) { this.fields.push([key, value, filename]); }
+    append(key, value, filename) {
+      // Native FormData exposes a File when a Blob is appended with a filename.
+      let storedValue = value;
+      if (filename !== undefined && value instanceof Blob) {
+        storedValue = new Blob([value], { type: value.type });
+        Object.defineProperty(storedValue, 'name', { value: String(filename), enumerable: true });
+      }
+      this.fields.push([key, storedValue, filename]);
+    }
     get(key) {
       const found = this.fields.find((item) => item[0] === key);
       return found ? found[1] : null;
@@ -182,6 +190,7 @@ ok(typeof hooks.collectImageCandidates === 'function', 'collectImageCandidates h
 ok(typeof hooks.collectGenerationResult === 'function', 'collectGenerationResult hook missing');
 ok(typeof hooks.postProcessTransparentImages === 'function', 'postProcessTransparentImages hook missing');
 ok(typeof hooks.normalizeError === 'function', 'normalizeError hook missing');
+ok(typeof hooks.taskErrorSummary === 'function', 'taskErrorSummary hook missing');
 ok(typeof hooks.collectObjectsDeep === 'function', 'collectObjectsDeep hook missing');
 ok(typeof hooks.compactAgentThreadMessages === 'function', 'compactAgentThreadMessages hook missing');
 ok(typeof hooks.compactAgentMessagesByThreadForStorage === 'function', 'compactAgentMessagesByThreadForStorage hook missing');
@@ -191,11 +200,18 @@ ok(/agentHistoryPersistChain[\s\S]*\.then\(\(\) => performAgentHistoryPersist\(\
 ok(typeof hooks.persistResponseImages === 'function', 'persistResponseImages hook missing');
 ok(typeof hooks.imageInfoFromBlob === 'function', 'imageInfoFromBlob hook missing');
 ok(typeof hooks.resolveTaskProfile === 'function', 'resolveTaskProfile hook missing');
+ok(typeof hooks.imageProfile === 'function', 'imageProfile hook missing');
 ok(typeof hooks.retryTask === 'function', 'retryTask hook missing');
 ok(typeof hooks.extractReturnedParams === 'function', 'extractReturnedParams hook missing');
 ok(typeof hooks.renderDetailModal === 'function', 'renderDetailModal hook missing');
 ok(typeof hooks.renderViewer === 'function', 'renderViewer hook missing');
 ok(typeof hooks.renderEntryAdvancedModal === 'function', 'renderEntryAdvancedModal hook missing');
+ok(typeof hooks.normalizeResponseDelivery === 'function', 'normalizeResponseDelivery hook missing');
+ok(typeof hooks.generateImageTask === 'function', 'generateImageTask hook missing');
+ok(typeof hooks.appendAdvancedToFormData === 'function', 'appendAdvancedToFormData hook missing');
+ok(typeof hooks.scheduleTaskRemovalPersistence === 'function', 'scheduleTaskRemovalPersistence hook missing');
+ok(typeof hooks.resolveComposerPromptForRequest === 'function', 'resolveComposerPromptForRequest hook missing');
+ok(typeof hooks.insertReferenceMention === 'function' && typeof hooks.remapReferenceMentionTokens === 'function', 'reference mention hooks missing');
 for (const entry of ['gallery', 'agent', 'workflow', 'pro']) {
   let advancedHtml = '';
   try {
@@ -457,6 +473,14 @@ ok(typeof hooks.getTransparentRequestParams === 'function', 'getTransparentReque
 ok(typeof hooks.detectKeyColorFromPixels === 'function', 'detectKeyColorFromPixels hook missing');
 ok(typeof hooks.removeKeyedBackgroundFromPixels === 'function', 'removeKeyedBackgroundFromPixels hook missing');
 ok(typeof hooks.openAiSizePayload === 'function', 'openAiSizePayload hook missing');
+ok(typeof hooks.parseTaskAdvancedBoolean === 'function', 'parseTaskAdvancedBoolean hook missing');
+ok(typeof hooks.entryAdvanced === 'function', 'entryAdvanced hook missing');
+ok(typeof hooks.effectiveAdvanced === 'function', 'effectiveAdvanced hook missing');
+ok(typeof hooks.applyAdvancedToJsonBody === 'function', 'applyAdvancedToJsonBody hook missing');
+ok(typeof hooks.sanitizeTaskAdvanced === 'function', 'sanitizeTaskAdvanced hook missing');
+ok(typeof hooks.snapshotTaskAdvanced === 'function', 'snapshotTaskAdvanced hook missing');
+ok(typeof hooks.taskAdvancedDiagnostics === 'function', 'taskAdvancedDiagnostics hook missing');
+ok(typeof hooks.compactTaskForStorage === 'function', 'compactTaskForStorage hook missing');
 ok(typeof hooks.googleOfficialImageSize === 'function', 'googleOfficialImageSize hook missing');
 ok(typeof hooks.summarizeResponse === 'function', 'summarizeResponse hook missing');
 ok(typeof hooks.consumeResponseTextStream === 'function', 'consumeResponseTextStream hook missing');
@@ -472,6 +496,7 @@ ok(typeof hooks.agentFailureDetail === 'function', 'agentFailureDetail hook miss
 ok(typeof hooks.migrateAgentThreads === 'function', 'migrateAgentThreads hook missing');
 ok(typeof hooks.branchAgentThreadFromMessage === 'function', 'branchAgentThreadFromMessage hook missing');
 ok(typeof hooks.clearAgentThreadMessages === 'function', 'clearAgentThreadMessages hook missing');
+ok(typeof hooks.clearComposerText === 'function', 'clearComposerText hook missing');
 ok(typeof hooks.renderAgentStage === 'function', 'renderAgentStage hook missing');
 ok(typeof hooks.renderAgentComposer === 'function', 'renderAgentComposer hook missing');
 ok(typeof hooks.renderWorkflowWorkspace === 'function', 'renderWorkflowWorkspace hook missing');
@@ -613,6 +638,243 @@ ok(hooks.taskStreamMediaCount(restoredStreamPartial) === 1, 'stream preview outp
 ok(hooks.taskStreamPreviewRecord(restoredStreamPartial, 0)?.blobId === 'stream-latest', 'latest persisted preview should be selected for display');
 const streamPreviewHtml = hooks.renderTaskStreamPreviewImage(restoredStreamPartial, 0);
 ok(streamPreviewHtml.includes('data-blob-id="stream-latest"') && streamPreviewHtml.includes('流式预览'), 'persisted preview should render through blob hydration');
+const restoredStreamDiagnostics = hooks.normalizeRestoredTask({
+  id: 'task-stream-diagnostics',
+  status: 'error',
+  error: 'IMAGE_STREAM_UPSTREAM_FAILED',
+  traceId: 'trace-restored-1',
+  streamEventCount: 999999999,
+  lastStreamEventType: 'x'.repeat(200),
+  streamEvents: Array.from({ length: 40 }, (_, index) => ({
+    type: index === 39 ? 'error' : 'image_generation.chunk',
+    status: index === 39 ? 'failed' : '',
+    id: 'https://secret.example/event/' + index,
+    message: 'must not persist',
+    prompt: 'must not persist',
+    b64_json: 'must not persist',
+    candidateCount: 999,
+    dataCount: 999,
+    keys: ['error', 'prompt', 'message', 'url', 'b64_json', 'safe_key'],
+    hasError: index === 39
+  }))
+});
+ok(restoredStreamDiagnostics.traceId === 'trace-restored-1', 'restored task should preserve a safe trace id');
+ok(restoredStreamDiagnostics.streamEventCount === 1000000, 'restored stream event count should be bounded');
+ok(restoredStreamDiagnostics.lastStreamEventType.length === 80, 'restored last stream event type should be bounded');
+ok(restoredStreamDiagnostics.streamEvents.length === 24, 'restored stream events should keep only the bounded tail');
+const restoredStreamDiagnosticsJson = JSON.stringify(restoredStreamDiagnostics);
+ok(!/must not persist|https:\/\/secret\.example|b64_json|prompt|message|url/i.test(restoredStreamDiagnosticsJson), 'restored stream diagnostics must omit payload, Base64, prompt, message, and URL data');
+
+const openAiAdvancedSnapshot = hooks.snapshotTaskAdvanced({
+  responseFormatB64Json: true,
+  streamImages: false,
+  streamPartialImages: 2,
+  timeout: 6000,
+  apiKey: 'must not persist',
+  prompt: 'must not persist'
+}, { provider: 'openai', apiMode: 'images', model: 'gpt-image-2' });
+ok(openAiAdvancedSnapshot?.responseFormatB64Json === true, 'advanced task snapshot should preserve enabled b64_json');
+ok(openAiAdvancedSnapshot?.streamImages === false, 'advanced task snapshot should preserve disabled streaming');
+ok(openAiAdvancedSnapshot?.streamPartialImages === 0, 'disabled streaming should record partial_images as not submitted');
+ok(openAiAdvancedSnapshot?.timeout === 6000, 'advanced task snapshot should preserve a 6000 second timeout');
+ok(!Object.prototype.hasOwnProperty.call(openAiAdvancedSnapshot || {}, 'apiKey')
+  && !Object.prototype.hasOwnProperty.call(openAiAdvancedSnapshot || {}, 'prompt'), 'advanced task snapshot must omit secrets and prompt data');
+const compactAdvancedTask = hooks.compactTaskForStorage({
+  id: 'advanced-persisted-task',
+  status: 'error',
+  advanced: openAiAdvancedSnapshot,
+  images: []
+}, 'minimal');
+ok(compactAdvancedTask.advanced?.responseFormatB64Json === true
+  && compactAdvancedTask.advanced?.streamImages === false
+  && compactAdvancedTask.advanced?.streamPartialImages === 0
+  && compactAdvancedTask.advanced?.timeout === 6000, 'minimal task persistence should retain the effective advanced snapshot');
+const sanitizedLegacyAdvanced = hooks.sanitizeTaskAdvanced({
+  responseFormatB64Json: 'false',
+  streamImages: 0,
+  streamPartialImages: 99,
+  timeout: 999999,
+  apiKey: 'must not persist'
+});
+ok(hooks.parseTaskAdvancedBoolean('false') === false
+  && hooks.parseTaskAdvancedBoolean('true') === true
+  && hooks.parseTaskAdvancedBoolean(0) === false
+  && hooks.parseTaskAdvancedBoolean(1) === true, 'advanced boolean parser should preserve explicit legacy boolean values');
+const advancedProfile = {
+  id: 'advanced-image',
+  name: 'Advanced Image',
+  provider: 'openai',
+  apiMode: 'images',
+  model: 'gpt-image-2',
+  responseFormatB64Json: true,
+  streamImages: true,
+  streamPartialImages: 2,
+  timeout: 120
+};
+const advancedStateBefore = hooks.getTestState();
+hooks.setTestState({ profiles: [advancedProfile], activeProfileId: advancedProfile.id, activeImageProfileId: advancedProfile.id, mode: 'gallery' });
+const legacyEntryAdvanced = hooks.entryAdvanced('gallery');
+legacyEntryAdvanced.responseFormatB64Json = 'false';
+legacyEntryAdvanced.streamImages = 'false';
+legacyEntryAdvanced.streamPartialImages = '2';
+legacyEntryAdvanced.timeout = '6000';
+const legacyFalseAdvanced = hooks.effectiveAdvanced('gallery', advancedProfile);
+ok(legacyFalseAdvanced.responseFormatB64Json === false
+  && legacyFalseAdvanced.streamImages === false
+  && legacyFalseAdvanced.streamPartialImages === 2
+  && legacyFalseAdvanced.timeout === 6000, 'legacy string false advanced settings should resolve to disabled request options');
+const legacyFalseBody = {};
+hooks.applyAdvancedToJsonBody(legacyFalseBody, 'gallery', advancedProfile);
+ok(legacyFalseBody.response_format === undefined
+  && legacyFalseBody.stream === undefined
+  && legacyFalseBody.partial_images === undefined, 'legacy string false advanced settings must not submit b64_json or stream fields');
+const numericEntryAdvanced = hooks.entryAdvanced('gallery');
+numericEntryAdvanced.responseFormatB64Json = 0;
+numericEntryAdvanced.streamImages = 0;
+const numericFalseAdvanced = hooks.effectiveAdvanced('gallery', advancedProfile);
+ok(numericFalseAdvanced.responseFormatB64Json === false && numericFalseAdvanced.streamImages === false, 'legacy numeric 0 advanced settings should remain disabled');
+const trueEntryAdvanced = hooks.entryAdvanced('gallery');
+trueEntryAdvanced.responseFormatB64Json = 'true';
+trueEntryAdvanced.streamImages = 1;
+const legacyTrueAdvanced = hooks.effectiveAdvanced('gallery', advancedProfile);
+const legacyTrueBody = {};
+hooks.applyAdvancedToJsonBody(legacyTrueBody, 'gallery', advancedProfile);
+ok(legacyTrueAdvanced.responseFormatB64Json === true
+  && legacyTrueAdvanced.streamImages === true
+  && legacyTrueBody.response_format === 'b64_json'
+  && legacyTrueBody.stream === true
+  && legacyTrueBody.partial_images === 2, 'legacy true/1 advanced settings should still submit enabled request fields');
+const stableEntryAdvanced = hooks.entryAdvanced('gallery');
+hooks.effectiveAdvanced('gallery', advancedProfile);
+ok(hooks.entryAdvanced('gallery') === stableEntryAdvanced, 'entryAdvanced should preserve object identity across normalization reads');
+stableEntryAdvanced.responseFormatB64Json = true;
+stableEntryAdvanced.streamImages = 1;
+const stableReferenceBody = {};
+hooks.applyAdvancedToJsonBody(stableReferenceBody, 'gallery', advancedProfile);
+ok(stableReferenceBody.response_format === 'b64_json'
+  && stableReferenceBody.stream === true
+  && stableReferenceBody.partial_images === 2, 'entryAdvanced references must remain live after a subsequent read before enabled fields are submitted');
+const restoredEntryAdvanced = hooks.entryAdvanced('gallery');
+restoredEntryAdvanced.responseFormatB64Json = null;
+restoredEntryAdvanced.streamImages = null;
+restoredEntryAdvanced.streamPartialImages = null;
+restoredEntryAdvanced.timeout = null;
+restoredEntryAdvanced.open = false;
+hooks.setTestState({
+  profiles: advancedStateBefore.profiles,
+  activeProfileId: advancedStateBefore.activeProfileId,
+  activeImageProfileId: advancedStateBefore.activeImageProfileId,
+  mode: advancedStateBefore.mode
+});
+ok(sanitizedLegacyAdvanced?.responseFormatB64Json === false
+  && sanitizedLegacyAdvanced?.streamImages === false
+  && sanitizedLegacyAdvanced?.streamPartialImages === 3
+  && sanitizedLegacyAdvanced?.timeout === 6000
+  && !Object.prototype.hasOwnProperty.call(sanitizedLegacyAdvanced || {}, 'apiKey'), 'stored advanced metadata should be bounded and allowlisted');
+const restoredWithoutAdvanced = hooks.normalizeRestoredTask({ id: 'legacy-without-advanced', status: 'error', images: [], error: 'old error' });
+ok(!restoredWithoutAdvanced.advanced, 'legacy tasks without advanced metadata should remain display-compatible');
+
+async function runHomepageV3Addendum() {
+const deliveryProfile = { id: 'delivery-openai', name: 'Delivery OpenAI', provider: 'openai', apiMode: 'images', model: 'gpt-image-2', streamImages: true };
+ok(hooks.normalizeResponseDelivery('provider-default') === 'provider_default'
+  && hooks.normalizeResponseDelivery('base64') === 'b64_json'
+  && hooks.normalizeResponseDelivery('URL') === 'url', 'response delivery values should normalize to the three supported modes');
+const deliverySanitized = hooks.sanitizeTaskAdvanced({ responseDelivery: 'url', streamImages: true, prompt: 'must not persist', apiKey: 'must not persist' });
+ok(deliverySanitized?.responseDelivery === 'url' && deliverySanitized?.responseFormatB64Json === false
+  && !Object.prototype.hasOwnProperty.call(deliverySanitized || {}, 'prompt')
+  && !Object.prototype.hasOwnProperty.call(deliverySanitized || {}, 'apiKey'), 'response delivery task metadata should be allowlisted without secrets');
+const deliveryUrlBody = {};
+hooks.applyAdvancedToJsonBody(deliveryUrlBody, 'gallery', deliveryProfile, { responseDelivery: 'url', streamImages: false });
+ok(deliveryUrlBody.response_format === 'url' && deliveryUrlBody.stream === undefined, 'URL delivery should be explicit in JSON requests');
+const deliveryB64Body = {};
+hooks.applyAdvancedToJsonBody(deliveryB64Body, 'gallery', deliveryProfile, { responseDelivery: 'b64_json', streamImages: false });
+ok(deliveryB64Body.response_format === 'b64_json', 'b64_json delivery should be explicit in JSON requests');
+const deliveryForm = new sandbox.FormData();
+hooks.appendAdvancedToFormData(deliveryForm, 'gallery', deliveryProfile, { responseDelivery: 'url', streamImages: false });
+ok(deliveryForm.get('response_format') === 'url', 'URL delivery should be explicit in multipart requests');
+const streamUrlAdvanced = hooks.sanitizeTaskAdvanced({ responseDelivery: 'url', streamImages: true });
+ok(hooks.taskAdvancedDiagnostics(streamUrlAdvanced).some((item) => /流式.*URL.*不兼容/.test(item)), 'stream plus URL should expose a visible compatibility diagnostic without changing the selection');
+const deliveryTask = hooks.compactTaskForStorage({ id: 'submitted-prompt-task', status: 'success', prompt: '用户提示', submittedPrompt: '[image 1] 用户提示', advanced: streamUrlAdvanced, images: [] }, 'minimal');
+ok(deliveryTask.prompt === '用户提示' && deliveryTask.submittedPrompt === '[image 1] 用户提示', 'minimal task persistence should retain both user and submitted prompts');
+const deliveryTasksBeforeDetail = hooks.getTestState().tasks;
+hooks.setTestTasks([{ id: 'submitted-prompt-task', status: 'success', prompt: '用户提示', submittedPrompt: '[image 1] 用户提示', advanced: streamUrlAdvanced, images: [] }]);
+const deliveryDetail = hooks.renderDetailModal('submitted-prompt-task');
+hooks.setTestTasks(deliveryTasksBeforeDetail);
+ok(deliveryDetail.includes('用户提示词') && deliveryDetail.includes('提交给 API 的提示词'), 'task detail should label user and submitted prompts separately');
+
+const mentionRefs = [{ id: 'mention-a', name: 'first.png' }, { id: 'mention-b', name: 'second.png' }];
+const insertedMention = hooks.insertReferenceMention('draw @', 5, 6, 'mention-a', mentionRefs, []);
+ok(insertedMention.value === 'draw @图1' && insertedMention.tokens.length === 1
+  && insertedMention.tokens[0].refId === 'mention-a', 'reference mention insertion should record a stable reference ID and visual label');
+ok(hooks.resolveComposerPromptForRequest(insertedMention.value, mentionRefs, insertedMention.tokens) === 'draw [image 1]', 'menu-created reference mentions should become image placeholders in the API prompt');
+ok(hooks.resolveComposerPromptForRequest('draw @图1', mentionRefs, []) === 'draw @图1', 'hand-typed @图N text must remain ordinary prompt text');
+const reorderedMentions = hooks.remapReferenceMentionTokens(insertedMention.tokens, [mentionRefs[1], mentionRefs[0]]);
+ok(reorderedMentions[0]?.index === 1 && hooks.resolveComposerPromptForRequest(insertedMention.value, [mentionRefs[1], mentionRefs[0]], insertedMention.tokens) === 'draw [image 2]', 'reference mentions should remap by stable ID after visual reorder');
+const baseMention = hooks.insertReferenceMention('before @ after', 7, 8, 'mention-a', mentionRefs, []);
+const shiftedMention = hooks.insertReferenceMention(`${baseMention.value} `, baseMention.value.length, baseMention.value.length, 'mention-b', mentionRefs, baseMention.tokens);
+const removedMention = hooks.markReferenceMentionsRemoved(shiftedMention.value, shiftedMention.tokens, 'mention-a');
+ok(removedMention.value.includes('@已移除图片') && !removedMention.value.includes('@图1'), 'removing a reference should preserve an explicit removed-image marker');
+const editedMentions = hooks.updateComposerMentionTokensForInput(shiftedMention.value, shiftedMention.value.replace('@图1', '@图X'), shiftedMention.tokens);
+ok(editedMentions.every((token) => token.refId !== 'mention-a'), 'editing through a protected mention should drop its stale token instead of replacing hand text');
+
+fakeIndexedDbStore.set('fallback-original', new Blob(['original'], { type: 'image/png' }));
+const fallbackReference = await hooks.getReferenceBlobWithFallback({ compositedBlobId: 'missing-composited', blobId: 'missing-display', originalBlobId: 'fallback-original' });
+ok(fallbackReference.blobId === 'fallback-original' && fallbackReference.blob?.size > 0, 'reference hydration should fall back from composited to blob to original');
+const missingReferenceImage = { dataset: {}, isConnected: true, closest: () => ({ classList: { add: () => {}, remove: () => {} } }) };
+const missingReferenceTask = { id: 'missing-reference-task', referenceSnapshots: [{ id: 'missing-ref', compositedBlobId: 'none-a', blobId: 'none-b', originalBlobId: 'none-c' }] };
+ok(await hooks.hydrateTaskReferenceImage(missingReferenceImage, missingReferenceTask, 0) === false
+  && missingReferenceImage.alt === '参考图已丢失', 'missing reference hydration should expose a readable placeholder state');
+fakeIndexedDbStore.set('strict-readable-ref', { size: 4, type: 'image/png' });
+let strictUnreadableError = null;
+try {
+  await hooks.cloneReferenceSnapshots([{ id: 'strict-ref', blobId: 'strict-readable-ref' }], { strict: true });
+} catch (error) {
+  strictUnreadableError = error;
+}
+ok(strictUnreadableError?.code === 'IMAGE_EDIT_INPUT_SNAPSHOT_UNREADABLE', 'strict reference snapshots should reject non-readable Blob records');
+
+const timeoutPhantomId = 'timeout-phantom-task';
+const timeoutTaskStore = fakeIndexedDbStores.get('tasks') || new Map();
+fakeIndexedDbStores.set('tasks', timeoutTaskStore);
+const timeoutTaskRecord = timeoutTaskStore.get(timeoutPhantomId);
+const timeoutTaskTombstoneKey = `__task-delete__:${timeoutPhantomId}`;
+const timeoutDeletionStorageKey = 'gpt-image2.home.v3.task-deletions';
+const timeoutDeletionStorage = new Map();
+const timeoutTasksBeforeRemoval = hooks.getTestState().tasks;
+const originalTimeoutGetItem = sandbox.localStorage.getItem;
+const originalTimeoutSetItem = sandbox.localStorage.setItem;
+const originalTimeoutRemoveItem = sandbox.localStorage.removeItem;
+timeoutTaskStore.set(timeoutPhantomId, {
+  id: timeoutPhantomId,
+  status: 'running',
+  createdAt: Date.now(),
+  images: []
+});
+sandbox.localStorage.getItem = (key) => timeoutDeletionStorage.get(key) || null;
+sandbox.localStorage.setItem = (key, value) => timeoutDeletionStorage.set(key, String(value));
+sandbox.localStorage.removeItem = (key) => timeoutDeletionStorage.delete(key);
+hooks.setTestTasks([]);
+ok(hooks.scheduleTaskRemovalPersistence(timeoutPhantomId) === true, 'timed-out task removal should enqueue a persistence tombstone');
+await hooks.flushTaskPersistence();
+const timeoutDeletionTombstones = JSON.parse(timeoutDeletionStorage.get(timeoutDeletionStorageKey) || '{}');
+ok(!timeoutTaskStore.has(timeoutPhantomId), 'timed-out task removal must delete the stale IndexedDB task record');
+ok(timeoutTaskStore.get(timeoutTaskTombstoneKey)?.kind === 'task-delete', 'timed-out task removal must leave an IndexedDB tombstone for stale writes');
+ok(Number(timeoutDeletionTombstones[timeoutPhantomId]) > 0, 'timed-out task removal must leave a local deletion tombstone');
+timeoutDeletionStorage.clear();
+const replacementTask = { id: timeoutPhantomId, status: 'running', images: [] };
+timeoutTaskStore.set(timeoutPhantomId, replacementTask);
+hooks.setTestTasks([replacementTask]);
+ok(hooks.scheduleTaskRemovalPersistence(timeoutPhantomId, { id: timeoutPhantomId }) === false
+  && timeoutTaskStore.has(timeoutPhantomId)
+  && !timeoutDeletionStorage.has(timeoutDeletionStorageKey), 'an older generation must not tombstone a newer task with the same ID');
+hooks.setTestTasks(timeoutTasksBeforeRemoval);
+if (timeoutTaskRecord) timeoutTaskStore.set(timeoutPhantomId, timeoutTaskRecord);
+else timeoutTaskStore.delete(timeoutPhantomId);
+timeoutTaskStore.delete(timeoutTaskTombstoneKey);
+sandbox.localStorage.getItem = originalTimeoutGetItem;
+sandbox.localStorage.setItem = originalTimeoutSetItem;
+sandbox.localStorage.removeItem = originalTimeoutRemoveItem;
+}
 
 const sameGalleryWindow = { startIndex: 6, endIndex: 30 };
 ok(hooks.galleryVirtualRangeChanged(sameGalleryWindow, { renderedStartIndex: 6, renderedEndIndex: 30 }) === false, 'gallery virtual window should not rebuild when start/end are unchanged');
@@ -722,6 +984,38 @@ const normalizedDeepError = hooks.normalizeError(deepErrorPayload, 'fallback');
 ok(normalizedDeepError.summary === 'fallback', 'deep error payload should be bounded instead of recursively overflowing');
 const deepObject = hooks.collectObjectsDeep(deepErrorPayload, { maxDepth: 20, maxNodes: 128 });
 ok(deepObject.length <= 128, 'deep object collection should respect its node budget');
+const structured401Detail = JSON.stringify({
+  error: { message: 'Invalid API key', type: 'upstream_rejected', code: 'UPSTREAM_PROVIDER_REJECTED' },
+  upstreamStatus: 401,
+  dnsMode: 'public-resolver',
+  requestBody: { apiKey: 'sk-test-secret', imageBase64: 'data:image/png;base64,secret' }
+});
+const structured401Summary = hooks.taskErrorSummary({ status: 'error', error: 'public-resolver', errorDetail: structured401Detail });
+ok(structured401Summary.includes('上游鉴权失败') && structured401Summary.includes('Invalid API key') && !structured401Summary.includes('public-resolver'), 'task card should prefer a safe structured upstream authentication summary over the DNS mode label');
+ok(!structured401Summary.includes('sk-test-secret') && !structured401Summary.includes('data:image'), 'task card error summary must not expose credentials or image data from structured details');
+const structured400Detail = JSON.stringify({
+  error: { message: 'Invalid parameter: size', type: 'invalid_request_error', code: 'UPSTREAM_PROVIDER_REJECTED' },
+  upstreamStatus: 400,
+  dnsMode: 'public-resolver',
+  requestBody: { apiKey: 'sk-test-secret', prompt: 'private prompt' }
+});
+const structured400Summary = hooks.taskErrorSummary({ status: 'error', error: 'public-resolver', errorDetail: structured400Detail });
+ok(structured400Summary === 'Invalid parameter: size' && !structured400Summary.includes('上游鉴权失败') && !structured400Summary.includes('public-resolver'), '400 provider rejection should show a safe parameter error summary instead of an authentication summary');
+ok(!structured400Summary.includes('sk-test-secret') && !structured400Summary.includes('private prompt'), '400 provider rejection summary must not expose credentials or prompt content from structured details');
+const structured400AuthCodeDetail = JSON.stringify({
+  error: { message: 'Request denied', type: 'invalid_request_error', code: 'INVALID_API_KEY' },
+  upstreamStatus: 400,
+  dnsMode: 'public-resolver'
+});
+const structured400AuthCodeSummary = hooks.taskErrorSummary({ status: 'error', error: 'public-resolver', errorDetail: structured400AuthCodeDetail });
+ok(structured400AuthCodeSummary === '上游鉴权失败：Request denied', 'an explicit authentication error code should still produce an authentication summary even with a 400 status');
+const platformFallbackDetail = JSON.stringify({ error: { message: 'API key sk-live-secret-value', code: 'UPSTREAM_PROVIDER_REJECTED' }, upstreamStatus: 401, dnsMode: 'platform-fallback' });
+const platformFallbackSummary = hooks.taskErrorSummary({ status: 'error', error: 'platform-fallback', errorDetail: platformFallbackDetail });
+ok(platformFallbackSummary === '上游鉴权失败', 'platform DNS fallback errors with sensitive provider text should use a generic authentication summary');
+const legacyTaskSummary = hooks.taskErrorSummary({ status: 'error', error: '旧版生成失败', errorDetail: 'legacy detail' });
+ok(legacyTaskSummary === '旧版生成失败', 'legacy task error summary should preserve the primary non-structured error');
+const legacyDetailSummary = hooks.taskErrorSummary({ status: 'error', error: '', errorDetail: 'legacy detail' });
+ok(legacyDetailSummary === 'legacy detail', 'legacy task error summary should fall back to plain error detail');
 const cyclicSummaryPayload = { response: {} };
 cyclicSummaryPayload.response.self = cyclicSummaryPayload;
 const cyclicSummary = hooks.summarizeResponse(cyclicSummaryPayload);
@@ -845,6 +1139,11 @@ if (typeof hooks.renderDetailModal === 'function') {
     },
     responseMode: 'sse-sniffed',
     completionReason: 'completed-event',
+    advanced: openAiAdvancedSnapshot,
+    traceId: 'trace-detail-1',
+    streamEvents: [{ type: 'image_generation.chunk', status: '', id: 'event-1', keys: ['type'], candidateCount: 0, dataCount: 0, hasError: false }],
+    streamEventCount: 7,
+    lastStreamEventType: 'error',
     createdAt: Date.now(),
     startedAt: Date.now() - 1000,
     finishedAt: Date.now()
@@ -860,6 +1159,8 @@ if (typeof hooks.renderDetailModal === 'function') {
   ok(detailHtml.includes('请求质量'), 'detail modal should label model quality as requested quality');
   ok(detailHtml.includes('响应头') && detailHtml.includes('流读取') && detailHtml.includes('本地入库'), 'detail modal should show phase timing diagnostics');
   ok(detailHtml.includes('sse-sniffed') && detailHtml.includes('completed-event'), 'detail modal should show response mode and completion reason');
+  ok(detailHtml.includes('b64_json 开') && detailHtml.includes('流式 关') && detailHtml.includes('partial_images 0') && detailHtml.includes('请求超时 6000s'), 'detail modal should show the effective advanced transport snapshot');
+  ok(detailHtml.includes('Trace ID trace-detail-1') && detailHtml.includes('流事件 7') && detailHtml.includes('最后事件 error'), 'detail modal should show bounded trace and stream event diagnostics');
   const viewerHtml = typeof hooks.renderViewer === 'function' ? hooks.renderViewer({ taskId: 'detail-diff-task', index: 0 }) : '';
   ok(viewerHtml.includes('viewer-nav') && viewerHtml.includes('data-action="viewer-next"'), 'multi-image viewer should render next navigation');
   ok(viewerHtml.includes('1 / 2'), 'multi-image viewer should show the current image index');
@@ -893,6 +1194,9 @@ if (typeof hooks.renderDetailModal === 'function') {
   ok(source.includes('id="imageMenuMount" data-modal-inert-exempt')
     && source.includes("if (child.matches?.('[data-modal-inert-exempt]')) return;"),
   'image context menu mount should remain interactive while a detail or viewer modal is active');
+  ok(source.includes("closeImageContextMenu();\n  if (keepsViewerClick) return;\n  event.preventDefault();\n}, true);")
+    && !source.includes('closeImageContextMenu();\n  if (keepsViewerClick) return;\n  event.preventDefault();\n  event.stopImmediatePropagation();'),
+  'closing a stale image menu must allow the original click handler to run without requiring a second click');
 
   hooks.setTestTasks([{
     id: 'detail-google-4k-match',
@@ -920,6 +1224,28 @@ if (typeof hooks.renderDetailModal === 'function') {
   ok(hooks.expectedProviderResolution({ provider: 'google', resolution: '4K', aspectRatio: '3:2' }) === '5056x3392', 'Google provider resolution table should expose 4K 3:2');
   ok(hooks.isTierResolutionMatch({ provider: 'google', resolution: '4K', aspectRatio: '3:2' }, '5056x3392', []), 'known provider tier resolution should match actual dimensions');
   ok(!hooks.isTierResolutionMatch({ provider: 'google', resolution: '4K', aspectRatio: '3:2' }, '2528x1696', []), 'downgraded 2K dimensions should not match a requested 4K tier');
+
+  hooks.setTestTasks([{
+    id: 'detail-google-ratio-mismatch',
+    status: 'success',
+    prompt: 'requested four by three',
+    requestedParams: {
+      provider: 'google',
+      profileName: 'Nano Banana Pro',
+      resolution: '4K',
+      aspectRatio: '4:3',
+      quality: 'high',
+      format: 'png',
+      count: 1
+    },
+    returnedParams: { resolution: '1920x1080', aspectRatio: '16:9', quality: 'high', format: 'png', count: 1 },
+    images: [{ blobId: 'detail-ratio-mismatch', width: 1920, height: 1080, type: 'image/png' }],
+    createdAt: Date.now(),
+    finishedAt: Date.now()
+  }]);
+  const ratioMismatchDetailHtml = hooks.renderDetailModal('detail-google-ratio-mismatch');
+  ok(ratioMismatchDetailHtml.includes('4:3') && ratioMismatchDetailHtml.includes('16:9'), 'Google detail should show both requested and actual ratio when upstream returns a different aspect ratio');
+  ok(ratioMismatchDetailHtml.includes('actual-value'), 'Google detail should visibly mark an upstream aspect-ratio mismatch from actual image dimensions');
 }
 
 const referenceBadgeHtml = hooks.renderReferenceBadge({
@@ -948,6 +1274,7 @@ ok(hooks.normalizeComparableValue('是', 'bool') === 'yes', 'boolean comparison 
 
 if (typeof hooks.providerPayload === 'function') {
   const googlePayload = hooks.providerPayload('google', {
+    model: 'gemini-3-pro-image-preview',
     resolution: '4K',
     aspectRatio: '3:2'
   });
@@ -958,7 +1285,28 @@ if (typeof hooks.providerPayload === 'function') {
   ok(googlePayload.size === '4K', 'Google payload should send the Gemini image tier as size');
   ok(googlePayload.extra_body?.generationConfig?.imageConfig?.aspectRatio === '3:2', 'Google payload should include Gemini imageConfig aspectRatio');
   ok(googlePayload.extra_body?.generationConfig?.imageConfig?.imageSize === '4K', 'Google payload should include Gemini imageConfig imageSize');
-  ok(googlePayload.target_size === '5056x3392', 'Google 4K + 3:2 should map to official Gemini 3.1 4K dimensions');
+  ok(!Object.prototype.hasOwnProperty.call(googlePayload, 'target_size')
+    && !Object.prototype.hasOwnProperty.call(googlePayload, 'targetSize'), 'Google payload must not send a target pixel size');
+  ok(Object.keys(googlePayload.extra_body || {}).join(',') === 'generationConfig', 'Google payload extra_body must contain only generationConfig');
+  ok(Object.keys(googlePayload.extra_body?.generationConfig || {}).sort().join(',') === 'imageConfig,responseModalities', 'Google generationConfig must not contain duplicate snake_case config');
+  ok(Object.keys(googlePayload.extra_body?.generationConfig?.imageConfig || {}).sort().join(',') === 'aspectRatio,imageSize', 'Google imageConfig must contain only canonical aspectRatio and imageSize');
+
+  for (const model of ['gemini-3-pro-image', 'gemini-3-pro-image-preview', 'gemini-3.1-flash-image', 'gemini-3.1-flash-image-preview']) {
+    for (const [resolution, aspectRatio] of [['1K', '4:3'], ['2K', '3:4'], ['4K', '4:3']]) {
+      const nanoPayload = hooks.providerPayload('google', { model, resolution, aspectRatio });
+      ok(nanoPayload.resolution === resolution
+        && nanoPayload.image_size === resolution
+        && nanoPayload.size === resolution
+        && nanoPayload.aspect_ratio === aspectRatio, `${model} must preserve Nano Banana ${resolution} ${aspectRatio} toolbar values`);
+      ok(!Object.prototype.hasOwnProperty.call(nanoPayload, 'target_size')
+        && !Object.prototype.hasOwnProperty.call(nanoPayload, 'targetSize'), `${model} must not receive target_size`);
+      ok(nanoPayload.extra_body?.generationConfig?.imageConfig?.imageSize === resolution
+        && nanoPayload.extra_body?.generationConfig?.imageConfig?.aspectRatio === aspectRatio
+        && !Object.prototype.hasOwnProperty.call(nanoPayload.extra_body || {}, 'generation_config')
+        && !Object.prototype.hasOwnProperty.call(nanoPayload.extra_body?.generationConfig?.imageConfig || {}, 'image_size')
+        && !Object.prototype.hasOwnProperty.call(nanoPayload.extra_body?.generationConfig?.imageConfig || {}, 'aspect_ratio'), `${model} must use one canonical Gemini imageConfig`);
+    }
+  }
 
   const xaiPayload = hooks.providerPayload('xai', {
     resolution: '2k',
@@ -976,8 +1324,8 @@ if (typeof hooks.providerPayload === 'function') {
 }
 
 if (typeof hooks.googleOfficialImageSize === 'function') {
-  ok(hooks.googleOfficialImageSize('4K', '3:2') === '5056x3392', 'Google official 4K + 3:2 should be 5056x3392');
-  ok(hooks.googleOfficialImageSize('2K', '3:2') === '2528x1696', 'Google official 2K + 3:2 should match observed downgraded size');
+  ok(hooks.googleOfficialImageSize('4K', '3:2') === '5056x3392', 'Google diagnostic size table should remain available for returned-image comparison');
+  ok(hooks.googleOfficialImageSize('2K', '3:2') === '2528x1696', 'Google diagnostic size table should remain available for legacy returned-image comparison');
 }
 
 if (typeof hooks.openAiSizePayload === 'function') {
@@ -1074,13 +1422,18 @@ if (typeof hooks.openAiSizePayload === 'function') {
       n: 3,
       transparent_output: true,
       moderation: 'low',
-      profiles: [{ id: 'runtime-image', name: 'Runtime Image', provider: 'openai', apiMode: 'images', model: 'gpt-image-2' }],
-      activeProfileId: 'runtime-image'
+      profiles: [
+        { id: 'gpt-image2', name: 'gpt-image2-4k超分', provider: 'openai', apiMode: 'images', model: 'gpt-image-2' },
+        { id: 'gpt-image2', name: 'gpt-image2原生', provider: 'openai', apiMode: 'images', model: 'gpt-image-2' }
+      ],
+      activeProfileId: 'name:gpt-image2原生',
+      activeImageProfileId: 'name:gpt-image2原生'
     }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     return runtimeOriginalFetch(url);
   };
   await hooks.loadRuntime();
   sandbox.fetch = runtimeOriginalFetch;
+  await runHomepageV3Addendum();
   const runtimeState = hooks.getTestState();
   ok(runtimeState.preferences.clearInputAfterSubmit === true, 'runtime habit clearInputAfterSubmit should override local stale preference');
   ok(runtimeState.preferences.persistInputOnRestart === true, 'runtime habit persistInputOnRestart should override local stale preference');
@@ -1091,8 +1444,12 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(runtimeState.preferences.referenceImageEditAction === 'add-mask', 'runtime reference edit action should apply');
   ok(runtimeState.preferences.zipDownloadRoutes.length === 1 && runtimeState.preferences.zipDownloadRoutes[0] === 'task-detail-all', 'runtime zip routes should apply');
   ok(runtimeState.settings.output_format === 'png' && runtimeState.settings.transparent_output === true && runtimeState.settings.n === 3, 'runtime toolbar generation settings should override stale local defaults');
-  ok(runtimeState.activeProfileId === 'runtime-image' && runtimeState.activeImageProfileId === 'runtime-image', 'runtime active profile should override stale local profile');
+  ok(runtimeState.activeProfileId === 'name:gpt-image2原生' && runtimeState.activeImageProfileId === 'name:gpt-image2原生', 'runtime duplicate image profile selection should retain the explicit native profile key');
+  ok(hooks.imageProfile().name === 'gpt-image2原生', 'runtime duplicate image profile selection must resolve to the native profile rather than the first reused id');
   hooks.setTestState({
+    profiles: [{ id: 'runtime-image', name: 'Runtime Image', provider: 'openai', apiMode: 'images', model: 'gpt-image-2' }],
+    activeProfileId: 'runtime-image',
+    activeImageProfileId: 'runtime-image',
     settings: {
       quality: 'high',
       output_format: 'png',
@@ -1233,7 +1590,11 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(googleBody.size === '4K', 'Google generation request body should send the Gemini image tier as size');
   ok(googleBody.extra_body?.generationConfig?.imageConfig?.aspectRatio === '9:16', 'Google generation request body should include Gemini imageConfig aspectRatio');
   ok(googleBody.extra_body?.generationConfig?.imageConfig?.imageSize === '4K', 'Google generation request body should include Gemini imageConfig imageSize');
-  ok(googleBody.target_size === '3072x5504', 'Google 4K + 9:16 request body should include official target pixel size');
+  ok(!Object.prototype.hasOwnProperty.call(googleBody, 'target_size')
+    && !Object.prototype.hasOwnProperty.call(googleBody, 'targetSize'), 'Google 4K + 9:16 request body must not include a target pixel size');
+  ok(Object.keys(googleBody.extra_body || {}).join(',') === 'generationConfig', 'Google JSON request extra_body must contain only generationConfig');
+  ok(Object.keys(googleBody.extra_body?.generationConfig || {}).sort().join(',') === 'imageConfig,responseModalities', 'Google JSON request generationConfig must avoid duplicate snake_case config');
+  ok(Object.keys(googleBody.extra_body?.generationConfig?.imageConfig || {}).sort().join(',') === 'aspectRatio,imageSize', 'Google JSON request imageConfig must contain only canonical keys');
   ok(googleBody.prompt === 'google portrait', 'Google request prompt should remain exactly the user prompt');
   ok(googleBody.quality === 'high', 'Google generation request body should include selected quality');
   ok(googleBody.output_format === 'png', 'Google generation request body should include selected output format');
@@ -1285,7 +1646,8 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(google4kBodies[0].size === '4K', 'Google 4K request should send size as the Gemini tier, not pixel dimensions');
   ok(google4kBodies[0].extra_body?.generationConfig?.imageConfig?.aspectRatio === '3:2', 'Google 4K request should preserve Gemini imageConfig aspectRatio');
   ok(google4kBodies[0].extra_body?.generationConfig?.imageConfig?.imageSize === '4K', 'Google 4K request should preserve Gemini imageConfig imageSize');
-  ok(google4kBodies[0].target_size === '5056x3392', 'Google 4K request should preserve official target pixel size');
+  ok(!Object.prototype.hasOwnProperty.call(google4kBodies[0], 'target_size')
+    && !Object.prototype.hasOwnProperty.call(google4kBodies[0], 'targetSize'), 'Google 4K request should not preserve a target pixel size');
 
   sandbox.fetch = async (url, options) => {
     capturedRequest = { url, options };
@@ -1316,6 +1678,9 @@ if (typeof hooks.openAiSizePayload === 'function') {
   const googleFormExtra = JSON.parse(String(googleForm.get('extra_body') || '{}'));
   ok(googleFormExtra?.generationConfig?.imageConfig?.aspectRatio === '2:3', 'Google reference FormData should include Gemini imageConfig aspectRatio');
   ok(googleFormExtra?.generationConfig?.imageConfig?.imageSize === '2K', 'Google reference FormData should include Gemini imageConfig imageSize');
+  ok(Object.keys(googleFormExtra).join(',') === 'generationConfig', 'Google reference FormData extra_body must contain only generationConfig');
+  ok(Object.keys(googleFormExtra?.generationConfig || {}).sort().join(',') === 'imageConfig,responseModalities', 'Google reference FormData generationConfig must avoid duplicate snake_case config');
+  ok(Object.keys(googleFormExtra?.generationConfig?.imageConfig || {}).sort().join(',') === 'aspectRatio,imageSize', 'Google reference FormData imageConfig must contain only canonical keys');
   ok(googleForm.get('quality') === 'medium', 'Google reference FormData should include selected quality');
   ok(googleForm.get('output_format') === 'webp', 'Google reference FormData should include selected output format');
   ok(String(googleForm.get('output_compression')) === '28', 'Google reference FormData should convert selected output quality to API compression');
@@ -1439,6 +1804,71 @@ if (typeof hooks.openAiSizePayload === 'function') {
   const openAiCompressionIndex = openAiEditFields.indexOf('output_compression');
   ok(openAiCompressionIndex < 0 || openAiCompressionIndex === 6, 'OpenAI/gpt-image2 compression should follow quality and precede response options');
 
+  fakeIndexedDbStore.set('ref-jpeg', new Blob(['jpeg-reference'], { type: 'image/jpeg' }));
+  await hooks.sendGenerationRequest('OpenAI MIME-normalized reference edit', {
+    resolution: '1K',
+    aspectRatio: '1:1',
+    quality: 'high',
+    format: 'png',
+    count: 1
+  }, {
+    profile: { id: 'openai-image', name: 'gpt-image2', provider: 'openai', apiMode: 'images', model: 'gpt-image-2' },
+    references: [{ blobId: 'ref-jpeg', name: 'legacy-reference.png', type: 'image/jpeg' }]
+  });
+  const normalizedEditFile = capturedRequest?.options?.body?.get?.('image[]');
+  ok(normalizedEditFile?.type === 'image/jpeg', 'reference upload should retain the Blob MIME type');
+  ok(normalizedEditFile?.name === 'legacy-reference.jpg', 'reference upload filenames must match their actual JPEG MIME type');
+
+  const streamingEditOptions = {
+    profile: { id: 'openai-stream-edit', name: 'OpenAI streaming edit', provider: 'openai', apiMode: 'images', model: 'gpt-image-2', streamImages: true },
+    references: [{ blobId: 'ref-blob', name: 'reference.png' }],
+    advanced: { responseDelivery: 'b64_json', responseFormatB64Json: true, streamImages: true, streamPartialImages: 1 }
+  };
+  const responseWithJson = (status, body) => ({
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: status === 400 ? 'Bad Request' : 'OK',
+    headers: { get: (name) => String(name).toLowerCase() === 'content-type' ? 'application/json' : null },
+    text: async () => JSON.stringify(body)
+  });
+  const retryForms = [];
+  sandbox.fetch = async (_url, options) => {
+    retryForms.push(options.body);
+    if (retryForms.length === 1) {
+      return responseWithJson(400, {
+        error: { message: 'Unknown parameter: partial_images', type: 'invalid_request_error', code: 'invalid_request_error', param: 'partial_images' },
+        upstreamStatus: 400,
+        stage: 'upstream-response-headers'
+      });
+    }
+    return responseWithJson(200, { data: [{ b64_json: Buffer.from('retry-success').toString('base64') }] });
+  };
+  const retriedEditResponse = await hooks.sendGenerationRequest('retryable streaming edit', { count: 1 }, streamingEditOptions);
+  ok(retryForms.length === 2 && retriedEditResponse.imageEditCompatibilityRetry === true, 'a pre-acceptance stream-field validation error should retry an edit exactly once');
+  ok(retryForms[0].get('stream') === 'true' && retryForms[0].get('partial_images') === '1', 'the initial retryable edit should include the requested streaming fields');
+  ok(retryForms[1].get('stream') === null && retryForms[1].get('partial_images') === null && retryForms[1].get('response_format') === 'b64_json', 'the compatibility retry should remove only streaming fields and retain b64_json delivery');
+
+  let acceptedFailure = null;
+  const acceptedRetryForms = [];
+  sandbox.fetch = async (_url, options) => {
+    acceptedRetryForms.push(options.body);
+    return responseWithJson(400, {
+      error: { message: 'Unknown parameter: partial_images', type: 'invalid_request_error', code: 'invalid_request_error', param: 'partial_images' },
+      upstreamStatus: 400,
+      stage: 'upstream-response-body'
+    });
+  };
+  try {
+    await hooks.sendGenerationRequest('accepted streaming edit', { count: 1 }, streamingEditOptions);
+  } catch (error) {
+    acceptedFailure = error;
+  }
+  ok(acceptedFailure && acceptedRetryForms.length === 1, 'an edit error outside the proxy response-header stage must never be retried automatically');
+  sandbox.fetch = async (url, options) => {
+    capturedRequest = { url, options };
+    return { ok: true, text: async () => JSON.stringify({ data: [] }) };
+  };
+
   await hooks.sendGenerationRequest('xai portrait', {
     resolution: '2k',
     aspectRatio: '9:20',
@@ -1484,6 +1914,21 @@ if (typeof hooks.openAiSizePayload === 'function') {
   const openAiBody = JSON.parse(capturedRequest?.options?.body || '{}');
   ok(openAiBody.size === '2160x3840', 'OpenAI generation request body should include selected resolution + ratio as official 4K portrait size');
   ok(openAiBody.prompt === 'openai poster', 'OpenAI generation request prompt should remain exactly the user prompt');
+
+  await hooks.sendGenerationRequest('openai custom 4k 3:4', {
+    resolution: '4K',
+    aspectRatio: '3:4',
+    quality: 'high',
+    format: 'png',
+    count: 1
+  }, {
+    profile: { id: 'openai-image', name: 'OpenAI Image', provider: 'openai', model: 'gpt-image-2' },
+    references: []
+  });
+  const openAi4k34Body = JSON.parse(capturedRequest?.options?.body || '{}');
+  ok(openAi4k34Body.size === '2480x3312', 'OpenAI 4K + 3:4 request body should preserve the current custom size 2480x3312');
+  ok(openAi4k34Body.size === hooks.openAiSizePayload({ resolution: '4K', aspectRatio: '3:4' }), 'OpenAI 4K + 3:4 request should use the existing custom size conversion without a second normalizer');
+  ok(openAi4k34Body.size !== '1024x1536' && openAi4k34Body.size !== '1536x2048', 'OpenAI 4K + 3:4 request must not be rewritten to a standard lower-tier size');
 
   const inferredParams = hooks.extractReturnedParams({}, {
     aspectRatio: '9:16',
@@ -1709,6 +2154,20 @@ if (typeof hooks.openAiSizePayload === 'function') {
   hooks.writeStore();
   const taskStoreWrite = localStorageWrites.find(([, value]) => String(value || '').includes('task-inline-url-store'));
   ok(taskStoreWrite && !String(taskStoreWrite[1]).includes('data:image'), 'writeStore should strip data URLs from persisted task image remoteUrl/url fields');
+  hooks.setTestTasks([{
+    id: 'advanced-task-store',
+    status: 'error',
+    advanced: openAiAdvancedSnapshot,
+    images: []
+  }]);
+  hooks.writeStore();
+  const advancedTaskStoreWrite = localStorageWrites.find(([, value]) => String(value || '').includes('advanced-task-store'));
+  const advancedTaskStorePayload = advancedTaskStoreWrite ? JSON.parse(advancedTaskStoreWrite[1]) : null;
+  const persistedAdvanced = advancedTaskStorePayload?.tasks?.find((task) => task.id === 'advanced-task-store')?.advanced;
+  ok(persistedAdvanced?.responseFormatB64Json === true
+    && persistedAdvanced?.streamImages === false
+    && persistedAdvanced?.streamPartialImages === 0
+    && persistedAdvanced?.timeout === 6000, 'writeStore should persist the effective advanced task snapshot');
 
   const emergencyWrites = [];
   let emergencyStoreAttempts = 0;
@@ -1763,8 +2222,9 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(missingRetryProfile === null, 'retry should not silently fall back to the current composer profile when the original profile is missing');
 
   const duplicateProfileIdProfiles = [
-    { id: 'shared-image', name: 'Shared Image', provider: 'openai', apiMode: 'images', model: 'gpt-image-2' },
-    { id: 'shared-image', name: 'Shared Image Native', provider: 'openai', apiMode: 'images', model: 'gpt-image-2' }
+    { id: 'shared-image', name: 'Shared Image', provider: 'openai', apiMode: 'images', model: 'gpt-image-2', timeout: 111 },
+    { id: 'shared-image', name: 'gpt-image2-4k超分', provider: 'openai', apiMode: 'images', model: 'gpt-image-2', timeout: 6000 },
+    { id: 'shared-image', name: 'gpt-image2原生', provider: 'openai', apiMode: 'images', model: 'gpt-image-2', timeout: 6000 }
   ];
   hooks.setTestState({
     profiles: duplicateProfileIdProfiles,
@@ -1773,11 +2233,37 @@ if (typeof hooks.openAiSizePayload === 'function') {
   });
   const duplicateIdMenu = hooks.renderPopover({ type: 'model-config', rect: { left: 20, top: 20, bottom: 60 } });
   ok((duplicateIdMenu.match(/class="active"/g) || []).length === 1, 'duplicate profile IDs must not mark multiple model menu items active');
-  ok(duplicateIdMenu.includes('data-value="Shared Image Native"'), 'duplicate profile IDs should use a unique profile name as the selectable request key');
-  hooks.setTestState({ activeImageProfileId: 'Shared Image Native', activeProfileId: 'Shared Image Native' });
-  ok(hooks.imageProfile()?.name === 'Shared Image Native', 'duplicate profile IDs should remain individually selectable by their unique names');
+  hooks.setTestState({ activeImageProfileId: 'name:Shared Image', activeProfileId: 'name:Shared Image' });
+  const asciiDuplicateHeaders = hooks.appendAdvancedHeaders({}, 'gallery', hooks.imageProfile());
+  ok(asciiDuplicateHeaders['X-GPT-Image-Profile-Id'] === 'name:Shared Image', 'ASCII duplicate profile selection keys must remain directly usable in the request header');
+  ok(duplicateIdMenu.includes('data-value="name:gpt-image2-4k超分"'), 'duplicate profile IDs should use a prefixed unique profile name as the selectable request key');
+  hooks.setTestState({ activeImageProfileId: 'name:gpt-image2-4k超分', activeProfileId: 'name:gpt-image2-4k超分' });
+  ok(hooks.imageProfile()?.name === 'gpt-image2-4k超分', 'duplicate profile IDs should remain individually selectable by their unique names');
   const duplicateProfileHeaders = hooks.appendAdvancedHeaders({}, 'gallery', hooks.imageProfile());
-  ok(duplicateProfileHeaders['X-GPT-Image-Profile-Id'] === 'Shared Image Native', 'duplicate profile selection must reach the API proxy with the unambiguous key');
+  const encodedDuplicateProfile = duplicateProfileHeaders['X-GPT-Image-Profile-Id'];
+  ok(encodedDuplicateProfile === hooks.encodeProfileHeaderValue('name:gpt-image2-4k超分'), 'duplicate profile selection must reach the API proxy with the encoded unambiguous key');
+  ok(/^[\x20-\x7e]*$/.test(encodedDuplicateProfile), 'profile request headers must contain only transport-safe ASCII');
+  let unicodeProfileRequestCreated = false;
+  try {
+    new Request('https://example.test/api-proxy/images/generations', { headers: duplicateProfileHeaders });
+    unicodeProfileRequestCreated = true;
+  } catch {}
+  ok(unicodeProfileRequestCreated, 'unicode profile names must not make Request construction fail');
+  ok(hooks.encodeProfileHeaderValue('plain-profile') === 'plain-profile', 'ASCII profile IDs must remain backward compatible');
+
+  hooks.setTestState({ activeImageProfileId: 'name:gpt-image2原生', activeProfileId: 'name:gpt-image2原生' });
+  const nativeDuplicateMenu = hooks.renderPopover({ type: 'model-config', rect: { left: 20, top: 20, bottom: 60 } });
+  ok((nativeDuplicateMenu.match(/class="active"/g) || []).length === 1
+    && nativeDuplicateMenu.includes('data-value="name:gpt-image2原生"'), 'model menu should keep the explicitly selected native duplicate active');
+  const nativeTaskProfile = hooks.resolveTaskProfile({
+    profileId: 'name:gpt-image2原生',
+    requestedParams: { profileId: 'name:gpt-image2原生' }
+  });
+  ok(nativeTaskProfile?.name === 'gpt-image2原生', 'task profile resolution should preserve the explicitly selected native duplicate');
+  const nativeAdvancedModal = hooks.renderEntryAdvancedModal('gallery');
+  ok(nativeAdvancedModal.includes('gpt-image2原生') && nativeAdvancedModal.includes('value="6000"'), 'gallery advanced modal should use the selected native profile defaults instead of the first duplicate');
+  const nativeAdvancedHeaders = hooks.appendAdvancedHeaders({}, 'gallery', hooks.imageProfile());
+  ok(nativeAdvancedHeaders['X-GPT-Image-Profile-Id'] === hooks.encodeProfileHeaderValue('name:gpt-image2原生'), 'gallery request headers should use the same native profile selection key as the menu and modal');
 
   hooks.setTestState({
     profiles: [
@@ -1839,8 +2325,10 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(workflowAgentPayload.stream === false, 'Workflow Agent Responses payload should default to non-streaming when the profile has no streaming capability');
   const fetchBeforeAgentPost = sandbox.fetch;
   let postedAgentBody = null;
+  let postedAgentHeaders = null;
   sandbox.fetch = async (_url, options = {}) => {
     postedAgentBody = JSON.parse(options.body || '{}');
+    postedAgentHeaders = options.headers || null;
     return {
       ok: true,
       headers: { get: () => 'application/json' },
@@ -1850,6 +2338,7 @@ if (typeof hooks.openAiSizePayload === 'function') {
   await hooks.postAgentResponsesRequest({ model: strictTextProfile.model, input: 'test', stream: false }, strictTextProfile);
   sandbox.fetch = fetchBeforeAgentPost;
   ok(postedAgentBody?.stream === false, 'Agent Responses network boundary should disable unsupported streaming even if a caller passes true');
+  ok(postedAgentHeaders?.['X-GPT-Image-Profile-Id'] === hooks.encodeProfileHeaderValue('good-text'), 'Agent Responses requests should use the same ASCII-compatible profile header codec');
   postedAgentBody = null;
   const streamingTextProfile = { ...strictTextProfile, streamResponses: true };
   sandbox.fetch = async (_url, options = {}) => {
@@ -1862,6 +2351,46 @@ if (typeof hooks.openAiSizePayload === 'function') {
   };
   await hooks.postAgentResponsesRequest({ model: streamingTextProfile.model, input: 'test', stream: false }, streamingTextProfile);
   ok(postedAgentBody?.stream === true, 'Agent Responses network boundary should enable streaming when the profile declares support');
+  sandbox.fetch = fetchBeforeAgentPost;
+
+  const profileStateBeforeUnicodeResponses = hooks.getTestState();
+  const duplicateResponseProfiles = [
+    { id: 'shared-responses', name: 'Responses Text A', provider: 'openai', apiMode: 'responses', model: 'gpt-5.4-mini' },
+    { id: 'shared-responses', name: '中文文本模型', provider: 'openai', apiMode: 'responses', model: 'gpt-5.4-mini' }
+  ];
+  hooks.setTestState({
+    profiles: duplicateResponseProfiles,
+    activeProfileId: 'shared-responses',
+    activeImageProfileId: 'shared-responses',
+    agentConfig: { mode: 'hybrid', textProfileId: 'name:中文文本模型', imageProfileId: 'shared-responses', webSearchEnabled: false }
+  });
+  const unicodeTextProfile = hooks.agentTextProfile();
+  ok(unicodeTextProfile?.name === '中文文本模型', 'duplicate Responses profile IDs should resolve by the unique Unicode name');
+  let unicodeAgentHeaders = null;
+  sandbox.fetch = async (_url, options = {}) => {
+    unicodeAgentHeaders = options.headers || null;
+    return {
+      ok: true,
+      headers: { get: () => 'application/json' },
+      text: async () => JSON.stringify({ status: 'completed', output_text: 'ok' })
+    };
+  };
+  await hooks.postAgentResponsesRequest({ model: unicodeTextProfile.model, input: 'test', stream: false }, unicodeTextProfile);
+  sandbox.fetch = fetchBeforeAgentPost;
+  const unicodeAgentHeader = unicodeAgentHeaders?.['X-GPT-Image-Profile-Id'];
+  ok(unicodeAgentHeader === hooks.encodeProfileHeaderValue('name:中文文本模型') && /^[\x20-\x7e]*$/.test(unicodeAgentHeader), 'Agent Responses Unicode profile names should use an ASCII-safe encoded header');
+  let unicodeAgentRequestConstructed = false;
+  try {
+    new Request('https://example.test/api-proxy/responses', { method: 'POST', headers: unicodeAgentHeaders });
+    unicodeAgentRequestConstructed = true;
+  } catch {}
+  ok(unicodeAgentRequestConstructed, 'Agent Responses Unicode profile headers must remain valid Request header values');
+  hooks.setTestState({
+    profiles: profileStateBeforeUnicodeResponses.profiles,
+    activeProfileId: profileStateBeforeUnicodeResponses.activeProfileId,
+    activeImageProfileId: profileStateBeforeUnicodeResponses.activeImageProfileId,
+    agentConfig: profileStateBeforeUnicodeResponses.agentConfig
+  });
   const longAgentImageReply = '可以。先说明一点：我不能直接复刻角色。你可以直接用下面提示词生成： **中文提示词：** 一只原创的蓝色圆脸机器猫风格角色，手里抱着几枚金黄色圆形甜点，神情慌张，正在快速奔跑；后方一个原创的瘦弱男孩角色戴着圆框眼镜，穿简单休闲服，表情着急，正追赶前面的机器猫角色。整体构图有强烈的追逐动感，日系动画风，线条干净，色彩明亮，2D 插画，完整人物，全身，居中构图，透明背景，PNG，背景留空，无场景无地面无道具杂物。 **负面提示词：** 不要直接使用已有角色形象，不要版权角色，不要真实背景，不要街道。 如果你想，我还可以继续输出 Midjourney 版。';
   const extractedAgentPrompt = hooks.extractImagePromptFromAgentText(longAgentImageReply);
   ok(extractedAgentPrompt.includes('一只原创的蓝色圆脸机器猫风格角色'), 'Agent image prompt extraction should keep the labeled prompt body');
@@ -2021,14 +2550,15 @@ ok(String(preservedTermsPayload.instructions).includes('保留用户输入中的
   ok(agentAttachmentComposerHtml.includes('data-action="agent-pick-attachment"') && agentAttachmentComposerHtml.includes('agent-attachment-tray') && agentAttachmentComposerHtml.includes('brief.png'), 'Agent composer should render upload attachment button and pending attachment tray');
   ok(agentAttachmentComposerHtml.includes('agent-image-attachment-thumb') && agentAttachmentComposerHtml.includes('data-agent-attachment-id="att-1"'), 'Agent image attachments should render as thumbnail previews instead of file-only chips');
   hooks.setTestState({ mode: 'agent', agent: { attachments: [] }, references: [] });
+  const validPastedPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9s=', 'base64');
   await hooks.handlePaste({
-    clipboardData: { files: [new Blob(['img'], { type: 'image/png' })] },
+    clipboardData: { files: [new Blob([validPastedPng], { type: 'image/png' })] },
     preventDefault: () => {}
   });
   const pastedAgentState = hooks.getTestState();
   ok((pastedAgentState.agent.attachments || []).length === 1 && (pastedAgentState.references || []).length === 0, 'Pasted images in Agent mode should upload to Agent attachments, not gallery references');
   hooks.setTestState({ mode: 'agent', agent: { attachments: [] }, references: [] });
-  const itemPasteFile = new Blob(['img-item'], { type: 'image/png' });
+  const itemPasteFile = new Blob([validPastedPng], { type: 'image/png' });
   await hooks.handlePaste({
     clipboardData: {
       items: [{ kind: 'file', type: 'image/png', getAsFile: () => itemPasteFile }]
@@ -2185,10 +2715,24 @@ ok(String(preservedTermsPayload.instructions).includes('保留用户输入中的
   const regularJsonPayload = await hooks.consumeImageHttpResponse(new Response(JSON.stringify({
     data: [{ b64_json: regularJsonB64 }]
   }), {
-    headers: { 'Content-Type': 'application/json' }
+    headers: { 'Content-Type': 'application/json', 'X-GPT-Image-Trace-Id': 'trace-json-1' }
   }));
   ok(regularJsonPayload.responseMode === 'json', 'normal image JSON should retain json response mode');
   ok(regularJsonPayload.data[0].b64_json === regularJsonB64, 'normal image JSON should retain b64_json');
+  ok(regularJsonPayload.traceId === 'trace-json-1', 'successful image responses should retain the bounded proxy trace id');
+
+  let tracedStreamError;
+  await hooks.consumeImageHttpResponse(new Response(`data: ${JSON.stringify({ error: { message: 'upstream stream rejected' } })}\n\n`, {
+    status: 200,
+    headers: { 'Content-Type': 'text/event-stream', 'X-GPT-Image-Trace-Id': 'trace-error-1' }
+  })).then(
+    () => ok(false, 'untyped upstream SSE errors should reject'),
+    (error) => { tracedStreamError = error; }
+  );
+  ok(tracedStreamError?.code === 'IMAGE_STREAM_UPSTREAM_FAILED', 'untyped upstream SSE errors should retain the stream failure code');
+  ok(tracedStreamError?.traceId === 'trace-error-1', 'failed image responses should retain the bounded proxy trace id');
+  ok(tracedStreamError?.lastStreamEventType === 'error' && tracedStreamError?.streamEvents?.[0]?.type === 'error', 'failed untyped SSE errors should expose the stable fallback event type');
+  ok(!JSON.stringify(tracedStreamError?.streamEvents || []).includes('upstream stream rejected'), 'failed stream metadata must not retain the error message payload');
 
   let proxyProbeCalled = false;
   const proxyMarkedJsonPayload = await hooks.consumeImageHttpResponse({
@@ -2748,6 +3292,197 @@ ok(String(preservedTermsPayload.instructions).includes('保留用户输入中的
   else sandbox.localStorage.setItem(crossTabStoreKey, crossTabStoreRaw);
   hooks.setTestPersistedStoreBaseline(crossTabStoreRaw ? JSON.parse(crossTabStoreRaw) : null);
 
+  const composerMergeStorage = new Map();
+  const composerMergeGetItem = sandbox.localStorage.getItem;
+  const composerMergeSetItem = sandbox.localStorage.setItem;
+  const composerMergeRemoveItem = sandbox.localStorage.removeItem;
+  sandbox.localStorage.getItem = (key) => composerMergeStorage.get(key) || null;
+  sandbox.localStorage.setItem = (key, value) => composerMergeStorage.set(key, String(value));
+  sandbox.localStorage.removeItem = (key) => composerMergeStorage.delete(key);
+  try {
+    const composerDraftBaseline = {
+      references: [
+        { id: 'draft-ref-a', blobId: 'draft-blob-a' },
+        { id: 'draft-ref-b', blobId: 'draft-blob-b' },
+        { id: 'draft-ref-c', blobId: 'draft-blob-c' }
+      ],
+      composerMentionTokens: [{ id: 'draft-mention-b', refId: 'draft-ref-b', start: 5, end: 8, text: '@图2', selected: true, removed: false }],
+      composerPrompt: '绘制 @图2',
+      favorites: { baseline: true }
+    };
+    const staleRemoteDraft = JSON.parse(JSON.stringify(composerDraftBaseline));
+    const mergeComposerDraft = (localDraft, remoteDraft = staleRemoteDraft) => {
+      hooks.setTestPersistedStoreBaseline(composerDraftBaseline);
+      composerMergeStorage.set(crossTabStoreKey, JSON.stringify(remoteDraft));
+      hooks.mergeCrossTabStoreDomains(localDraft);
+      return localDraft;
+    };
+    const oneReferenceRemoved = JSON.parse(JSON.stringify(composerDraftBaseline));
+    oneReferenceRemoved.references = oneReferenceRemoved.references.filter((ref) => ref.id !== 'draft-ref-b');
+    oneReferenceRemoved.composerPrompt = '绘制 @已移除图片';
+    oneReferenceRemoved.composerMentionTokens[0].removed = true;
+    mergeComposerDraft(oneReferenceRemoved);
+    ok(oneReferenceRemoved.references.map((ref) => ref.id).join(',') === 'draft-ref-a,draft-ref-c', 'a locally removed reference must not be restored from a stale cross-tab draft');
+    ok(oneReferenceRemoved.composerPrompt === '绘制 @已移除图片' && oneReferenceRemoved.composerMentionTokens[0]?.removed === true, 'reference deletion must keep its matching local prompt and mention state');
+
+    const allReferencesRemoved = JSON.parse(JSON.stringify(composerDraftBaseline));
+    allReferencesRemoved.references = [];
+    allReferencesRemoved.composerPrompt = '纯文本生图';
+    allReferencesRemoved.composerMentionTokens = [];
+    mergeComposerDraft(allReferencesRemoved);
+    ok(allReferencesRemoved.references.length === 0, 'deleting every local reference must not turn a text-only draft back into image editing');
+    ok(allReferencesRemoved.composerPrompt === '纯文本生图' && allReferencesRemoved.composerMentionTokens.length === 0, 'a text-only draft must keep its local composer fields after stale cross-tab merge');
+
+    const remoteComposerUpdate = JSON.parse(JSON.stringify(composerDraftBaseline));
+    remoteComposerUpdate.references.push({ id: 'draft-ref-d', blobId: 'draft-blob-d' });
+    remoteComposerUpdate.composerPrompt = '远端最新草稿';
+    remoteComposerUpdate.composerMentionTokens = [{ id: 'draft-mention-d', refId: 'draft-ref-d', start: 0, end: 3, text: '@图4', selected: true, removed: false }];
+    remoteComposerUpdate.favorites = { baseline: true, remote: true };
+    const unchangedLocalDraft = JSON.parse(JSON.stringify(composerDraftBaseline));
+    unchangedLocalDraft.favorites = { baseline: true, local: true };
+    mergeComposerDraft(unchangedLocalDraft, remoteComposerUpdate);
+    ok(unchangedLocalDraft.references.map((ref) => ref.id).join(',') === 'draft-ref-a,draft-ref-b,draft-ref-c,draft-ref-d'
+      && unchangedLocalDraft.composerPrompt === '远端最新草稿', 'an unchanged local composer should still adopt a newer remote draft as one coherent group');
+    ok(unchangedLocalDraft.favorites?.local === true && unchangedLocalDraft.favorites?.remote === true, 'composer draft conflict handling must not change normal favorites cross-tab merging');
+
+    const writeStoreStateBefore = hooks.getTestState();
+    const writeStoreTasksBefore = writeStoreStateBefore.tasks;
+    const writeStoreTaskStoreBefore = new Map(taskStore);
+    const writeStoreRemote = JSON.parse(JSON.stringify(staleRemoteDraft));
+    writeStoreRemote.tasks = [{ id: 'composer-write-remote-task', createdAt: 901, status: 'success', images: [] }];
+    hooks.setTestPersistedStoreBaseline(composerDraftBaseline);
+    composerMergeStorage.set(crossTabStoreKey, JSON.stringify(writeStoreRemote));
+    hooks.setTestState({
+      references: composerDraftBaseline.references.filter((ref) => ref.id !== 'draft-ref-b'),
+      composerPrompt: '绘制 @已移除图片',
+      composerMentionTokens: [{ ...composerDraftBaseline.composerMentionTokens[0], removed: true }]
+    });
+    hooks.setTestTasks([{ id: 'composer-write-local-task', createdAt: 902, status: 'success', images: [] }]);
+    try {
+      hooks.writeStore({ forceTaskPersistence: true });
+      const writeStorePayload = JSON.parse(composerMergeStorage.get(crossTabStoreKey) || '{}');
+      ok(writeStorePayload.references?.map((ref) => ref.id).join(',') === 'draft-ref-a,draft-ref-c', 'writeStore must not restore a locally deleted reference from a stale remote snapshot');
+      ok(writeStorePayload.composerPrompt === '绘制 @已移除图片' && writeStorePayload.composerMentionTokens?.[0]?.removed === true, 'writeStore must persist the matching local prompt and mention state with the deleted reference');
+      ok(writeStorePayload.tasks?.some((task) => task.id === 'composer-write-local-task')
+        && writeStorePayload.tasks?.some((task) => task.id === 'composer-write-remote-task'), 'writeStore composer conflict handling must not remove normal cross-tab task records');
+      await hooks.flushTaskPersistence();
+    } finally {
+      taskStore.clear();
+      for (const [id, record] of writeStoreTaskStoreBefore) taskStore.set(id, record);
+      hooks.setTestTasks(writeStoreTasksBefore);
+      hooks.setTestState({
+        references: writeStoreStateBefore.references,
+        composerMentionTokens: writeStoreStateBefore.composerMentionTokens,
+        composerPrompt: writeStoreStateBefore.composerPrompt,
+        taskStore: writeStoreStateBefore.taskStore,
+        taskRecovery: writeStoreStateBefore.taskRecovery
+      });
+    }
+
+    const composerRemovalStateBefore = hooks.getTestState();
+    const removalReferences = [
+      { id: 'remove-ref-a', blobId: 'remove-blob-a' },
+      { id: 'remove-ref-b', blobId: 'remove-blob-b' },
+      { id: 'remove-ref-c', blobId: 'remove-blob-c' }
+    ];
+    let removalPrompt = '生成 ';
+    let removalMentionTokens = [];
+    for (let index = 0; index < removalReferences.length; index += 1) {
+      const ref = removalReferences[index];
+      const start = removalPrompt.length;
+      const inserted = hooks.insertReferenceMention(removalPrompt, start, start, ref.id, removalReferences, removalMentionTokens);
+      removalPrompt = inserted.value + (index < removalReferences.length - 1 ? '、' : '');
+      removalMentionTokens = inserted.tokens;
+    }
+    const removalDraftBaseline = {
+      ...composerDraftBaseline,
+      references: removalReferences,
+      composerPrompt: removalPrompt,
+      composerMentionTokens: removalMentionTokens
+    };
+    const removeReferenceEquivalent = async (refId) => {
+      const current = hooks.getTestState();
+      const mentionResult = hooks.markReferenceMentionsRemoved(current.composerPrompt, current.composerMentionTokens, refId);
+      hooks.setTestState({
+        references: current.references.filter((ref) => ref.id !== refId),
+        composerPrompt: mentionResult.value,
+        composerMentionTokens: mentionResult.tokens
+      });
+      hooks.writeStore({ forceTaskPersistence: true });
+      await hooks.flushTaskPersistence();
+      return JSON.parse(composerMergeStorage.get(crossTabStoreKey) || '{}');
+    };
+    try {
+      hooks.setTestPersistedStoreBaseline(removalDraftBaseline);
+      composerMergeStorage.set(crossTabStoreKey, JSON.stringify(removalDraftBaseline));
+      hooks.setTestState({
+        references: removalReferences,
+        composerPrompt: removalPrompt,
+        composerMentionTokens: removalMentionTokens
+      });
+      hooks.setGalleryScrollActivity(true);
+      const afterFirstRemoval = await removeReferenceEquivalent('remove-ref-a');
+      ok(afterFirstRemoval.references?.map((ref) => ref.id).join(',') === 'remove-ref-b,remove-ref-c', 'forced reference deletion persistence must commit immediately while gallery scrolling is active');
+      await removeReferenceEquivalent('remove-ref-b');
+      const afterThreeRemovalState = await removeReferenceEquivalent('remove-ref-c');
+      ok(afterThreeRemovalState.references?.length === 0, 'deleting all three references must persist an empty reference list');
+      const reloadedAllRemoved = hooks.readStore();
+      ok(reloadedAllRemoved.references?.length === 0, 'readStore reload after deleting all references must not resurrect a stale reference');
+      ok(reloadedAllRemoved.composerMentionTokens?.length === 3
+        && reloadedAllRemoved.composerMentionTokens.every((token) => token.removed === true), 'reloaded deleted references must retain three removed mention tokens');
+
+      hooks.setGalleryScrollActivity(false);
+      hooks.setTestPersistedStoreBaseline(removalDraftBaseline);
+      composerMergeStorage.set(crossTabStoreKey, JSON.stringify(removalDraftBaseline));
+      hooks.setTestState({
+        references: removalReferences,
+        composerPrompt: removalPrompt,
+        composerMentionTokens: removalMentionTokens
+      });
+      const firstReloadRemoval = await removeReferenceEquivalent('remove-ref-a');
+      const malformedReload = JSON.parse(JSON.stringify(firstReloadRemoval));
+      malformedReload.composerPrompt = malformedReload.composerPrompt.replace('@已移除图片', '@已移除图片除图片');
+      composerMergeStorage.set(crossTabStoreKey, JSON.stringify(malformedReload));
+      const reloadedAfterLegacyMarker = hooks.readStore();
+      ok(!reloadedAfterLegacyMarker.composerPrompt.includes('@已移除图片除图片')
+        && (reloadedAfterLegacyMarker.composerPrompt.match(/@已移除图片/g) || []).length === 1, 'readStore must normalize a legacy duplicated removed-image marker before the next reference deletion');
+      hooks.setTestState({
+        references: reloadedAfterLegacyMarker.references,
+        composerPrompt: reloadedAfterLegacyMarker.composerPrompt,
+        composerMentionTokens: reloadedAfterLegacyMarker.composerMentionTokens
+      });
+      const afterSecondReloadRemoval = await removeReferenceEquivalent('remove-ref-b');
+      ok(!afterSecondReloadRemoval.composerPrompt.includes('@已移除图片除图片')
+        && (afterSecondReloadRemoval.composerPrompt.match(/@已移除图片/g) || []).length === 2, 'continuing deletion after reload must keep removed-image markers canonical and non-duplicated');
+      const reloadedBeforeFinalRemoval = hooks.readStore();
+      hooks.setTestState({
+        references: reloadedBeforeFinalRemoval.references,
+        composerPrompt: reloadedBeforeFinalRemoval.composerPrompt,
+        composerMentionTokens: reloadedBeforeFinalRemoval.composerMentionTokens
+      });
+      const afterFinalReloadRemoval = await removeReferenceEquivalent('remove-ref-c');
+      const finalReload = hooks.readStore();
+      ok(finalReload.references?.length === 0
+        && !finalReload.composerPrompt.includes('@已移除图片除图片')
+        && (finalReload.composerPrompt.match(/@已移除图片/g) || []).length === 3, 'continued post-reload deletion must leave exactly one canonical marker per removed reference');
+      ok(finalReload.composerMentionTokens?.length === 3
+        && finalReload.composerMentionTokens.every((token) => token.removed === true && token.text === '@已移除图片'), 'continued post-reload deletion must not leave stale or duplicate mention token metadata');
+      void afterFinalReloadRemoval;
+    } finally {
+      hooks.setGalleryScrollActivity(false);
+      hooks.setTestState({
+        references: composerRemovalStateBefore.references,
+        composerPrompt: composerRemovalStateBefore.composerPrompt,
+        composerMentionTokens: composerRemovalStateBefore.composerMentionTokens
+      });
+    }
+  } finally {
+    sandbox.localStorage.getItem = composerMergeGetItem;
+    sandbox.localStorage.setItem = composerMergeSetItem;
+    sandbox.localStorage.removeItem = composerMergeRemoveItem;
+    hooks.setTestPersistedStoreBaseline(crossTabStoreRaw ? JSON.parse(crossTabStoreRaw) : null);
+  }
+
   if (typeof hooks.hydrateBlobImage === 'function') {
     fakeIndexedDbStore.set('hydrate-detached-blob', new Blob(['detached'], { type: 'image/png' }));
     const detachedImg = { isConnected: true, dataset: { blobId: 'hydrate-detached-blob' }, src: '' };
@@ -3278,6 +4013,122 @@ ok(String(preservedTermsPayload.instructions).includes('保留用户输入中的
   ok(hooks.activeAgentHasPending() === true, 'Agent pending detector should identify active thinking messages');
   ok(hooks.renderAgentComposer().includes('正在思考') && hooks.renderAgentComposer().includes('disabled'), 'Agent composer should disable duplicate sends while a message is pending');
   ok(hooks.agentRequestTimeoutSeconds({ timeout: 3 }) === 3, 'Agent request timeout should follow the selected text profile timeout');
+
+  const composerButtonMarkup = (html, action) => {
+    const match = html.match(new RegExp(`<button\\b[^>]*data-action="${action}"[^>]*>[\\s\\S]*?<\\/button>`));
+    return match ? match[0] : '';
+  };
+  const composerButtonVisibleText = (button) => button
+    .replace(/<svg[\s\S]*?<\/svg>/gi, '')
+    .replace(/<[^>]+>/g, '')
+    .trim();
+  const taskBusinessContract = (tasks) => (Array.isArray(tasks) ? tasks : []).map((task) => ({
+    id: task?.id,
+    status: task?.status,
+    prompt: task?.prompt,
+    imageBlobIds: (Array.isArray(task?.images) ? task.images : []).map((image) => image?.blobId)
+  }));
+  const renderGalleryComposerForTest = () => vm.runInContext('renderGalleryComposer()', sandbox);
+  const galleryReferenceFixture = {
+    id: 'composer-gallery-reference',
+    name: '构图参考.png',
+    blobId: 'composer-gallery-reference-blob',
+    originalBlobId: 'composer-gallery-reference-blob'
+  };
+  const composerTaskFixture = {
+    id: 'composer-clear-task',
+    status: 'success',
+    prompt: '保留这条任务',
+    images: [{ blobId: 'composer-task-blob', width: 1024, height: 1024, type: 'image/png' }]
+  };
+  hooks.setTestTasks([composerTaskFixture]);
+  hooks.setTestState({
+    mode: 'gallery',
+    composerPrompt: '绘制 @图1',
+    composerMentionTokens: [{ id: 'gallery-mention', refId: galleryReferenceFixture.id, start: 3, end: 6, text: '@图1' }],
+    references: [galleryReferenceFixture]
+  });
+  const galleryComposerWithValue = renderGalleryComposerForTest();
+  const galleryClearWithValue = composerButtonMarkup(galleryComposerWithValue, 'clear-composer-text');
+  ok(galleryComposerWithValue.includes('<textarea id="promptInput"') && galleryComposerWithValue.includes('>绘制 @图1</textarea>'), 'gallery composer should render its current prompt value');
+  ok(galleryClearWithValue.includes('class="composer-clear-text composer-clear-text--gallery"')
+    && galleryClearWithValue.includes('data-composer-kind="gallery"')
+    && galleryClearWithValue.includes('title="清空文本"')
+    && galleryClearWithValue.includes('aria-label="清空文本"'), 'gallery valued composer should expose an accessible text-clear X');
+  ok((galleryComposerWithValue.match(/data-action="clear-composer-text"/g) || []).length === 1, 'gallery composer should render exactly one text-clear action');
+  const galleryStateBeforeClear = hooks.getTestState();
+  ok(hooks.clearComposerText('gallery') === true, 'gallery text-clear action should report success');
+  const galleryStateAfterClear = hooks.getTestState();
+  ok(galleryStateAfterClear.composerPrompt === '' && galleryStateAfterClear.composerMentionTokens.length === 0, 'gallery text-clear should clear the prompt and bound mention tokens');
+  ok(JSON.stringify(galleryStateAfterClear.references) === JSON.stringify(galleryStateBeforeClear.references), 'gallery text-clear should keep reference images');
+  ok(JSON.stringify(taskBusinessContract(galleryStateAfterClear.tasks)) === JSON.stringify(taskBusinessContract(galleryStateBeforeClear.tasks)), 'gallery text-clear should keep task records');
+  const galleryComposerEmpty = renderGalleryComposerForTest();
+  const galleryClearEmpty = composerButtonMarkup(galleryComposerEmpty, 'clear-composer-text');
+  ok(galleryClearEmpty.includes('class="composer-clear-text composer-clear-text--gallery"')
+    && galleryClearEmpty.includes('title="清空文本"')
+    && galleryClearEmpty.includes('aria-label="清空文本"'), 'gallery empty composer should keep the same accessible text-clear X markup');
+  ok(homeCss.includes('textarea:placeholder-shown + .composer-clear-text'), 'empty composer text should hide the shared X through the placeholder state');
+
+  const agentComposerFixture = {
+    activeProjectId: 'composer-agent-project',
+    projects: [{ id: 'composer-agent-project', name: '清空回归项目', prompt: '' }],
+    threadsByProject: {
+      'composer-agent-project': [{ id: 'composer-agent-thread', projectId: 'composer-agent-project', title: '保留会话', createdAt: 1, updatedAt: 2 }]
+    },
+    activeThreadIdByProject: { 'composer-agent-project': 'composer-agent-thread' },
+    messagesByThread: {
+      'composer-agent-thread': [{ id: 'composer-agent-message', threadId: 'composer-agent-thread', projectId: 'composer-agent-project', role: 'assistant', text: '保留消息', pending: true, createdAt: 1 }]
+    },
+    inputDraft: '分析 @图1',
+    composerMentionTokens: [{ id: 'agent-mention', refId: 'agent-attachment', start: 3, end: 6, text: '@图1' }],
+    attachments: [{ id: 'agent-attachment', kind: 'image', name: '附件.png', type: 'image/png', blobId: 'agent-attachment-blob', size: 2048, width: 1200, height: 800 }],
+    webMode: 'on',
+    reasoning: 'medium'
+  };
+  hooks.setTestState({ mode: 'agent', agent: agentComposerFixture, references: [galleryReferenceFixture] });
+  const agentComposerWithValue = hooks.renderAgentComposer();
+  const agentClearWithValue = composerButtonMarkup(agentComposerWithValue, 'clear-composer-text');
+  const agentAttachButton = composerButtonMarkup(agentComposerWithValue, 'agent-pick-attachment');
+  const agentSendButton = composerButtonMarkup(agentComposerWithValue, 'agent-chat');
+  ok(agentComposerWithValue.includes('<textarea id="agentInput"') && agentComposerWithValue.includes('>分析 @图1</textarea>'), 'Agent composer should render its current draft value');
+  ok(agentClearWithValue.includes('class="composer-clear-text composer-clear-text--agent"')
+    && agentClearWithValue.includes('data-composer-kind="agent"')
+    && agentClearWithValue.includes('title="清空文本"')
+    && agentClearWithValue.includes('aria-label="清空文本"'), 'Agent valued composer should expose an accessible text-clear X');
+  ok(agentAttachButton.includes('class="composer-action-icon composer-attach-button"')
+    && agentAttachButton.includes('aria-label="上传附件"')
+    && agentAttachButton.includes('composer-action-badge'), 'Agent attachment action should keep the shared paperclip class and count badge');
+  ok(agentSendButton.includes('class="generate-button icon-generate composer-send-button"')
+    && agentSendButton.includes('disabled')
+    && agentSendButton.includes('aria-disabled="true"')
+    && agentSendButton.includes('title="正在思考"'), 'pending Agent send action should keep the shared arrow class and disabled state');
+  ok(composerButtonVisibleText(agentSendButton) === '', 'Agent send icon should not render a visible text label');
+  const agentStateBeforeClear = hooks.getTestState();
+  ok(hooks.clearComposerText('agent') === true, 'Agent text-clear action should report success');
+  const agentStateAfterClear = hooks.getTestState();
+  ok(agentStateAfterClear.agent.inputDraft === '' && agentStateAfterClear.agent.composerMentionTokens.length === 0, 'Agent text-clear should clear the draft and bound mention tokens');
+  ok(JSON.stringify(agentStateAfterClear.agent.attachments) === JSON.stringify(agentStateBeforeClear.agent.attachments), 'Agent text-clear should keep attachments');
+  ok(JSON.stringify(agentStateAfterClear.agent.threadsByProject) === JSON.stringify(agentStateBeforeClear.agent.threadsByProject), 'Agent text-clear should keep conversation threads');
+  ok(JSON.stringify(agentStateAfterClear.agent.messagesByThread) === JSON.stringify(agentStateBeforeClear.agent.messagesByThread), 'Agent text-clear should keep conversation messages');
+  ok(JSON.stringify(agentStateAfterClear.references) === JSON.stringify(agentStateBeforeClear.references)
+    && JSON.stringify(taskBusinessContract(agentStateAfterClear.tasks)) === JSON.stringify(taskBusinessContract(agentStateBeforeClear.tasks)), 'Agent text-clear should keep shared references and task records');
+  const agentComposerEmptyPending = hooks.renderAgentComposer();
+  const agentClearEmpty = composerButtonMarkup(agentComposerEmptyPending, 'clear-composer-text');
+  const agentSendEmptyPending = composerButtonMarkup(agentComposerEmptyPending, 'agent-chat');
+  ok(agentClearEmpty.includes('class="composer-clear-text composer-clear-text--agent"')
+    && agentClearEmpty.includes('title="清空文本"')
+    && agentClearEmpty.includes('aria-label="清空文本"'), 'Agent empty composer should keep the same accessible text-clear X markup');
+  ok(agentSendEmptyPending.includes('disabled') && agentSendEmptyPending.includes('aria-disabled="true"') && composerButtonVisibleText(agentSendEmptyPending) === '', 'empty pending Agent composer should keep its icon-only disabled send action');
+  const clearThreadStageButton = composerButtonMarkup(hooks.renderAgentStage(), 'clear-agent-thread');
+  ok(clearThreadStageButton.includes('class="agent-clear-icon-button"')
+    && !clearThreadStageButton.includes('composer-clear-text')
+    && !clearThreadStageButton.includes('data-composer-kind'), 'clear-agent-thread should remain a distinct conversation action from text clearing');
+  const galleryAttachButton = composerButtonMarkup(galleryComposerWithValue, 'pick-reference');
+  const gallerySendButton = composerButtonMarkup(galleryComposerWithValue, 'generate');
+  ok(galleryAttachButton.includes('class="composer-action-icon composer-attach-button"')
+    && galleryAttachButton.includes('aria-label="参考图 1/'), 'gallery attachment action should keep the shared paperclip class');
+  ok(gallerySendButton.includes('class="generate-button icon-generate composer-send-button"')
+    && composerButtonVisibleText(gallerySendButton) === '', 'gallery send action should keep the shared icon-only arrow contract');
 
   fakeIndexedDbStore.set('edit-source-blob', new Blob(['generated-image'], { type: 'image/png' }));
   hooks.setTestTasks([{

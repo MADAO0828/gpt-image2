@@ -19,6 +19,97 @@ async function importWorkerModule(relativePath, exportNames = []) {
   finally { setTimeout(() => rm(dir, { recursive: true, force: true }), 1000); }
 }
 
+test('profile header codec preserves ASCII and round-trips Unicode selection keys', async () => {
+  const codec = await importWorkerModule('functions/_lib/profile-header.js', [
+    'encodeProfileHeaderValue',
+    'decodeProfileHeaderValue',
+    'parseProfileSelectionValue'
+  ]);
+  const unicodeKey = 'gpt-image2-4k超分';
+  const encoded = codec.encodeProfileHeaderValue(unicodeKey);
+  assert.match(encoded, /^[\x20-\x7e]*$/);
+  assert.doesNotThrow(() => new Request('https://example.test/api-proxy/images/generations', {
+    headers: { 'X-GPT-Image-Profile-Id': encoded }
+  }));
+  assert.equal(codec.decodeProfileHeaderValue(encoded), unicodeKey);
+  assert.equal(codec.encodeProfileHeaderValue('plain-profile'), 'plain-profile');
+  assert.equal(codec.decodeProfileHeaderValue('plain-profile'), 'plain-profile');
+  assert.equal(codec.decodeProfileHeaderValue('gpt-image-profile-utf8-v1:%E4%ZZ'), 'gpt-image-profile-utf8-v1:%E4%ZZ');
+  assert.deepEqual(codec.parseProfileSelectionValue('id:profile-1'), { kind: 'id', value: 'profile-1' });
+  assert.deepEqual(codec.parseProfileSelectionValue('name:中文配置'), { kind: 'name', value: '中文配置' });
+  assert.deepEqual(codec.parseProfileSelectionValue('profile-1'), { kind: 'legacy', value: 'profile-1' });
+});
+
+test('profile selection keys keep duplicate profile ids distinct by their unique names', async () => {
+  const codec = await importWorkerModule('functions/_lib/profile-header.js', [
+    'findProfileBySelectionKey',
+    'profileSelectionKey'
+  ]);
+  const profiles = [
+    { id: 'gpt-image2', name: 'gpt-image2-4k超分' },
+    { id: 'gpt-image2', name: 'gpt-image2原生' },
+    { id: 'unique-image', name: '唯一图片配置' }
+  ];
+  const nativeKey = codec.profileSelectionKey(profiles[1], profiles);
+  assert.equal(nativeKey, 'name:gpt-image2原生');
+  assert.equal(codec.findProfileBySelectionKey(profiles, nativeKey), profiles[1]);
+  assert.equal(codec.profileSelectionKey(profiles[2], profiles), 'unique-image');
+  assert.equal(codec.findProfileBySelectionKey(profiles, 'unique-image'), profiles[2]);
+  assert.equal(codec.findProfileBySelectionKey(profiles, 'gpt-image2'), profiles[0], 'legacy duplicate ids retain first-match behavior');
+});
+
+test('API proxy resolves explicit id/name profile prefixes without changing legacy duplicate-ID behavior', async () => {
+  const proxy = await importWorkerModule('functions/api-proxy/[[path]].js', ['onRequest']);
+  const codec = await importWorkerModule('functions/_lib/profile-header.js', ['encodeProfileHeaderValue']);
+  const userId = 401;
+  const token = await signToken({ userId, sessionVersion: 1, exp: Math.floor(Date.now() / 1000) + 60 }, 'test-jwt-secret');
+  const profiles = [
+    { id: 'collision', name: 'first-id', provider: 'openai', apiMode: 'images', baseUrl: 'https://first.example/v1', apiKey: 'first-secret', model: 'gpt-image-2' },
+    { id: 'collision', name: '中文配置', provider: 'openai', apiMode: 'images', baseUrl: 'https://second.example/v1', apiKey: 'second-secret', model: 'gpt-image-2' },
+    { id: 'third', name: 'collision', provider: 'openai', apiMode: 'images', baseUrl: 'https://name.example/v1', apiKey: 'name-secret', model: 'gpt-image-2' }
+  ];
+  const db = makeDb({
+    users: [{ id: userId, username: 'profile-prefix-user', role: 'user', session_version: 1 }],
+    settings: { [userId]: settingsRows({ profiles, activeImageProfileId: 'collision' }) }
+  });
+  const captures = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    captures.push({ url: String(url), authorization: new Headers(init.headers).get('Authorization') });
+    return new Response(JSON.stringify({ data: [] }), { headers: { 'Content-Type': 'application/json' } });
+  };
+  const requestFor = (selection) => new Request('https://prod.example/api-proxy/images/generations', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-GPT-Image-Session': token,
+      'X-GPT-Image-Profile-Id': selection
+    },
+    body: JSON.stringify({ model: 'gpt-image-2', prompt: 'profile-selection-test' })
+  });
+  try {
+    for (const selection of [
+      'id:collision',
+      codec.encodeProfileHeaderValue('name:中文配置'),
+      'collision'
+    ]) {
+      const response = await proxy.onRequest({
+        request: requestFor(selection),
+        env: { gpt_image2_db: db, JWT_SECRET: 'test-jwt-secret', ALLOW_SESSION_HEADER_AUTH: 'true' }
+      });
+      assert.equal(response.status, 200);
+      await response.text();
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.deepEqual(captures.map((item) => ({ host: new URL(item.url).hostname, authorization: item.authorization })), [
+    { host: 'first.example', authorization: 'Bearer first-secret' },
+    { host: 'second.example', authorization: 'Bearer second-secret' },
+    { host: 'first.example', authorization: 'Bearer first-secret' }
+  ]);
+});
+
 function b64url(bytes) {
   return Buffer.from(bytes).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
@@ -214,6 +305,45 @@ test('settings save preserves existing secrets when placeholder strings are post
   assert.equal(JSON.parse(profilesWrite.bound[2])[0].apiKey, 'sk-profile-existing');
   assert.equal(JSON.parse(profilesWrite.bound[2])[0].nativeApiKey, 'gemini-existing');
   assert.equal(JSON.parse(profilesWrite.bound[2])[0].googleNativeApiKey, 'google-native-existing');
+});
+
+test('settings save keeps masked duplicate profile secrets matched by id and name', async () => {
+  const mod = await importWorkerModule('functions/api/settings/save.js', ['onRequestPost']);
+  const db = makeDb({
+    users: [{ id: 31, username: 'duplicate-profile-user', role: 'user' }],
+    settings: { 31: [
+      {
+        key: 'profiles',
+        value: JSON.stringify([
+          { id: 'shared-image', name: 'gpt-image2-4k超分', apiKey: 'stored-a', nativeApiKey: 'stored-native-a' },
+          { id: 'shared-image', name: 'gpt-image2原生', apiKey: 'stored-b', nativeApiKey: 'stored-native-b' },
+          { id: 'legacy-only', apiKey: 'stored-legacy' }
+        ]),
+        updated_at: 'x'
+      }
+    ] }
+  });
+  const res = await mod.onRequestPost({
+    request: await authedRequest(31, {
+      settings: {
+        profiles: [
+          { id: 'shared-image', name: 'gpt-image2原生', apiKey: '***MASKED***', nativeApiKey: 'cloudflare-proxy' },
+          { id: 'shared-image', name: 'gpt-image2-4k超分', apiKey: 'cloudflare-proxy', nativeApiKey: '***MASKED***' },
+          { id: 'legacy-only', apiKey: '***MASKED***' }
+        ]
+      }
+    }),
+    env: { gpt_image2_db: db, JWT_SECRET: 'gpt-image2-jwt-secret-key-2026-secure', ALLOW_SESSION_HEADER_AUTH: 'true' }
+  });
+  assert.equal(res.status, 200);
+  const profilesWrite = db.writes.find(write => write.bound[1] === 'profiles');
+  const saved = JSON.parse(profilesWrite.bound[2]);
+  const byName = new Map(saved.map(profile => [profile.name || profile.id, profile]));
+  assert.equal(byName.get('gpt-image2原生').apiKey, 'stored-b');
+  assert.equal(byName.get('gpt-image2原生').nativeApiKey, 'stored-native-b');
+  assert.equal(byName.get('gpt-image2-4k超分').apiKey, 'stored-a');
+  assert.equal(byName.get('gpt-image2-4k超分').nativeApiKey, 'stored-native-a');
+  assert.equal(byName.get('legacy-only').apiKey, 'stored-legacy');
 });
 
 test('public registration can be disabled explicitly', async () => {
@@ -652,6 +782,43 @@ test('models API uses manual redirect handling and blocks provider redirects', a
   }
 });
 
+test('models API resolves an explicit unique name when image profile ids are duplicated', async () => {
+  const mod = await importWorkerModule('functions/api/models/index.js', ['onRequestPost']);
+  const userId = 42;
+  const token = await signToken({ userId, exp: Math.floor(Date.now() / 1000) + 60 }, 'test-jwt-secret');
+  const db = makeDb({
+    users: [{ id: userId, username: 'duplicate-model-profile-user', role: 'user' }],
+    settings: {
+      [userId]: settingsRows({
+        profiles: [
+          { id: 'gpt-image2', name: 'gpt-image2-4k超分', provider: 'openai', apiMode: 'images', baseUrl: 'https://first.example/v1', apiKey: 'first-secret', model: 'gpt-image-2' },
+          { id: 'gpt-image2', name: 'gpt-image2原生', provider: 'openai', apiMode: 'images', baseUrl: 'https://native.example/v1', apiKey: 'native-secret', model: 'gpt-image-2' }
+        ]
+      })
+    }
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    assert.equal(String(url), 'https://native.example/v1/models');
+    assert.equal(new Headers(init.headers).get('Authorization'), 'Bearer native-secret');
+    return new Response(JSON.stringify({ data: [{ id: 'gpt-image-2' }] }), { headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    const response = await mod.onRequestPost({
+      request: new Request('https://prod.example/api/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-GPT-Image-Session': token },
+        body: JSON.stringify({ profileId: 'name:gpt-image2原生' })
+      }),
+      env: { gpt_image2_db: db, JWT_SECRET: 'test-jwt-secret', ALLOW_SESSION_HEADER_AUTH: 'true' }
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual((await response.json()).models, [{ id: 'gpt-image-2', ownedBy: '' }]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('upstream DNS validation honors an already-aborted client signal', async () => {
   const mod = await importWorkerModule('functions/_lib/upstream-url.js', ['assertPublicUpstreamUrl', 'assertUpstreamHostAllowed', 'pinUpstreamFetchInit']);
   const originalFetch = globalThis.fetch;
@@ -704,6 +871,71 @@ test('dynamic upstream mode ignores stale allowlist configuration but retains UR
       () => mod.fetchPinnedUpstream('https://127.0.0.1/v1/models', {}, { requireAllowlist: false }),
       error => /internal|private|local|ip literal/i.test(String(error?.message || ''))
     );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('pinned upstream paths use the injected transport for DNS, rechecks, reserved hosts, and fallback', async () => {
+  const mod = await importWorkerModule('functions/_lib/upstream-url.js', ['fetchPinnedUpstream', 'fetchWithPinnedAddress']);
+  const originalFetch = globalThis.fetch;
+  let globalCalls = 0;
+  let dnsCalls = 0;
+  let upstreamCalls = 0;
+  globalThis.fetch = async () => {
+    globalCalls += 1;
+    throw new Error('global fetch must not be used when fetchImpl is supplied');
+  };
+  const injected = async (url) => {
+    const text = String(url);
+    if (text.includes('cloudflare-dns.com/dns-query') || text.includes('dns.google/resolve')) {
+      dnsCalls += 1;
+      return new Response(JSON.stringify({ Answer: [{ type: 1, data: '8.8.8.8' }] }), { headers: { 'Content-Type': 'application/dns-json' } });
+    }
+    upstreamCalls += 1;
+    return new Response('{"ok":true}', { headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    const normal = await mod.fetchPinnedUpstream('https://api.injected.invalid/v1/models', {}, { fetchImpl: injected });
+    assert.equal(normal.response.status, 200);
+    assert.equal(upstreamCalls, 1);
+    assert.ok(dnsCalls >= 2, 'the injected transport must handle DNS first-check and recheck requests');
+
+    const reserved = await mod.fetchWithPinnedAddress('https://images.example/v1/models', ['8.8.8.8'], {}, { fetchImpl: injected });
+    assert.equal(reserved.status, 200);
+    assert.equal(upstreamCalls, 2, 'reserved test host must still use the injected transport');
+
+    let fallbackDnsCalls = 0;
+    const fallback = await mod.fetchPinnedUpstream('https://api.fallback.injected.invalid/v1/models', {}, {
+      allowPlatformDnsFallback: true,
+      fetchImpl: async (url) => {
+        if (String(url).includes('cloudflare-dns.com/dns-query') || String(url).includes('dns.google/resolve')) {
+          fallbackDnsCalls += 1;
+          throw new Error('injected DNS unavailable');
+        }
+        return new Response('{"fallback":true}', { headers: { 'Content-Type': 'application/json' } });
+      }
+    });
+    assert.equal(fallback.dnsFallback, true);
+    assert.equal(fallback.resolverId, 'platform-fallback');
+    assert.ok(fallbackDnsCalls > 0);
+
+    let reboundUpstreamCalls = 0;
+    await assert.rejects(
+      () => mod.fetchWithPinnedAddress('https://dns-rebound.injected.invalid/v1/models', ['8.8.8.8'], {}, {
+        fetchImpl: async (url) => {
+          const text = String(url);
+          if (text.includes('cloudflare-dns.com/dns-query') || text.includes('dns.google/resolve')) {
+            return new Response(JSON.stringify({ Answer: [{ type: 1, data: '1.1.1.1' }] }), { headers: { 'Content-Type': 'application/dns-json' } });
+          }
+          reboundUpstreamCalls += 1;
+          return new Response('{}');
+        }
+      }),
+      error => error?.code === 'UPSTREAM_DNS_REBOUND'
+    );
+    assert.equal(reboundUpstreamCalls, 0, 'DNS rebinding must fail before the injected upstream request');
+    assert.equal(globalCalls, 0);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -941,6 +1173,38 @@ test('runtime config recursively masks nested provider secrets', async () => {
   assert.equal(res.headers.get('Access-Control-Allow-Origin'), null);
 });
 
+test('runtime config retains a unique name selection for duplicate image profile ids', async () => {
+  const mod = await importWorkerModule('functions/.well-known/img-runtime-config.json.js', ['onRequest']);
+  const userId = 41;
+  const nativeName = 'gpt-image2原生';
+  const db = makeDb({
+    users: [{ id: userId, username: 'duplicate-image-profile-user', role: 'user' }],
+    settings: {
+      [userId]: settingsRows({
+        profiles: [
+          { id: 'gpt-image2', name: 'gpt-image2-4k超分', provider: 'openai', apiMode: 'images', baseUrl: 'https://first.example/v1', apiKey: 'first-secret', model: 'gpt-image-2' },
+          { id: 'gpt-image2', name: nativeName, provider: 'openai', apiMode: 'images', baseUrl: 'https://native.example/v1', apiKey: 'native-secret', model: 'gpt-image-2' }
+        ],
+        activeProfileId: `name:${nativeName}`,
+        activeImageProfileId: `name:${nativeName}`
+      })
+    }
+  });
+  const token = await signToken({ userId, exp: Math.floor(Date.now() / 1000) + 60 }, 'test-jwt-secret');
+  const response = await mod.onRequest({
+    request: new Request('https://prod.example/.well-known/img-runtime-config.json', {
+      headers: { 'X-GPT-Image-Session': token }
+    }),
+    env: { gpt_image2_db: db, JWT_SECRET: 'test-jwt-secret', ALLOW_SESSION_HEADER_AUTH: 'true' }
+  });
+  const config = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(config.activeProfileId, `name:${nativeName}`);
+  assert.equal(config.activeImageProfileId, `name:${nativeName}`);
+  assert.equal(config.defaultApiUrl, 'https://native.example/v1');
+  assert.doesNotMatch(JSON.stringify(config), /native-secret|first-secret/);
+});
+
 test('API proxy rejects unsafe upstream URLs and blocks redirects with manual mode', async () => {
   const mod = await importWorkerModule('functions/api-proxy/[[path]].js', ['onRequest']);
   const users = [{ id: 6, username: 'proxy-user', role: 'user' }];
@@ -953,6 +1217,7 @@ test('API proxy rejects unsafe upstream URLs and blocks redirects with manual mo
   const originalFetch = globalThis.fetch;
   let fetchCount = 0;
   let redirectMode = '';
+  let redirectBodyCancelled = false;
   try {
     const unsafeDb = makeDb({
       users,
@@ -978,7 +1243,10 @@ test('API proxy rejects unsafe upstream URLs and blocks redirects with manual mo
     });
     globalThis.fetch = async (url, init) => {
       redirectMode = init.redirect;
-      return new Response('', { status: 307, headers: { Location: 'https://other.example/v1/images/generations' } });
+      return new Response(new ReadableStream({ cancel() { redirectBodyCancelled = true; } }), {
+        status: 307,
+        headers: { Location: 'https://other.example/v1/images/generations' }
+      });
     };
     const redirectRes = await mod.onRequest({
       request: requestFor(),
@@ -988,6 +1256,7 @@ test('API proxy rejects unsafe upstream URLs and blocks redirects with manual mo
     assert.equal(redirectRes.status, 502);
     assert.notEqual(redirectRes.headers.get('Access-Control-Allow-Origin'), '*');
     assert.match(await redirectRes.text(), /UPSTREAM_REDIRECT_BLOCKED/);
+    assert.equal(redirectBodyCancelled, true);
 
     globalThis.fetch = async () => new Response(JSON.stringify({ data: [] }), {
       status: 200,
@@ -1114,12 +1383,16 @@ test('remote image proxy converts redirect exhaustion to a safe upstream error',
   const db = makeDb({ users: [{ id: userId, username: 'remote-redirect-user', role: 'user' }] });
   const originalFetch = globalThis.fetch;
   let remoteRequests = 0;
+  let remoteBodiesCancelled = 0;
   globalThis.fetch = async url => {
     if (String(url).includes('cloudflare-dns.com/dns-query') || String(url).includes('dns.google/resolve')) {
       return new Response(JSON.stringify({ Answer: [{ type: 1, data: '8.8.8.8' }] }), { headers: { 'Content-Type': 'application/dns-json' } });
     }
     remoteRequests += 1;
-    return new Response('', { status: 302, headers: { Location: 'https://images.example/next.png' } });
+    return new Response(new ReadableStream({ cancel() { remoteBodiesCancelled += 1; } }), {
+      status: 302,
+      headers: { Location: 'https://images.example/next.png' }
+    });
   };
   try {
     const response = await mod.onRequest({
@@ -1130,6 +1403,7 @@ test('remote image proxy converts redirect exhaustion to a safe upstream error',
     });
     assert.equal(response.status, 502);
     assert.equal(remoteRequests, 3);
+    assert.equal(remoteBodiesCancelled, 3);
     assert.match(await response.text(), /REMOTE_IMAGE_REDIRECT_BLOCKED/);
   } finally {
     globalThis.fetch = originalFetch;
@@ -1239,6 +1513,8 @@ test('API proxy timeout remains active while an image response body is streaming
 
 test('streaming image proxy preserves upstream response bytes and status semantics', async () => {
   const proxy = await importWorkerModule('functions/api-proxy/[[path]].js', ['onRequest']);
+  const codec = await importWorkerModule('functions/_lib/profile-header.js', ['encodeProfileHeaderValue', 'decodeProfileHeaderValue']);
+  const unicodeProfileName = 'gpt-image2-4k超分';
   const userId = 19;
   const token = await signToken({
     userId,
@@ -1251,7 +1527,17 @@ test('streaming image proxy preserves upstream response bytes and status semanti
       [userId]: settingsRows({
         profiles: [{
           id: 'image-handshake',
-          name: 'Image handshake',
+          name: 'Legacy image handshake',
+          provider: 'openai',
+          baseUrl: 'https://legacy-images.example/v1',
+          apiKey: 'legacy-handshake-key',
+          model: 'gpt-image-2',
+          apiMode: 'images',
+          timeout: 5,
+          streamImages: true
+        }, {
+          id: 'image-handshake',
+          name: unicodeProfileName,
           provider: 'openai',
           baseUrl: 'https://images.example/v1',
           apiKey: 'handshake-key',
@@ -1270,14 +1556,16 @@ test('streaming image proxy preserves upstream response bytes and status semanti
     headers: {
       'Content-Type': 'application/json',
       'X-GPT-Image-Session': token,
-      'X-GPT-Image-Profile-Id': 'image-handshake',
+      'X-GPT-Image-Profile-Id': codec.encodeProfileHeaderValue(unicodeProfileName),
       'X-GPT-Image-Stream': 'true'
     },
     body: JSON.stringify({ prompt: 'test', stream: true })
   });
   const originalFetch = globalThis.fetch;
   try {
-    globalThis.fetch = async () => {
+    globalThis.fetch = async (url, init) => {
+      assert.equal(new URL(String(url)).hostname, 'images.example');
+      assert.equal(new Headers(init.headers).get('Authorization'), 'Bearer handshake-key');
       await new Promise((resolve) => setTimeout(resolve, 120));
       return new Response(JSON.stringify({ data: [{ b64_json: 'aW1hZ2U=' }] }), {
         headers: { 'Content-Type': 'application/json' }
@@ -1290,6 +1578,7 @@ test('streaming image proxy preserves upstream response bytes and status semanti
     });
     assert.ok(Date.now() - startedAt >= 100, 'raw passthrough waits for upstream response headers');
     assert.match(response.headers.get('Content-Type') || '', /application\/json/);
+    assert.equal(decodeURIComponent(response.headers.get('X-GPT-Image-Profile-Name')), unicodeProfileName);
     const text = await response.text();
     assert.deepEqual(JSON.parse(text), { data: [{ b64_json: 'aW1hZ2U=' }] });
 
@@ -1306,6 +1595,19 @@ test('streaming image proxy preserves upstream response bytes and status semanti
     assert.match(failedText, /PROXY_FETCH_FAILED/);
     assert.match(failedText, /fetch failed|API 代理请求失败/);
 
+    globalThis.fetch = async () => new Response('524: A timeout occurred', {
+      status: 524,
+      headers: { 'Content-Type': 'text/html' }
+    });
+    const timeoutResponse = await proxy.onRequest({
+      request: requestFor(),
+      env: { gpt_image2_db: db, JWT_SECRET: 'test-jwt-secret', ALLOW_SESSION_HEADER_AUTH: 'true' }
+    });
+    const timeoutBody = await timeoutResponse.json();
+    assert.equal(timeoutResponse.status, 504);
+    assert.equal(timeoutBody.error.code, 'UPSTREAM_CLOUDFLARE_TIMEOUT');
+    assert.match(timeoutBody.error.message, /上游接收状态未知，本站未自动重试/);
+
     const rawSse = 'data: {"object":"image.generation.result","data":[{"b64_json":"aW1hZ2U="}]}\n\n';
     globalThis.fetch = async () => new Response(
       rawSse,
@@ -1318,6 +1620,367 @@ test('streaming image proxy preserves upstream response bytes and status semanti
     assert.match(mislabeledResponse.headers.get('Content-Type') || '', /text\/event-stream/);
     const mislabeledText = await mislabeledResponse.text();
     assert.equal(mislabeledText, rawSse);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('image proxy standardizes non-2xx JSON and SSE provider errors without echoing upstream payloads', async () => {
+  const proxy = await importWorkerModule('functions/api-proxy/[[path]].js', ['onRequest']);
+  const userId = 193;
+  const token = await signToken({ userId, sessionVersion: 1, exp: Math.floor(Date.now() / 1000) + 60 }, 'test-jwt-secret');
+  const db = makeDb({
+    users: [{ id: userId, username: 'provider-error-user', role: 'user', session_version: 1 }],
+    settings: {
+      [userId]: settingsRows({
+        profiles: [{
+          id: 'provider-error-profile',
+          name: 'Provider error profile',
+          provider: 'openai',
+          baseUrl: 'https://provider-errors.example/v1',
+          apiKey: 'provider-error-secret',
+          model: 'gpt-image-2',
+          apiMode: 'images',
+          timeout: 17
+        }],
+        activeProfileId: 'provider-error-profile',
+        activeImageProfileId: 'provider-error-profile'
+      })
+    }
+  });
+  const requestFor = (stream) => new Request('https://prod.example/api-proxy/images/edits', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-GPT-Image-Session': token,
+      'X-GPT-Image-Stream': stream ? 'true' : 'false'
+    },
+    body: JSON.stringify({ prompt: 'must-not-appear-in-error-envelope' })
+  });
+  const originalFetch = globalThis.fetch;
+  let upstreamCall = 0;
+  try {
+    globalThis.fetch = async (_url, init) => {
+      const stream = upstreamCall++ === 1;
+      if (stream) {
+        return new Response(
+          `event: error\ndata: ${JSON.stringify({
+            error: {
+              message: 'Upstream service temporarily unavailable\u0000',
+              type: 'upstream_error\u0001'
+            },
+            prompt: 'must-not-appear-in-error-envelope',
+            url: 'https://provider-errors.example/private',
+            api_key: 'provider-error-secret',
+            b64_json: 'aW1hZ2U='
+          })}\n\n`,
+          {
+            status: 503,
+            statusText: 'Service Unavailable',
+            headers: {
+              'Content-Type': 'text/event-stream',
+              'Set-Cookie': 'session=upstream-secret; HttpOnly',
+              'Content-Encoding': 'gzip',
+              'X-GPT-Image-Trace-Id': 'upstream-trace-must-not-win'
+            }
+          }
+        );
+      }
+      return new Response(JSON.stringify({
+        error: {
+          message: 'Upstream service temporarily unavailable',
+          type: 'upstream_error'
+        },
+        prompt: 'must-not-appear-in-error-envelope',
+        url: 'https://provider-errors.example/private',
+        api_key: 'provider-error-secret',
+        b64_json: 'aW1hZ2U='
+      }), {
+        status: 503,
+        statusText: 'Service Unavailable',
+        headers: {
+          'Content-Type': 'application/json',
+          'Set-Cookie': 'session=upstream-secret; HttpOnly',
+          'Content-Encoding': 'gzip',
+          'X-GPT-Image-Trace-Id': 'upstream-trace-must-not-win'
+        }
+      });
+    };
+    for (const stream of [false, true]) {
+      const response = await proxy.onRequest({
+        request: requestFor(stream),
+        env: { gpt_image2_db: db, JWT_SECRET: 'test-jwt-secret', ALLOW_SESSION_HEADER_AUTH: 'true' }
+      });
+      const body = await response.json();
+      assert.equal(response.status, 503);
+      assert.deepEqual(body.error, {
+        message: 'Upstream service temporarily unavailable',
+        type: 'upstream_error',
+        code: 'UPSTREAM_PROVIDER_ERROR'
+      });
+      assert.equal(body.upstreamStatus, 503);
+      assert.equal(body.upstreamType, stream ? 'text/event-stream' : 'application/json');
+      assert.equal(body.stage, 'upstream-response-headers');
+      assert.equal(body.status, 503);
+      assert.equal(body.contentType, stream ? 'text/event-stream' : 'application/json');
+      assert.equal(body.timeoutSeconds, 17);
+      assert.ok(Number.isFinite(body.proxyMs) && body.proxyMs >= 0);
+      assert.match(String(body.traceId), /^[0-9a-z-]+$/i);
+      assert.equal(response.headers.get('X-GPT-Image-Trace-Id'), body.traceId);
+      assert.equal(response.headers.get('X-GPT-Image-Proxy-Stage'), 'upstream-response-headers');
+      assert.equal(response.headers.get('X-GPT-Image-Proxy-Status'), '503');
+      assert.equal(response.headers.get('Set-Cookie'), null);
+      assert.equal(response.headers.get('Content-Encoding'), null);
+      assert.notEqual(response.headers.get('X-GPT-Image-Trace-Id'), 'upstream-trace-must-not-win');
+      assert.doesNotMatch(JSON.stringify(body), /must-not-appear|provider-errors\.example|provider-error-secret|aW1hZ2U=|upstream-secret/i);
+    }
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      error: { message: 'Invalid image request', type: 'invalid_request_error' },
+      prompt: 'must-not-appear-in-error-envelope',
+      api_key: 'provider-error-secret'
+    }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' }
+    });
+    const rejectedResponse = await proxy.onRequest({
+      request: requestFor(false),
+      env: { gpt_image2_db: db, JWT_SECRET: 'test-jwt-secret', ALLOW_SESSION_HEADER_AUTH: 'true' }
+    });
+    const rejectedBody = await rejectedResponse.json();
+    assert.equal(rejectedResponse.status, 400);
+    assert.equal(rejectedBody.error.code, 'UPSTREAM_PROVIDER_REJECTED');
+    assert.equal(rejectedBody.error.type, 'invalid_request_error');
+    assert.equal(rejectedBody.upstreamStatus, 400);
+    assert.equal(rejectedBody.stage, 'upstream-response-headers');
+    assert.equal(rejectedBody.status, 400);
+    assert.doesNotMatch(JSON.stringify(rejectedBody), /must-not-appear|provider-error-secret/i);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('image proxy safely envelopes malformed and sensitive structured provider errors', async () => {
+  const proxy = await importWorkerModule('functions/api-proxy/[[path]].js', ['onRequest']);
+  const userId = 194;
+  const token = await signToken({ userId, sessionVersion: 1, exp: Math.floor(Date.now() / 1000) + 60 }, 'test-jwt-secret');
+  const db = makeDb({
+    users: [{ id: userId, username: 'provider-error-fallback-user', role: 'user', session_version: 1 }],
+    settings: {
+      [userId]: settingsRows({
+        profiles: [{
+          id: 'provider-error-fallback-profile',
+          provider: 'openai',
+          baseUrl: 'https://provider-error-fallback.example/v1',
+          apiKey: 'provider-error-fallback-secret',
+          model: 'gpt-image-2',
+          apiMode: 'images'
+        }],
+        activeImageProfileId: 'provider-error-fallback-profile'
+      })
+    }
+  });
+  const sensitiveValues = [
+    'https://provider-error-fallback.example/private',
+    'Bearer provider-error-bearer-secret',
+    'sk-provider-error-secret',
+    'Cookie: session=provider-error-cookie',
+    'prompt: provider-error-prompt',
+    'provider-error-base64-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+  ];
+  const scenarios = [
+    { status: 502, contentType: 'application/json', body: '{"error":"malformed-json-provider-secret"', raw: 'malformed-json-provider-secret' },
+    { status: 503, contentType: 'text/event-stream', body: 'event: error\ndata: {"error":"malformed-sse-provider-secret"\n\n', raw: 'malformed-sse-provider-secret' },
+    { status: 400, contentType: 'application/json', body: JSON.stringify({ prompt: 'provider-error-prompt', api_key: 'provider-error-secret' }), raw: 'provider-error-prompt' },
+    ...sensitiveValues.map((message) => ({
+      status: 429,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: { message, type: 'provider_rate_limit' } }),
+      raw: message
+    }))
+  ];
+  let upstreamCall = 0;
+  const localFetch = async (url) => {
+    const text = String(url);
+    if (text.includes('cloudflare-dns.com/dns-query') || text.includes('dns.google/resolve')) {
+      return new Response(JSON.stringify({ Answer: [{ type: 1, data: '8.8.8.8' }] }), { headers: { 'Content-Type': 'application/dns-json' } });
+    }
+    const scenario = scenarios[upstreamCall++];
+    return new Response(scenario.body, {
+      status: scenario.status,
+      headers: { 'Content-Type': scenario.contentType, 'Set-Cookie': 'provider-error-cookie=secret' }
+    });
+  };
+  const env = {
+    gpt_image2_db: db,
+    JWT_SECRET: 'test-jwt-secret',
+    ALLOW_SESSION_HEADER_AUTH: 'true',
+    LOCAL_UPSTREAM_FETCH: localFetch
+  };
+  const requestFor = () => new Request('https://prod.example/api-proxy/images/edits', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-GPT-Image-Session': token },
+    body: JSON.stringify({ prompt: 'request-prompt-must-not-appear' })
+  });
+  for (const scenario of scenarios) {
+    const response = await proxy.onRequest({ request: requestFor(), env });
+    const body = await response.json();
+    assert.equal(response.status, scenario.status);
+    assert.equal(body.error.code, scenario.status >= 400 && scenario.status < 500 ? 'UPSTREAM_PROVIDER_REJECTED' : 'UPSTREAM_PROVIDER_ERROR');
+    assert.equal(body.error.type, scenario.status === 429 ? 'provider_rate_limit' : scenario.status === 400 ? 'upstream_rejected' : 'upstream_error');
+    assert.equal(body.upstreamStatus, scenario.status);
+    assert.equal(body.stage, 'upstream-response-headers');
+    assert.equal(body.status, scenario.status);
+    assert.equal(body.contentType, scenario.contentType);
+    assert.match(String(body.error.message), /上游 API 返回 HTTP|上游错误消息包含敏感内容/);
+    assert.doesNotMatch(JSON.stringify(body), new RegExp(scenario.raw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.doesNotMatch(JSON.stringify(body), /provider-error-fallback\.example|provider-error-fallback-secret|request-prompt-must-not-appear|provider-error-cookie/i);
+    assert.equal(response.headers.get('Set-Cookie'), null);
+  }
+  assert.equal(upstreamCall, scenarios.length);
+});
+
+test('image proxy classifies gateway timeout statuses without broad non-JSON matching', async () => {
+  const proxy = await importWorkerModule('functions/api-proxy/[[path]].js', ['onRequest']);
+  const userId = 192;
+  const token = await signToken({ userId, sessionVersion: 1, exp: Math.floor(Date.now() / 1000) + 60 }, 'test-jwt-secret');
+  const db = makeDb({
+    users: [{ id: userId, username: 'gateway-timeout-user', role: 'user', session_version: 1 }],
+    settings: {
+      [userId]: settingsRows({
+        profiles: [{
+          id: 'gateway-timeout-profile',
+          name: 'Gateway timeout profile',
+          provider: 'openai',
+          baseUrl: 'https://images.example/v1',
+          apiKey: 'gateway-timeout-key',
+          model: 'gpt-image-2',
+          apiMode: 'images',
+          timeout: 6000
+        }],
+        activeProfileId: 'gateway-timeout-profile',
+        activeImageProfileId: 'gateway-timeout-profile'
+      })
+    }
+  });
+  const requestFor = () => new Request('https://prod.example/api-proxy/images/generations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-GPT-Image-Session': token },
+    body: JSON.stringify({ prompt: 'test' })
+  });
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const scenario of [
+      { status: 504, body: 'Gateway Timeout', expectedCode: 'UPSTREAM_CLOUDFLARE_TIMEOUT' },
+      { status: 524, body: 'upstream timeout', expectedCode: 'UPSTREAM_CLOUDFLARE_TIMEOUT' },
+      { status: 408, body: 'Request timed out', expectedCode: 'UPSTREAM_CLOUDFLARE_TIMEOUT' },
+      { status: 503, body: 'upstream timed out', expectedCode: 'UPSTREAM_CLOUDFLARE_TIMEOUT' },
+      { status: 502, body: 'Bad Gateway', expectedCode: 'UPSTREAM_NON_JSON_RESPONSE' }
+    ]) {
+      globalThis.fetch = async (url) => {
+        const hostname = new URL(String(url)).hostname;
+        if (hostname === 'cloudflare-dns.com' || hostname === 'dns.google') {
+          return new Response(JSON.stringify({ Answer: [{ type: 1, data: '8.8.8.8' }] }), { headers: { 'Content-Type': 'application/dns-json' } });
+        }
+        return new Response(scenario.body, { status: scenario.status, headers: { 'Content-Type': 'text/plain' } });
+      };
+      const response = await proxy.onRequest({
+        request: requestFor(),
+        env: { gpt_image2_db: db, JWT_SECRET: 'test-jwt-secret', ALLOW_SESSION_HEADER_AUTH: 'true' }
+      });
+      const payload = await response.json();
+      if (scenario.expectedCode === 'UPSTREAM_CLOUDFLARE_TIMEOUT') {
+        assert.equal(response.status, 504);
+        assert.match(payload.error.message, /上游网关响应超时/);
+      } else {
+        assert.equal(response.status, 502);
+      }
+      assert.equal(payload.error.code, scenario.expectedCode);
+      assert.equal(payload.upstreamStatus, scenario.status);
+      assert.equal(payload.stage, 'upstream-response-headers');
+      assert.equal(payload.status, scenario.status);
+      assert.equal(payload.contentType, 'text/plain');
+      assert.ok(Number.isFinite(payload.elapsedMs) && payload.elapsedMs >= 0);
+      assert.equal(payload.timeoutSeconds, 6000);
+      assert.equal(payload.dnsMode, 'public-resolver');
+      assert.match(String(payload.traceId), /^[0-9a-z-]+$/i);
+      assert.ok(Number.isFinite(payload.proxyMs) && payload.proxyMs >= 0);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('image proxy maps allowlisted transport causes to redacted diagnostics with one traceId', async () => {
+  const proxy = await importWorkerModule('functions/api-proxy/[[path]].js', ['onRequest']);
+  const userId = 191;
+  const token = await signToken({ userId, sessionVersion: 1, exp: Math.floor(Date.now() / 1000) + 60 }, 'test-jwt-secret');
+  const db = makeDb({
+    users: [{ id: userId, username: 'transport-diagnostics-user', role: 'user', session_version: 1 }],
+    settings: {
+      [userId]: settingsRows({
+        profiles: [{
+          id: 'transport-profile',
+          name: 'Transport diagnostics',
+          provider: 'openai',
+          baseUrl: 'https://transport.example/v1',
+          apiKey: 'transport-secret-key',
+          model: 'gpt-image-2',
+          apiMode: 'images',
+          timeout: 17
+        }],
+        activeProfileId: 'transport-profile',
+        activeImageProfileId: 'transport-profile'
+      })
+    }
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error('global fetch sentinel'); };
+  const requestFor = () => new Request('https://prod.example/api-proxy/images/generations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-GPT-Image-Session': token, 'X-GPT-Image-Trace-Id': 'client-supplied-trace' },
+    body: JSON.stringify({ prompt: 'diagnostic prompt' })
+  });
+  try {
+    for (const item of [
+      { code: 'UND_ERR_HEADERS_TIMEOUT', name: 'HeadersTimeoutError', expected: 'UPSTREAM_HEADERS_TIMEOUT', status: 504, phase: 'response-header' },
+      { code: 'UND_ERR_BODY_TIMEOUT', name: 'BodyTimeoutError', expected: 'UPSTREAM_BODY_TIMEOUT', status: 504, phase: 'response-body' },
+      { code: 'ECONNREFUSED', name: 'SocketError', expected: 'UPSTREAM_CONNECTION_FAILED', status: 502, phase: 'connection' }
+    ]) {
+      let forwardedTraceHeader = null;
+      const localFetch = async (url, init) => {
+        const text = String(url);
+        if (text.includes('cloudflare-dns.com/dns-query') || text.includes('dns.google/resolve')) {
+          return new Response(JSON.stringify({ Answer: [{ type: 1, data: '8.8.8.8' }] }), { headers: { 'Content-Type': 'application/dns-json' } });
+        }
+        forwardedTraceHeader = new Headers(init?.headers).get('X-GPT-Image-Trace-Id');
+        const cause = new Error('sensitive transport cause');
+        cause.code = item.code;
+        cause.name = item.name;
+        const failure = new TypeError('sensitive outer transport message');
+        failure.cause = cause;
+        throw failure;
+      };
+      const response = await proxy.onRequest({
+        request: requestFor(),
+        env: { gpt_image2_db: db, JWT_SECRET: 'test-jwt-secret', ALLOW_SESSION_HEADER_AUTH: 'true', LOCAL_UPSTREAM_FETCH: localFetch }
+      });
+      const body = await response.json();
+      assert.equal(response.status, item.status);
+      assert.equal(body.error.code, item.expected);
+      assert.equal(body.timeoutSeconds, 17);
+      assert.equal(body.timeoutPhase, item.phase);
+      assert.equal(body.stage, 'outbound-start');
+      assert.equal(body.status, 'unknown');
+      assert.equal(body.contentType, 'application/json');
+      assert.ok(Number.isFinite(body.elapsedMs) && body.elapsedMs >= 0);
+      assert.equal(body.dnsMode, 'public-resolver');
+      assert.equal(body.transportCauseCode, item.code);
+      assert.equal(body.transportCauseName, item.name);
+      assert.equal(forwardedTraceHeader, null, 'the generated trace id must never be sent upstream');
+      assert.equal(response.headers.get('X-GPT-Image-Trace-Id'), body.traceId);
+      assert.match(String(body.traceId), /^[0-9a-z-]+$/i);
+      assert.doesNotMatch(JSON.stringify(body), /sensitive|transport\.example|transport-secret-key|diagnostic prompt/i);
+    }
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1632,6 +2295,234 @@ test('API proxy normalizes legacy image quality in JSON and multipart requests',
   }
 });
 
+test('OpenAI image edits retain raw multipart framing and expose only redacted local-failure diagnostics', async () => {
+  const proxy = await importWorkerModule('functions/api-proxy/[[path]].js', ['onRequest']);
+  const userId = 402;
+  const token = await signToken({ userId, sessionVersion: 1, exp: Math.floor(Date.now() / 1000) + 60 }, 'test-jwt-secret');
+  const db = makeDb({
+    users: [{ id: userId, username: 'multipart-capture-user', role: 'user', session_version: 1 }],
+    settings: {
+      [userId]: settingsRows({
+        profiles: [{
+          id: 'raw-openai',
+          name: 'Raw OpenAI',
+          provider: 'openai',
+          baseUrl: 'https://capture.example/v1',
+          apiKey: 'super-secret-key',
+          model: 'gpt-image-2',
+          apiMode: 'images'
+        }],
+        activeImageProfileId: 'raw-openai'
+      })
+    }
+  });
+  let outboundCount = 0;
+  let captured = null;
+  const localFetch = async (_url, init) => {
+    outboundCount += 1;
+    const requestHeaders = new Headers(init.headers);
+    const bytes = new Uint8Array(await new Response(init.body).arrayBuffer());
+    captured = {
+      headers: requestHeaders,
+      contentType: requestHeaders.get('Content-Type'),
+      bytes,
+      raw: new TextDecoder().decode(bytes)
+    };
+    return new Response(JSON.stringify({ data: [] }), { headers: { 'Content-Type': 'application/json' } });
+  };
+  const env = {
+    gpt_image2_db: db,
+    JWT_SECRET: 'test-jwt-secret',
+    ALLOW_SESSION_HEADER_AUTH: 'true',
+    LOCAL_UPSTREAM_FETCH: localFetch
+  };
+  const headers = {
+    'X-GPT-Image-Session': token,
+    'X-GPT-Image-Profile-Id': 'id:raw-openai',
+    'X-GPT-Image-Trace-Id': 'client-supplied-trace',
+    'X-GPT-Image-Response-Delivery': 'stream',
+    Origin: 'https://prod.example',
+    Referer: 'https://prod.example/editor'
+  };
+  const form = new FormData();
+  form.append('model', 'gpt-image-2');
+  form.append('prompt', 'multipart prompt must stay in the body only');
+  form.append('quality', 'high');
+  form.append('image[]', new Blob(['first-image-bytes'], { type: 'image/png' }), 'first.png');
+  form.append('image[]', new Blob(['second-image-bytes'], { type: 'image/jpeg' }), 'second.jpg');
+  form.append('mask', new Blob(['mask-bytes'], { type: 'image/webp' }), 'mask.webp');
+  const response = await proxy.onRequest({
+    request: new Request('https://prod.example/api-proxy/images/edits', { method: 'POST', headers, body: form }),
+    env
+  });
+  assert.equal(response.status, 200);
+  await response.text();
+  assert.equal(outboundCount, 1);
+  assert.ok(captured?.contentType?.startsWith('multipart/form-data;'), 'the outbound body must retain multipart content type and boundary');
+  const boundary = captured.contentType.match(/boundary="?([^";]+)"?/i)?.[1];
+  assert.ok(boundary && captured.raw.includes(`--${boundary}`), 'the declared boundary must frame the raw outbound body');
+  const fieldOrder = [...captured.raw.matchAll(/Content-Disposition: form-data; name="([^"]+)"/g)].map((match) => match[1]);
+  assert.deepEqual(fieldOrder, ['model', 'prompt', 'quality', 'image[]', 'image[]', 'mask']);
+  const parsed = await new Request('https://capture.example/v1/images/edits', {
+    method: 'POST',
+    headers: { 'Content-Type': captured.contentType },
+    body: captured.bytes,
+    duplex: 'half'
+  }).formData();
+  assert.equal(parsed.getAll('image[]').length, 2);
+  assert.deepEqual(parsed.getAll('image[]').map((file) => ({ name: file.name, type: file.type })), [
+    { name: 'first.png', type: 'image/png' },
+    { name: 'second.jpg', type: 'image/jpeg' }
+  ]);
+  assert.deepEqual(parsed.get('mask') && { name: parsed.get('mask').name, type: parsed.get('mask').type }, { name: 'mask.webp', type: 'image/webp' });
+  assert.equal(captured.headers.get('Origin'), null);
+  assert.equal(captured.headers.get('Referer'), null);
+  assert.equal(captured.headers.get('X-GPT-Image-Trace-Id'), null);
+  assert.equal(captured.headers.get('X-GPT-Image-Response-Delivery'), null);
+  assert.equal(captured.headers.get('X-GPT-Image-Proxy-Stage'), null);
+  assert.equal(response.headers.get('X-GPT-Image-Proxy-Stage'), 'upstream-response-headers');
+  assert.equal(response.headers.get('X-GPT-Image-Proxy-Status'), '200');
+
+  const localSourceRequest = new Request('https://prod.example/api-proxy/images/edits', {
+    method: 'POST',
+    headers,
+    body: form
+  });
+  const localOriginalBytes = new Uint8Array(await localSourceRequest.clone().arrayBuffer());
+  const localContentType = localSourceRequest.headers.get('Content-Type');
+  const localResponse = await proxy.onRequest({
+    request: new Request('https://prod.example/api-proxy/images/edits', {
+      method: 'POST',
+      headers: {
+        ...headers,
+        'Content-Type': localContentType,
+        'Content-Length': String(localOriginalBytes.byteLength)
+      },
+      body: localOriginalBytes
+    }),
+    env: { ...env, LOCAL_ORIGINAL_REQUEST_BODY: localOriginalBytes }
+  });
+  assert.equal(localResponse.status, 200);
+  await localResponse.text();
+  assert.equal(outboundCount, 2);
+  assert.deepEqual(captured.bytes, localOriginalBytes, 'local preview must preserve the browser multipart bytes exactly');
+  assert.equal(captured.headers.get('Content-Length'), String(localOriginalBytes.byteLength));
+  assert.equal(captured.headers.get('Transfer-Encoding'), null);
+
+  const blocked = new FormData();
+  blocked.append('model', 'wrong-model');
+  blocked.append('prompt', 'do-not-leak-prompt');
+  blocked.append('image[]', new Blob(['do-not-leak-image-body'], { type: 'image/png' }), 'blocked.png');
+  const blockedResponse = await proxy.onRequest({
+    request: new Request('https://prod.example/api-proxy/images/edits', {
+      method: 'POST',
+      headers: { ...headers, 'X-GPT-Image-Trace-Id': 'another-client-trace' },
+      body: blocked
+    }),
+    env
+  });
+  const blockedBody = await blockedResponse.json();
+  assert.equal(blockedResponse.status, 400);
+  assert.equal(outboundCount, 2, 'model validation must fail before any upstream call');
+  assert.equal(blockedBody.code, 'IMAGE_PROFILE_MODEL_MISMATCH');
+  assert.equal(blockedBody.stage, 'local-validation');
+  assert.equal(blockedBody.status, 400);
+  assert.equal(blockedBody.contentType, 'multipart/form-data');
+  assert.equal(blockedBody.multipart.imageArrayCount, 1);
+  assert.equal(blockedBody.multipart.files[0].filename, 'blocked.png');
+  assert.doesNotMatch(JSON.stringify(blockedBody), /do-not-leak-prompt|do-not-leak-image-body|super-secret-key|capture\.example|another-client-trace/i);
+  assert.equal(blockedResponse.headers.get('X-GPT-Image-Proxy-Stage'), 'local-validation');
+  assert.equal(blockedResponse.headers.get('X-GPT-Image-Proxy-Status'), '400');
+  assert.match(blockedBody.traceId, /^[0-9a-z-]+$/i);
+  assert.equal(blockedResponse.headers.get('X-GPT-Image-Trace-Id'), blockedBody.traceId);
+});
+
+test('API proxy extracts local transport metrics before Response wrapping without forwarding diagnostic headers', async () => {
+  const proxy = await importWorkerModule('functions/api-proxy/[[path]].js', ['onRequest']);
+  const userId = 403;
+  const token = await signToken({ userId, sessionVersion: 1, exp: Math.floor(Date.now() / 1000) + 60 }, 'test-jwt-secret');
+  const db = makeDb({
+    users: [{ id: userId, username: 'transport-metrics-user', role: 'user', session_version: 1 }],
+    settings: {
+      [userId]: settingsRows({
+        profiles: [{ id: 'metrics-profile', provider: 'openai', apiMode: 'images', baseUrl: 'https://metrics.example/v1', apiKey: 'metrics-secret', model: 'gpt-image-2' }],
+        activeImageProfileId: 'metrics-profile'
+      })
+    }
+  });
+  let outboundHeaders;
+  const localFetch = async (_url, init) => {
+    outboundHeaders = new Headers(init.headers);
+    const response = new Response(JSON.stringify({ data: [] }), { headers: { 'Content-Type': 'application/json' } });
+    Object.defineProperty(response, 'transport', {
+      configurable: false,
+      value: { rawBytes: 77, deliveredBytes: 31, contentEncoding: 'gzip', decodedContentEncoding: 'gzip', decompressed: true }
+    });
+    return response;
+  };
+  const response = await proxy.onRequest({
+    request: new Request('https://prod.example/api-proxy/models', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-GPT-Image-Session': token,
+        'X-GPT-Image-Transport-Raw-Bytes': '999999',
+        'X-GPT-Image-Transport-Encoding': 'secret-encoding'
+      },
+      body: JSON.stringify({ ping: true })
+    }),
+    env: {
+      gpt_image2_db: db,
+      JWT_SECRET: 'test-jwt-secret',
+      ALLOW_SESSION_HEADER_AUTH: 'true',
+      LOCAL_UPSTREAM_FETCH: localFetch
+    }
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { data: [] });
+  assert.equal(outboundHeaders.get('X-GPT-Image-Transport-Raw-Bytes'), null);
+  assert.equal(outboundHeaders.get('X-GPT-Image-Transport-Encoding'), null);
+  assert.equal(response.headers.get('X-GPT-Image-Transport-Raw-Bytes'), '77');
+  assert.equal(response.headers.get('X-GPT-Image-Transport-Delivered-Bytes'), '31');
+  assert.equal(response.headers.get('X-GPT-Image-Transport-Encoding'), 'gzip');
+  assert.equal(response.headers.get('X-GPT-Image-Transport-Decoded-Encoding'), 'gzip');
+  assert.equal(response.headers.get('X-GPT-Image-Transport-Decompressed'), 'true');
+});
+
+test('API proxy preserves unknown Content-Encoding when forwarding opaque image bytes', async () => {
+  const proxy = await importWorkerModule('functions/api-proxy/[[path]].js', ['onRequest']);
+  const userId = 404;
+  const token = await signToken({ userId, sessionVersion: 1, exp: Math.floor(Date.now() / 1000) + 60 }, 'test-jwt-secret');
+  const db = makeDb({
+    users: [{ id: userId, username: 'unknown-encoding-user', role: 'user', session_version: 1 }],
+    settings: {
+      [userId]: settingsRows({
+        profiles: [{ id: 'opaque-profile', provider: 'openai', apiMode: 'images', baseUrl: 'https://opaque.example/v1', apiKey: 'opaque-secret', model: 'gpt-image-2' }],
+        activeImageProfileId: 'opaque-profile'
+      })
+    }
+  });
+  const opaqueBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01, 0x02]);
+  const response = await proxy.onRequest({
+    request: new Request('https://prod.example/api-proxy/images/generations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-GPT-Image-Session': token },
+      body: JSON.stringify({ prompt: 'opaque encoding test' })
+    }),
+    env: {
+      gpt_image2_db: db,
+      JWT_SECRET: 'test-jwt-secret',
+      ALLOW_SESSION_HEADER_AUTH: 'true',
+      LOCAL_UPSTREAM_FETCH: async () => new Response(opaqueBytes, {
+        headers: { 'Content-Type': 'image/png', 'Content-Encoding': 'x-opaque-codec' }
+      })
+    }
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('Content-Encoding'), 'x-opaque-codec');
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), opaqueBytes);
+});
+
 test('professional workbench endpoints reject unsafe upstream URLs before fetch', async () => {
   const analyze = await importWorkerModule('functions/api/pro-workbench/analyze.js', ['onRequestPost']);
   const render = await importWorkerModule('functions/api/pro-workbench/render.js', ['onRequestPost']);
@@ -1734,6 +2625,43 @@ test('professional analyze and render block provider redirects consistently', as
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test('professional analyze cancels redirect bodies before reading and preserves 502 on cancel failure', async () => {
+  const analyze = await importWorkerModule('functions/api/pro-workbench/analyze.js', ['onRequestPost']);
+  const userId = 813;
+  const token = await signToken({ userId, sessionVersion: 1, exp: Math.floor(Date.now() / 1000) + 60 }, 'test-jwt-secret');
+  const db = makeDb({
+    users: [{ id: userId, username: 'workbench-analyze-redirect-cancel-user', role: 'user' }],
+    settings: {
+      [userId]: settingsRows({
+        profiles: [{ id: 'responses-redirect', apiMode: 'responses', baseUrl: 'https://responses-redirect.example/v1', apiKey: 'responses-key', model: 'gpt-5-mini' }],
+        activeProfileId: 'responses-redirect'
+      })
+    }
+  });
+  let cancelCalls = 0;
+  let redirectMode = '';
+  const localFetch = async (_url, init) => {
+    redirectMode = init.redirect;
+    return new Response(new ReadableStream({
+      cancel() {
+        cancelCalls += 1;
+        return Promise.reject(new Error('redirect body cancel failed'));
+      }
+    }), {
+      status: 302,
+      headers: { Location: 'https://other.example/v1/responses' }
+    });
+  };
+  const response = await analyze.onRequestPost({
+    request: await proAnalyzeRequest(userId),
+    env: { gpt_image2_db: db, JWT_SECRET: 'test-jwt-secret', ALLOW_SESSION_HEADER_AUTH: 'true', LOCAL_UPSTREAM_FETCH: localFetch }
+  });
+  assert.equal(response.status, 502);
+  assert.equal((await response.json()).code, 'UPSTREAM_REDIRECT_BLOCKED');
+  assert.equal(redirectMode, 'manual');
+  assert.equal(cancelCalls, 1);
 });
 
 test('professional render accepts mislabeled image SSE and stops at the wrapped terminal result', async () => {
@@ -2029,19 +2957,21 @@ test('professional render retains the latest partial for every output slot', asy
 
 test('professional analysis profile selection obeys off, native, hybrid, and explicit responses rules', async () => {
   const analyze = await importWorkerModule('functions/api/pro-workbench/analyze.js', ['onRequestPost']);
+  const codec = await importWorkerModule('functions/_lib/profile-header.js', ['encodeProfileHeaderValue']);
   const userId = 18;
   const users = [{ id: userId, username: 'analyze-user', role: 'user', session_version: 1 }];
   const profiles = [
     { id: 'image', apiMode: 'images', baseUrl: 'https://image.example/v1', apiKey: 'image-key', model: 'image-model' },
     { id: 'agent-text', apiMode: 'responses', baseUrl: 'https://agent.example/v1', apiKey: 'agent-key', model: 'agent-model' },
     { id: 'active-text', apiMode: 'responses', baseUrl: 'https://active.example/v1', apiKey: 'active-key', model: 'active-model' },
-    { id: 'explicit-text', apiMode: 'responses', baseUrl: 'https://explicit.example/v1', apiKey: 'explicit-key', model: 'explicit-model' }
+    { id: 'explicit-text', name: '中文文本配置', apiMode: 'responses', baseUrl: 'https://explicit.example/v1', apiKey: 'explicit-key', model: 'explicit-model' }
   ];
   const cases = [
     { mode: 'off', active: 'active-text', agentText: 'agent-text', explicit: '', expectedHost: 'active.example', expectedModel: 'active-model' },
     { mode: 'native', active: 'active-text', agentText: 'agent-text', explicit: '', expectedHost: 'active.example', expectedModel: 'active-model' },
     { mode: 'hybrid', active: 'active-text', agentText: 'agent-text', explicit: 'explicit-text', expectedHost: 'agent.example', expectedModel: 'agent-model' },
     { mode: 'off', active: 'active-text', agentText: 'agent-text', explicit: 'explicit-text', expectedHost: 'explicit.example', expectedModel: 'explicit-model' },
+    { mode: 'off', active: 'active-text', agentText: 'agent-text', explicit: codec.encodeProfileHeaderValue('中文文本配置'), expectedHost: 'explicit.example', expectedModel: 'explicit-model' },
     { mode: 'native', active: 'active-text', agentText: 'agent-text', explicit: 'image', expectedHost: 'active.example', expectedModel: 'active-model' },
     { mode: 'off', active: 'image', agentText: 'active-text', explicit: '', expectedHost: 'agent.example', expectedModel: 'agent-model' },
     { mode: 'hybrid', active: 'active-text', agentText: 'missing-text', explicit: '', expectedHost: '', expectedModel: '' }
@@ -2347,5 +3277,154 @@ test('admin users API rejects fallback JWT in production without explicit opt-in
     env: { gpt_image2_db: db, JWT_SECRET: 'production-jwt-secret' }
   });
   assert.equal(res.status, 401);
+});
+
+test('models and professional workbench use local upstream fetch with global fallback', async () => {
+  const models = await importWorkerModule('functions/api/models/index.js', ['onRequestPost']);
+  const analyze = await importWorkerModule('functions/api/pro-workbench/analyze.js', ['onRequestPost']);
+  const render = await importWorkerModule('functions/api/pro-workbench/render.js', ['onRequestPost']);
+  const userId = 812;
+  const db = makeDb({
+    users: [{ id: userId, username: 'local-entrypoint-fetch-user', role: 'user' }],
+    settings: {
+      [userId]: settingsRows({
+        profiles: [
+          { id: 'responses-local', apiMode: 'responses', baseUrl: 'https://responses.example/v1', apiKey: 'responses-key', model: 'gpt-5-mini' },
+          { id: 'images-local', apiMode: 'images', baseUrl: 'https://images.example/v1', apiKey: 'images-key', model: 'gpt-image-2' }
+        ],
+        activeProfileId: 'responses-local',
+        activeImageProfileId: 'images-local'
+      })
+    }
+  });
+  const token = await signToken({ userId, sessionVersion: 1, exp: Math.floor(Date.now() / 1000) + 60 }, 'test-jwt-secret');
+  const endpointResponse = (url) => {
+    const value = String(url);
+    if (value.endsWith('/models')) {
+      return new Response(JSON.stringify({ data: [{ id: 'gpt-image-2' }] }), { headers: { 'Content-Type': 'application/json' } });
+    }
+    if (value.endsWith('/responses')) {
+      return new Response(JSON.stringify({ output_text: JSON.stringify({ review: 'local analysis' }) }), { headers: { 'Content-Type': 'application/json' } });
+    }
+    if (value.endsWith('/images/generations')) {
+      return new Response(JSON.stringify({ data: [{ b64_json: 'bG9jYWwtaW1hZ2U=' }] }), { headers: { 'Content-Type': 'application/json' } });
+    }
+    throw new Error(`Unexpected upstream URL: ${value}`);
+  };
+  const requestFactories = {
+    models: () => new Request('https://prod.example/api/models', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-GPT-Image-Session': token },
+      body: JSON.stringify({ baseUrl: 'https://models.example/v1', apiKey: 'models-key' })
+    }),
+    analyze: () => proAnalyzeRequest(userId),
+    render: () => {
+      const form = new FormData();
+      form.append('prompt', 'local render');
+      return new Request('https://prod.example/api/pro-workbench/render', {
+        method: 'POST',
+        headers: { 'X-GPT-Image-Session': token },
+        body: form
+      });
+    }
+  };
+  const invokeAll = async (fetchImpl, includeLocalFetch) => {
+    const env = {
+      gpt_image2_db: db,
+      JWT_SECRET: 'test-jwt-secret',
+      ALLOW_SESSION_HEADER_AUTH: 'true',
+      ...(includeLocalFetch ? { LOCAL_UPSTREAM_FETCH: fetchImpl } : {})
+    };
+    const responses = await Promise.all([
+      models.onRequestPost({ request: requestFactories.models(), env }),
+      analyze.onRequestPost({ request: await requestFactories.analyze(), env }),
+      render.onRequestPost({ request: requestFactories.render(), env })
+    ]);
+    return Promise.all(responses.map(async (response) => ({ status: response.status, body: await response.json() })));
+  };
+  const originalFetch = globalThis.fetch;
+  const localCalls = [];
+  const localFetch = async (url, init) => {
+    localCalls.push({ url: String(url), method: init?.method || 'GET' });
+    return endpointResponse(url);
+  };
+  const globalCalls = [];
+  let sentinelCalls = 0;
+  const globalFetch = async (url, init) => {
+    globalCalls.push({ url: String(url), method: init?.method || 'GET' });
+    return endpointResponse(url);
+  };
+  try {
+    globalThis.fetch = async () => {
+      sentinelCalls += 1;
+      throw new Error('global fetch sentinel');
+    };
+    const localResults = await invokeAll(localFetch, true);
+    assert.deepEqual(localResults.map((result) => result.status), [200, 200, 200]);
+    assert.deepEqual(localResults[0].body, { models: [{ id: 'gpt-image-2', ownedBy: '' }], source: 'provider' });
+    assert.equal(localResults[1].body.analysis.review, 'local analysis');
+    assert.equal(localResults[1].body.imageCount, 1);
+    assert.equal(localResults[2].body.data[0].b64_json, 'bG9jYWwtaW1hZ2U=');
+    assert.equal(localResults[2].body.returnedPrompt, 'local render');
+    assert.equal(localResults[2].body.workflowName, '专业工作台');
+    assert.deepEqual(localCalls.map((call) => call.url).sort(), [
+      'https://models.example/v1/models',
+      'https://responses.example/v1/responses',
+      'https://images.example/v1/images/generations'
+    ].sort());
+    assert.equal(sentinelCalls, 0, 'local preview requests must not use global fetch');
+
+    globalThis.fetch = globalFetch;
+    const globalResults = await invokeAll(globalFetch, false);
+    assert.deepEqual(globalResults.map((result) => result.status), [200, 200, 200]);
+    assert.deepEqual(globalCalls.map((call) => call.url).sort(), [
+      'https://models.example/v1/models',
+      'https://responses.example/v1/responses',
+      'https://images.example/v1/images/generations'
+    ].sort());
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('admin duplicate profile selection requires an explicit name and blocks ambiguous saves', async () => {
+  const source = await readFile(new URL('../admin.html', import.meta.url), 'utf8');
+  const inlineScript = [...source.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi)]
+    .map((match) => match[1])
+    .find((script) => script.includes('function collectSettings'));
+  assert.ok(inlineScript, 'admin inline script containing collectSettings must exist');
+
+  const extractFunction = (name) => {
+    const start = inlineScript.indexOf(`function ${name}(`);
+    assert.notEqual(start, -1, `${name} must exist in admin inline script`);
+    const open = inlineScript.indexOf('{', start);
+    let depth = 0;
+    for (let index = open; index < inlineScript.length; index += 1) {
+      if (inlineScript[index] === '{') depth += 1;
+      if (inlineScript[index] === '}' && --depth === 0) return inlineScript.slice(start, index + 1);
+    }
+    throw new Error(`unable to extract ${name}`);
+  };
+  const profileSelectionKey = extractFunction('profileSelectionKey');
+  const findProfileBySelectionKey = extractFunction('findProfileBySelectionKey');
+  const codec = new Function(
+    `${profileSelectionKey}\n${findProfileBySelectionKey}\nreturn { profileSelectionKey, findProfileBySelectionKey };`
+  )();
+  const profiles = [
+    { id: 'gpt-image2', name: 'gpt-image2-4k超分' },
+    { id: 'gpt-image2', name: 'gpt-image2原生' }
+  ];
+
+  assert.deepEqual(
+    profiles.map((profile) => codec.profileSelectionKey(profile, profiles)),
+    ['name:gpt-image2-4k超分', 'name:gpt-image2原生']
+  );
+  assert.equal(codec.findProfileBySelectionKey(profiles, 'gpt-image2'), null);
+  assert.equal(codec.findProfileBySelectionKey(profiles, 'name:gpt-image2-4k超分'), profiles[0]);
+  assert.equal(codec.findProfileBySelectionKey(profiles, 'name:gpt-image2原生'), profiles[1]);
+  assert.match(source, /id="cfgActiveProfileWarning"/);
+  assert.match(source, /var applySettingsLegacy=applySettings;\r?\napplySettings=function\(s\)/);
+  assert.match(source, /当前应用配置无法唯一匹配旧的配置值，请手动选择配置后再保存/);
+  assert.match(source, /当前图像配置无法唯一匹配旧的配置值，请手动选择配置后再保存/);
 });
 
