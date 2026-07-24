@@ -116,7 +116,8 @@ function Invoke-LoggedCommand {
     [Parameter(Mandatory=$true)][string]$FilePath,
     [Parameter(Mandatory=$true)][string[]]$Arguments,
     [string]$WorkingDirectory = $ProjectDir,
-    [switch]$CaptureOutput
+    [switch]$CaptureOutput,
+    [switch]$IncludeOutputOnError
   )
   $display = @($FilePath) + $Arguments
   Write-Host ("$ " + ($display -join ' ')) -ForegroundColor DarkGray
@@ -124,7 +125,10 @@ function Invoke-LoggedCommand {
     $output = & $FilePath @Arguments 2>&1
     $code = $LASTEXITCODE
     $output | ForEach-Object { Write-Host $_ }
-    if ($code -ne 0) { throw "Command failed with exit code ${code}: $FilePath" }
+    if ($code -ne 0) {
+      $detail = if ($IncludeOutputOnError -and @($output).Count -gt 0) { "`n" + ($output -join "`n") } else { '' }
+      throw "Command failed with exit code ${code}: $FilePath$detail"
+    }
     return ($output -join "`n")
   }
   & $FilePath @Arguments
@@ -332,7 +336,22 @@ function Invoke-QualityTests([string]$Url, [string]$Label) {
     Write-Host "BASE_URL=$Url"
     Write-Host "TEST_USER=$TestUser"
     Write-Host 'TEST_PASS=<hidden>'
-    Invoke-LoggedCommand -FilePath 'npm' -Arguments @('--prefix', (Join-Path $ProjectDir 'tests'), 'run', 'quality', '--silent')
+    $maxQualityAttempts = 3
+    for ($qualityAttempt = 1; $qualityAttempt -le $maxQualityAttempts; $qualityAttempt++) {
+      try {
+        $null = Invoke-LoggedCommand -FilePath 'npm' -Arguments @('--prefix', (Join-Path $ProjectDir 'tests'), 'run', 'quality', '--silent') -CaptureOutput -IncludeOutputOnError
+        break
+      } catch {
+        $errorMessage = if ($_.Exception) { [string]$_.Exception.Message } else { [string]$_ }
+        $isTransientPreviewLoginTimeout = $Label -ieq 'preview' -and $errorMessage -match '(?is)(?=.*locator\(\s*[''\"]#u[''\"]\s*\))(?=.*Timeout\s+\d+ms\s+exceeded)'
+        if (-not $isTransientPreviewLoginTimeout -or $qualityAttempt -eq $maxQualityAttempts) {
+          throw
+        }
+        $waitSeconds = 5 * $qualityAttempt
+        Write-Host "Preview quality login form #u timeout detected (attempt $qualityAttempt/$maxQualityAttempts); waiting $waitSeconds second(s) before retry $($qualityAttempt + 1)/$maxQualityAttempts." -ForegroundColor Yellow
+        Start-Sleep -Seconds $waitSeconds
+      }
+    }
     Invoke-LoggedCommand -FilePath 'node' -Arguments @('scripts/api-smoke.mjs')
     Invoke-LoggedCommand -FilePath 'node' -Arguments @('tests/mask-editor-browser-smoke.cjs')
   } finally {
