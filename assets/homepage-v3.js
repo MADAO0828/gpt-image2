@@ -107,6 +107,7 @@ const STREAM_PARTIAL_PERSIST_DELAY_MS = 180;
 const STREAM_INPUT_FILE_LIMIT = 50 * 1024 * 1024;
 const STREAM_INPUT_TOTAL_LIMIT = 512 * 1024 * 1024;
 const REFERENCE_MISSING_PLACEHOLDER = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
+const OPENAI_MASK_FORMAT = 'openai-alpha-v1';
 const streamPartialPersistChains = new Map();
 const streamPartialPersistPending = new Map();
 const taskGenerationVersions = new Map();
@@ -133,8 +134,13 @@ const DEFAULT_PREFERENCES = {
   reuseTaskApiProfileTemporarily: false,
   allowPromptRewrite: true,
   enterSubmit: false,
-  zipDownloadRoutes: ['task-selection', 'favorite-collection-selection', 'task-detail-all', 'workflow-run-all']
+  zipDownloadRoutes: ['task-selection']
 };
+
+function normalizeZipDownloadRoutes() {
+  // The workbench currently exposes one real ZIP action: selected tasks.
+  return ['task-selection'];
+}
 
 const DEFAULT_ENTRY_ADVANCED = {
   responseDelivery: null,
@@ -249,7 +255,7 @@ const AGENT_RENDER_MESSAGE_LIMIT = 80;
 const AGENT_THREAD_MESSAGE_LIMIT = 240;
 const AGENT_THREAD_STORAGE_CHAR_LIMIT = 512 * 1024;
 const AGENT_TOTAL_STORAGE_CHAR_LIMIT = 1536 * 1024;
-const GALLERY_CARD_BODY_HEIGHT = 156;
+const GALLERY_CARD_BODY_HEIGHT = 176;
 const GALLERY_CARD_HEIGHT_SAFETY = 8;
 let storeWriteTimer = 0;
 let agentHistoryWriteTimer = 0;
@@ -286,6 +292,7 @@ let agentScrollRestoreToken = 0;
 let lastRenderedAgentScrollKey = '';
 let galleryScrollRestoreToken = 0;
 let promptRepoScrollRestoreToken = 0;
+let promptRepoCategoryRestoreToken = 0;
 let workflowScrollRestoreToken = 0;
 let workflowScrollIdleTimer = 0;
 let workflowScrollLastAt = 0;
@@ -1398,7 +1405,14 @@ async function retryTaskHistory() {
   }
 }
 function addAgentMessageBlobIds(message, add) {
-  for (const attachment of message?.attachments || []) add(attachment?.blobId);
+  for (const attachment of message?.attachments || []) {
+    agentAttachmentBlobIds([attachment]).forEach(add);
+  }
+}
+function agentAttachmentBlobIds(attachments = []) {
+  return [...new Set((Array.isArray(attachments) ? attachments : [])
+    .flatMap((attachment) => [attachment?.blobId, attachment?.originalBlobId, attachment?.compositedBlobId, attachment?.maskBlobId, attachment?.annotationBlobId])
+    .filter(Boolean))];
 }
 function collectReferencedBlobIds(source = state) {
   const store = source && typeof source === 'object' ? source : {};
@@ -1410,6 +1424,7 @@ function collectReferencedBlobIds(source = state) {
     add(image.originalBlobId);
     add(image.compositedBlobId);
     add(image.maskBlobId);
+    add(image.annotationBlobId);
   };
   for (const task of store.tasks || []) {
     for (const img of task.images || []) addImage(img);
@@ -1419,6 +1434,7 @@ function collectReferencedBlobIds(source = state) {
       add(ref.originalBlobId);
       add(ref.compositedBlobId);
       add(ref.maskBlobId);
+      add(ref.annotationBlobId);
     }
   }
   for (const group of [store.references || [], store.pro?.refs || [], store.workflowInvoke?.references || []]) {
@@ -1427,6 +1443,7 @@ function collectReferencedBlobIds(source = state) {
       add(ref.originalBlobId);
       add(ref.compositedBlobId);
       add(ref.maskBlobId);
+      add(ref.annotationBlobId);
     }
   }
   for (const run of store.agent?.workflowRuns || []) {
@@ -1436,9 +1453,16 @@ function collectReferencedBlobIds(source = state) {
       add(ref.originalBlobId);
       add(ref.compositedBlobId);
       add(ref.maskBlobId);
+      add(ref.annotationBlobId);
     }
   }
-  for (const attachment of store.agent?.attachments || []) add(attachment.blobId);
+  for (const attachment of store.agent?.attachments || []) {
+    add(attachment.blobId);
+    add(attachment.originalBlobId);
+    add(attachment.compositedBlobId);
+    add(attachment.maskBlobId);
+    add(attachment.annotationBlobId);
+  }
   for (const messages of Object.values(store.agent?.messagesByThread || {})) {
     for (const message of Array.isArray(messages) ? messages : []) {
       addAgentMessageBlobIds(message, add);
@@ -2095,6 +2119,7 @@ function taskBlobIds(task) {
     add(image?.originalBlobId);
     add(image?.compositedBlobId);
     add(image?.maskBlobId);
+    add(image?.annotationBlobId);
   }
   for (const partial of task?.streamPartialImages || []) add(partial?.blobId);
   for (const ref of taskReferenceSnapshots(task)) {
@@ -2102,6 +2127,7 @@ function taskBlobIds(task) {
     add(ref?.originalBlobId);
     add(ref?.compositedBlobId);
     add(ref?.maskBlobId);
+    add(ref?.annotationBlobId);
   }
   return ids;
 }
@@ -2127,6 +2153,7 @@ async function exportGalleryMigrationPayload() {
       add(ref.originalBlobId);
       add(ref.compositedBlobId);
       add(ref.maskBlobId);
+      add(ref.annotationBlobId);
     }
   }
   const blobs = [];
@@ -2458,6 +2485,7 @@ function readStore() {
     merged.settings = { ...base.settings, ...(parsed.settings || {}) };
     merged.settings.quality = normalizeImageQuality(merged.settings.quality);
     merged.preferences = { ...DEFAULT_PREFERENCES, ...(parsed.preferences || {}) };
+    merged.preferences.zipDownloadRoutes = normalizeZipDownloadRoutes(merged.preferences.zipDownloadRoutes);
     merged.entryAdvanced = {
       gallery: normalizeEntryAdvanced(readEntryAdvanced('gallery') || parsed.entryAdvanced?.gallery),
       pro: normalizeEntryAdvanced(readEntryAdvanced('pro') || parsed.entryAdvanced?.pro),
@@ -2722,6 +2750,8 @@ function sanitizeReferenceSnapshots(refs = []) {
     compositedBlobId: ref.compositedBlobId || ref.blobId,
     originalBlobId: ref.originalBlobId || ref.blobId,
     maskBlobId: ref.maskBlobId || '',
+    annotationBlobId: ref.annotationBlobId || '',
+    maskFormat: ref.maskFormat || '',
     width: ref.width,
     height: ref.height
   })).filter((ref) => ref.blobId);
@@ -2773,6 +2803,16 @@ async function cloneReferenceSnapshots(refs = [], options = {}) {
           clonedIds.push(maskBlobId);
         }
       }
+      let annotationBlobId = '';
+      if (ref.annotationBlobId) {
+        const annotationBlob = await getBlob(ref.annotationBlobId).catch(() => null);
+        if (!readableBlob(annotationBlob)) {
+          if (options.strict) throw imageResponseError(`参考图 ${index + 1} 的标注快照不可读取，请重新上传`, 'IMAGE_EDIT_INPUT_SNAPSHOT_UNREADABLE', 'request-validation');
+        } else {
+          annotationBlobId = await putBlob(annotationBlob);
+          clonedIds.push(annotationBlobId);
+        }
+      }
       out.push({
         id: uid('taskref'),
         name: ref.name || 'reference.png',
@@ -2781,6 +2821,8 @@ async function cloneReferenceSnapshots(refs = [], options = {}) {
         compositedBlobId,
         originalBlobId,
         maskBlobId,
+        annotationBlobId,
+        maskFormat: ref.maskFormat || '',
         width: ref.width,
         height: ref.height
       });
@@ -2911,6 +2953,7 @@ function writeStore(options = {}) {
   clean.entryAdvanced = Object.fromEntries(
     ['gallery', 'pro', 'workflow', 'agent'].map((entry) => [entry, normalizeEntryAdvanced(clean.entryAdvanced?.[entry])])
   );
+  clean.preferences.zipDownloadRoutes = normalizeZipDownloadRoutes(clean.preferences.zipDownloadRoutes);
   clean.tasks = state.tasks.map((task) => compactTaskForStorage(task, 'normal'));
   mergeCrossTabTasks(clean, options.deletedTaskIds);
   mergeCrossTabStoreDomains(clean);
@@ -3368,6 +3411,17 @@ function providerKey(profile = activeProfile()) {
   if (raw.includes('xai') || raw.includes('grok') || /grok/i.test(profile.model || '')) return 'xai';
   return 'openai';
 }
+function openAiImagesProfile(profile = imageProfile()) {
+  return providerKey(profile) === 'openai' && profileMode(profile) === 'images';
+}
+function imageModerationSupported(profile = imageProfile()) {
+  return openAiImagesProfile(profile);
+}
+function imageMaskSupportLabel(profile = imageProfile()) {
+  return openAiImagesProfile(profile)
+    ? '当前 OpenAI-compatible Images 模型会发送像素遮罩。'
+    : '当前供应商不支持独立像素遮罩；本次已标注参考图会发送黄色半透明标注合成图，并在提示词中说明标注区域，不发送独立 mask。';
+}
 function googleVersion(profile = activeProfile()) {
   return nanoBananaCapability(profile)?.version || (/3\.1|nano banana 2|banana-?2/i.test(`${profile.model || ''} ${profile.name || ''}`) ? '3.1' : '2.5');
 }
@@ -3441,7 +3495,7 @@ function ratioSummary(profile = activeProfile(), settings = state.settings) {
 function requestedParamsFromSettings(profile = activeProfile(), settings = state.settings) {
   const source = settingsForSummary(settings);
   const key = providerKey(profile);
-  return {
+  const params = {
     source: `${PROVIDER[key]?.name || profile.provider} · ${profile.name || profile.id} · ${profile.model || 'model'}`,
     provider: key,
     profileId: profileSelectionKey(profile),
@@ -3456,9 +3510,10 @@ function requestedParamsFromSettings(profile = activeProfile(), settings = state
     outputQuality: source.output_compression,
     outputCompression: outputCompressionFromQuality(source.output_compression),
     transparent: !!source.transparent_output,
-    moderation: source.moderation,
     count: Number(source.n) || 1
   };
+  if (imageModerationSupported(profile)) params.moderation = source.moderation;
+  return params;
 }
 function normalizeRequestedParamsToComposerSettings(params = {}, baseSettings = state.settings) {
   const next = { ...settingsForSummary(baseSettings) };
@@ -3547,7 +3602,10 @@ function agentImageSettings() {
   return state.agent.imageSettings;
 }
 function agentImageParams() {
-  return requestedParamsFromSettings(agentImageProfile(), agentImageSettings());
+  return requestedParamsFromSettings(agentImageProfile(), {
+    ...agentImageSettings(),
+    moderation: state.settings?.moderation || 'auto'
+  });
 }
 function closestAspectRatio(width, height) {
   width = Number(width);
@@ -4842,6 +4900,7 @@ function taskActionIcon(name, active = false) {
 function galleryColumnMetrics(width) {
   if (width <= 760) return { columns: 1, gap: 10 };
   if (width <= 1180) return { columns: 2, gap: 8 };
+  if (width >= 1440) return { columns: 4, gap: 8 };
   return { columns: 3, gap: 8 };
 }
 function estimateGalleryCardHeight(viewportWidth, columns, gap) {
@@ -4850,7 +4909,7 @@ function estimateGalleryCardHeight(viewportWidth, columns, gap) {
   const columnGap = Math.max(0, Number(gap) || 0);
   const contentWidth = Math.max(280, width - 16);
   const cardWidth = Math.max(180, (contentWidth - columnGap * (columnCount - 1)) / columnCount);
-  const mediaHeight = cardWidth / 2;
+  const mediaHeight = columnCount >= 4 ? cardWidth : cardWidth / 2;
   return Math.ceil(mediaHeight + GALLERY_CARD_BODY_HEIGHT + GALLERY_CARD_HEIGHT_SAFETY);
 }
 function measureGalleryMetrics(scroll = null) {
@@ -5665,6 +5724,7 @@ function renderGalleryComposer() {
           <button class="control-chip" data-action="open-popover" data-popover="quality"><small>质量</small>${esc(state.settings.quality)}</button>
           <button class="control-chip" data-action="open-popover" data-popover="format"><small>格式</small>${esc(state.settings.output_format)}</button>
           <button class="control-chip" data-action="open-popover" data-popover="compression" title="${state.settings.output_format === 'png' ? '透明背景' : '100 为最高质量、最低压缩'}"><small>${state.settings.output_format === 'png' ? '透明背景' : '输出质量'}</small>${esc(state.settings.output_format === 'png' ? (state.settings.transparent_output ? '是' : '否') : state.settings.output_compression)}</button>
+          ${imageModerationSupported(profile) ? `<button class="control-chip" data-action="open-popover" data-popover="moderation" title="OpenAI Images 审核"><small>审核</small>${esc(state.settings.moderation || 'auto')}</button>` : ''}
           <label class="control-chip"><small>数量</small><input type="number" min="1" max="8" value="${esc(state.settings.n)}" data-action="count-input"></label>
           <button class="control-icon control-advanced" data-action="open-entry-advanced" data-entry="gallery" title="高级配置" aria-label="高级配置">⚙</button>
         </div>
@@ -5771,6 +5831,7 @@ function renderMobileParamDrawer() {
       <button class="control-chip" data-action="open-popover" data-popover="quality"><small>质量</small>${esc(state.settings.quality)}</button>
       <button class="control-chip" data-action="open-popover" data-popover="format"><small>格式</small>${esc(state.settings.output_format)}</button>
       <button class="control-chip" data-action="open-popover" data-popover="compression" title="${state.settings.output_format === 'png' ? '透明背景' : '100 为最高质量、最低压缩'}"><small>${state.settings.output_format === 'png' ? '透明背景' : '输出质量'}</small>${esc(state.settings.output_format === 'png' ? (state.settings.transparent_output ? '是' : '否') : state.settings.output_compression)}</button>
+      ${imageModerationSupported(imageProfile()) ? `<button class="control-chip" data-action="open-popover" data-popover="moderation" title="OpenAI Images 审核"><small>审核</small>${esc(state.settings.moderation || 'auto')}</button>` : ''}
       <label class="control-chip"><small>数量</small><input type="number" min="1" max="8" value="${esc(state.settings.n)}" data-action="count-input"></label>
       <button class="control-icon control-advanced" data-action="open-entry-advanced" data-entry="gallery" title="高级配置" aria-label="高级配置">⚙</button>
       <button class="control-chip" data-action="pick-reference"><small>参考图</small>${state.references.length}/${referenceLimit()}</button>
@@ -6163,6 +6224,7 @@ function renderAgentImageParamControls() {
     <button class="control-chip" data-action="open-agent-popover" data-popover="agent-quality"><small>质量</small>${esc(settings.quality || 'high')}</button>
     <button class="control-chip" data-action="open-agent-popover" data-popover="agent-format"><small>格式</small>${esc(format)}</button>
     <button class="control-chip" data-action="open-agent-popover" data-popover="agent-compression" title="${format === 'png' ? '透明背景' : '100 为最高质量、最低压缩'}"><small>${format === 'png' ? '透明' : '输出质量'}</small>${esc(format === 'png' ? transparent : settings.output_compression)}</button>
+    ${imageModerationSupported(profile) ? `<button class="control-chip" data-action="open-agent-popover" data-popover="agent-moderation" title="OpenAI Images 审核"><small>审核</small>${esc(state.settings.moderation || 'auto')}</button>` : ''}
     <label class="agent-count-control"><span>数量</span><input type="number" min="1" max="8" step="1" value="${esc(Number(settings.n) || 1)}" data-action="agent-count-input" aria-label="Agent 生图数量"></label>
     <button class="control-icon control-advanced" data-action="open-agent-image-advanced" title="Agent 生图高级配置" aria-label="Agent 生图高级配置">⚙</button>
   `;
@@ -6200,20 +6262,50 @@ function renderAgentComposer() {
     </section>
   `;
 }
+function isAgentImageAttachment(item) {
+  return item?.kind === 'image' || String(item?.type || '').startsWith('image/');
+}
+function findAgentAttachment(id) {
+  const key = String(id || '');
+  if (!key) return null;
+  const draft = (state.agent?.attachments || []).find((item) => String(item?.id || '') === key);
+  if (draft) return draft;
+  for (const messages of Object.values(state.agent?.messagesByThread || {})) {
+    const match = (Array.isArray(messages) ? messages : [])
+      .flatMap((message) => Array.isArray(message?.attachments) ? message.attachments : [])
+      .find((item) => String(item?.id || '') === key);
+    if (match) return match;
+  }
+  return null;
+}
+function maskEditorReferences() {
+  if (state.maskEditor?.mode === 'agent-attachment') {
+    const attachment = findAgentAttachment(state.maskEditor.agentAttachmentId);
+    return attachment ? [attachment] : [];
+  }
+  return Array.isArray(state.references) ? state.references : [];
+}
+function maskEditorReference(id = state.maskEditor?.activeRefId) {
+  return maskEditorReferences().find((ref) => String(ref?.id || '') === String(id || '')) || null;
+}
 function renderAgentAttachmentTray(attachments, removable = false) {
   const items = (attachments || []).filter(Boolean);
   if (!items.length) return '';
-  const imageIndexes = new Map(items.filter((item) => item.kind === 'image' || String(item.type || '').startsWith('image/')).map((item, index) => [item.id, index]));
+  const imageItems = items.filter(isAgentImageAttachment);
+  const imageIndexes = new Map(imageItems.map((item, index) => [item.id, index]));
+  const maskedCount = imageItems.filter((item) => item?.maskBlobId || item?.annotationBlobId).length;
   const attachmentObjectUrl = (item) => {
-    const key = `agent:${item?.id || ''}`;
+    const displayBlobId = item?.compositedBlobId || item?.blobId || item?.originalBlobId || '';
+    const key = `agent:${item?.id || ''}:${displayBlobId}`;
     return state.refUrls?.has(key) ? touchObjectUrl(state.refUrls, key) : '';
   };
   return `<div class="agent-attachment-tray" aria-label="当前附件 ${items.length} 个">
-    ${items.map((item) => item.kind === 'image' || item.type?.startsWith('image/')
-      ? `<div class="agent-image-attachment-thumb" title="图${Number(imageIndexes.get(item.id) || 0) + 1} · ${esc(item.name || '图片附件')}">
-          <img data-agent-attachment-id="${esc(item.id)}" ${attachmentObjectUrl(item) ? `src="${esc(attachmentObjectUrl(item))}"` : ''} alt="${esc(item.name || '图片附件')}">
+    ${items.map((item) => isAgentImageAttachment(item)
+      ? `<div class="agent-image-attachment-thumb ${(item.maskBlobId || item.annotationBlobId) ? 'has-mask' : ''}" title="图${Number(imageIndexes.get(item.id) || 0) + 1} · ${esc(item.name || '图片附件')} · 点击编辑遮罩">
+          <img data-agent-attachment-id="${esc(item.id)}" data-action="open-agent-attachment-mask-editor" data-agent-attachment-open-id="${esc(item.id)}" ${attachmentObjectUrl(item) ? `src="${esc(attachmentObjectUrl(item))}"` : ''} alt="${esc(item.name || '图片附件')}">
           <b class="agent-image-attachment-number">图${Number(imageIndexes.get(item.id) || 0) + 1}</b>
           <span>${esc(item.name || '图片')}</span>
+          ${(item.maskBlobId || item.annotationBlobId) ? '<small class="agent-image-attachment-mask">已标注</small>' : ''}
           ${removable ? `<button type="button" data-action="agent-remove-attachment" data-id="${esc(item.id)}" aria-label="移除附件">×</button>` : ''}
         </div>`
       : `<div class="agent-attachment-chip" title="${esc(item.name || '附件')}">
@@ -6222,7 +6314,9 @@ function renderAgentAttachmentTray(attachments, removable = false) {
           <small>${esc(formatFileSize(item.size || 0))}</small>
           ${removable ? `<button type="button" data-action="agent-remove-attachment" data-id="${esc(item.id)}" aria-label="移除附件">×</button>` : ''}
         </div>`).join('')}
-  </div>`;
+  </div>${maskedCount && !openAiImagesProfile(agentImageProfile())
+    ? `<div class="agent-mask-provider-note" role="status">${esc(imageMaskSupportLabel(agentImageProfile()))}</div>`
+    : ''}`;
 }
 function formatFileSize(size) {
   const bytes = Number(size) || 0;
@@ -6273,6 +6367,7 @@ async function addAgentAttachments(files = []) {
     const attachment = {
       id: attachmentId,
       blobId,
+      originalBlobId: blobId,
       name: normalizedImage?.name || file.name || 'attachment',
       type,
       size: sourceFile.size || file.size || 0,
@@ -6307,9 +6402,10 @@ async function removeAgentAttachment(id) {
   state.agent.attachments = attachments.filter((attachment) => attachment.id !== id);
   revokeMapEntry(state.refUrls, `agent:${id}`);
   const persisted = persistRender();
-  if (item?.blobId) {
-    if (persisted === true) await deleteUnreferencedBlobIds([item.blobId]);
-    else queuePendingBlobRelease([item.blobId], false);
+  const blobIds = [item?.blobId, item?.originalBlobId, item?.compositedBlobId, item?.maskBlobId, item?.annotationBlobId].filter(Boolean);
+  if (blobIds.length) {
+    if (persisted === true) await deleteUnreferencedBlobIds(blobIds);
+    else queuePendingBlobRelease(blobIds, false);
   }
 }
 function agentAttachmentSummary(attachments = []) {
@@ -6317,14 +6413,18 @@ function agentAttachmentSummary(attachments = []) {
   return attachments.map((item, index) => {
     const dims = item.width && item.height ? `, ${item.width}x${item.height}` : '';
     const imageLabel = item?.kind === 'image' || String(item?.type || '').startsWith('image/') ? `图${++imageIndex}` : `附件${index + 1}`;
-    return `${imageLabel}：${item.name || '附件'} (${item.type || 'unknown'}, ${formatFileSize(item.size || 0)}${dims})`;
+    const maskLabel = item?.maskBlobId ? '，已保存遮罩' : item?.annotationBlobId ? '，已保存标注' : '';
+    return `${imageLabel}：${item.name || '附件'} (${item.type || 'unknown'}, ${formatFileSize(item.size || 0)}${dims}${maskLabel})`;
   }).join('\n');
 }
 async function agentAttachmentParts(attachments = []) {
   const parts = [];
   const textNotes = [];
   for (const item of attachments || []) {
-    const blob = await getBlob(item.blobId).catch(() => null);
+    // Text chat and ordinary vision analysis must keep the immutable original;
+    // the composited image is reserved for image-generation/provider payloads.
+    const sourceBlobId = item.originalBlobId || item.blobId;
+    const blob = await getBlob(sourceBlobId).catch(() => null);
     if (!blob) {
       textNotes.push(`[附件读取失败] ${item.name || item.id}`);
       continue;
@@ -6829,7 +6929,7 @@ function renderAgentTaskCard(task) {
   const percent = task.status === 'success' ? 100 : Math.max(0, Math.min(100, Math.round((actual / expected) * 100)));
   const statusClass = task.status === 'running' || task.status === 'queued' ? 'running' : task.status === 'success' ? 'success' : task.status === 'partial_success' ? 'partial' : 'error';
   const progressText = `${actual}/${expected}`;
-  return `<button class="agent-task-card ${esc(statusClass)}" data-action="open-detail" data-id="${esc(task.id)}" title="点击查看完整生图详情">
+  return `<div class="agent-task-card ${esc(statusClass)}" data-action="open-detail" data-id="${esc(task.id)}" role="button" tabindex="0" title="点击查看完整生图详情">
     <div class="agent-task-preview">
       ${image ? `<img data-image-kind="task-image" data-gallery-preview="1" data-task-id="${esc(task.id)}" data-index="0" data-blob-id="${esc(image.blobId || '')}" data-remote-url="${esc(storedImageSource(image))}"${cachedTaskImageSrcAttribute(image)} loading="lazy" decoding="async" fetchpriority="low" alt="">` : streamPreviewHtml || '<span class="spinner"></span>'}
       ${!image && streamPreviewHtml ? '<span class="stream-preview-badge compact">预览</span>' : ''}
@@ -6839,7 +6939,8 @@ function renderAgentTaskCard(task) {
       <span class="agent-task-process">${esc(progressText)} · ${esc(formatElapsed(task))}</span>
       <span class="agent-task-progress" aria-hidden="true"><i style="width:${esc(percent)}%"></i></span>
     </div>
-  </button>`;
+    ${(state.preferences?.alwaysShowRetryButton !== false || task.status !== 'success') ? `<button type="button" class="toolbar-button agent-task-retry" data-action="retry-task" data-id="${esc(task.id)}" title="重试此任务">重试</button>` : ''}
+  </div>`;
 }
 function scheduleGalleryTaskCardSyncFrame() {
   if (galleryScrollActivity || $('.gallery-scroll')?.classList?.contains('is-scrolling')) return;
@@ -7133,6 +7234,15 @@ function renderDetailModal(taskId) {
   const returnedPrompt = task.returnedPrompt && task.returnedPrompt !== task.prompt ? task.returnedPrompt : '';
   const requested = task.requestedParams || {};
   const returned = task.returnedParams || {};
+  const moderationProfile = {
+    provider: firstDefined(requested.provider, task.providerFamily, 'openai'),
+    model: firstDefined(requested.model, task.model, ''),
+    apiMode: 'images'
+  };
+  const moderationSupported = imageModerationSupported(moderationProfile);
+  const hasValue = (source, key) => Object.prototype.hasOwnProperty.call(source || {}, key)
+    && source[key] !== undefined && source[key] !== null && String(source[key]).trim() !== '';
+  const returnedModerationKeys = ['moderation', 'moderation_level', 'moderationLevel'];
   const requestedFormat = firstDefined(requested.format, requested.output_format, state.settings.output_format);
   const requestedNegativePrompt = String(firstDefined(requested.negative_prompt, requested.negativePrompt, requested.negative) || '').trim();
   const returnedFormat = firstDefined(readDeepAlias(returned, ['format', 'output_format', 'outputFormat', 'mimeType', 'mime_type']));
@@ -7162,6 +7272,10 @@ function renderDetailModal(taskId) {
   const compressionParam = formatForConditional === 'png'
     ? param('透明背景', 'transparent', !!requested.transparent, { type: 'bool', aliases: ['transparentBackground', 'transparent_background'] })
     : param('输出质量', 'outputQuality', firstDefined(requested.outputQuality, requested.output_quality, requested.compression), { type: 'number', aliases: ['output_quality', 'compression'] });
+  const moderationParam = moderationSupported
+    && (hasValue(requested, 'moderation') || returnedModerationKeys.some((key) => hasValue(returned, key)))
+    ? param('审核', 'moderation', requested.moderation, { aliases: returnedModerationKeys.slice(1) })
+    : '';
   const timing = task.timing && typeof task.timing === 'object' ? task.timing : {};
   const timingValue = (value) => Number(value) > 0 ? `${(Number(value) / 1000).toFixed(Number(value) < 10000 ? 2 : 1)}s` : '';
   const timingParts = [
@@ -7225,7 +7339,7 @@ function renderDetailModal(taskId) {
           ${param('请求质量', 'quality', requested.quality || task.quality)}
           ${param('格式', 'format', requestedFormat, { type: 'format', aliases: ['outputFormat', 'output_format', 'mimeType'] })}
           ${compressionParam}
-          ${param('审核', 'moderation', requested.moderation, { aliases: ['moderation_level', 'moderationLevel', 'safety', 'safety_filter', 'safetyFilter'] })}
+          ${moderationParam}
           ${param('数量', 'count', requested.count || task.count, { type: 'number', aliases: ['n', 'imageCount', 'image_count'], actualFallback: images.length || undefined })}
           ${timingParts.length || responseDiagnostics.length || task.streamPartialCount ? `<div class="detail-section-label">耗时与响应诊断</div><div class="param-card"><div class="param-value"><span>${esc([...timingParts, ...responseDiagnostics, task.streamPartialCount ? `预览帧 ${task.streamPartialCount}` : ''].filter(Boolean).join(' · '))}</span></div></div>` : ''}
           ${task.streamPartialImages?.length ? `<div class="detail-section-label">流式中间帧</div><div class="returned-prompt stream-warning">已保留 ${esc(task.streamPartialImages.length)} 张中间帧。它们仅用于预览和故障恢复，不代表最终输出。</div>` : ''}
@@ -7692,7 +7806,7 @@ async function addFilesAsProReferences(files, slot = 'base') {
     return;
   }
   const replacing = (state.pro.refs || []).filter((ref) => ref.slot === slot || (slot === 'base' && !ref.slot && state.pro.refs.indexOf(ref) === 0));
-  const replacingBlobIds = replacing.flatMap((ref) => [ref.blobId, ref.originalBlobId, ref.compositedBlobId, ref.maskBlobId]);
+  const replacingBlobIds = replacing.flatMap((ref) => [ref.blobId, ref.originalBlobId, ref.compositedBlobId, ref.maskBlobId, ref.annotationBlobId]);
   state.pro.refs = (state.pro.refs || []).filter((ref) => !replacing.includes(ref));
   for (const file of imageFiles.slice(0, 1)) {
     if (state.pro.refs.length >= limit && !state.pro.refs.some((ref) => ref.slot === slot)) break;
@@ -7711,7 +7825,7 @@ async function addFilesAsProReferences(files, slot = 'base') {
 async function removeProReference(id) {
   const ref = (state.pro.refs || []).find((item) => item.id === id);
   if (!ref) return;
-  const blobIds = [ref.blobId, ref.originalBlobId, ref.compositedBlobId, ref.maskBlobId];
+  const blobIds = [ref.blobId, ref.originalBlobId, ref.compositedBlobId, ref.maskBlobId, ref.annotationBlobId];
   revokeMapEntry(state.refUrls, `pro:${id}`);
   state.pro.refs = (state.pro.refs || []).filter((item) => item.id !== id);
   state.pro.analysis = null;
@@ -7831,7 +7945,7 @@ async function renderProWorkbenchTask() {
         format: state.settings.output_format,
         compression: state.settings.output_compression,
         transparent: !!state.settings.transparent_output,
-        moderation: state.settings.moderation,
+        ...(imageModerationSupported(profile) ? { moderation: state.settings.moderation } : {}),
         count: Number(state.settings.n) || 1,
         proMode: PRO_WORKBENCH_MODES[state.pro.mode]?.title || state.pro.mode,
         proParams: { ...state.pro.params },
@@ -7887,7 +8001,6 @@ async function hydrateProResult(data, prompt) {
       format: state.settings.output_format,
       compression: state.settings.output_compression,
       transparent: !!state.settings.transparent_output,
-      moderation: state.settings.moderation,
       count: Number(state.settings.n) || 1
     },
     returnedParams: data?.returnedParams || data?.params || {},
@@ -7905,7 +8018,10 @@ async function hydrateProResult(data, prompt) {
     images: [],
     error: ''
   };
-  const images = await persistResponseImages(data);
+  if (imageModerationSupported(activeProfile())) task.requestedParams.moderation = state.settings.moderation;
+  const images = await persistResponseImages(data, {
+    upstreamOrigin: profileRemoteImageOrigin(activeProfile())
+  });
   task.images = images;
   task.rawResponse = summarizeResponse(data);
   state.tasks.unshift(task);
@@ -7928,9 +8044,11 @@ function renderPopover(pop) {
     quality: ['auto', 'low', 'medium', 'high'],
     format: ['png', 'jpeg', 'webp'],
     compression: state.settings.output_format === 'png' ? ['是', '否'] : ['100', '95', '90', '80', '70'],
+    moderation: ['auto', 'low'],
     'agent-quality': ['auto', 'low', 'medium', 'high'],
     'agent-format': ['png', 'jpeg', 'webp'],
-    'agent-compression': agentImageSettings().output_format === 'png' ? ['是', '否'] : ['100', '95', '90', '80', '70']
+    'agent-compression': agentImageSettings().output_format === 'png' ? ['是', '否'] : ['100', '95', '90', '80', '70'],
+    'agent-moderation': ['auto', 'low']
   }[pop.type] || [];
   const rect = pop.rect || { left: 40, top: 40, bottom: 100 };
   return `
@@ -8018,6 +8136,7 @@ function isPopoverValueActive(type, value) {
   if (type === 'quality') return state.settings.quality === value;
   if (type === 'format') return state.settings.output_format === value;
   if (type === 'compression') return state.settings.output_format === 'png' ? (state.settings.transparent_output ? '是' : '否') === value : String(state.settings.output_compression) === String(value);
+  if (type === 'moderation' || type === 'agent-moderation') return String(state.settings.moderation || 'auto') === String(value);
   return false;
 }
 function renderModelConfigMenu(pop) {
@@ -8122,6 +8241,7 @@ function renderPromptRepo() {
       applyPromptPageData(pageData, 1);
       state.promptRepo.loading = false;
       state.promptRepo.loadingLabel = '';
+      schedulePromptRepoPrefetch({ page: 1, requestSeq: state.promptRepo.requestSeq });
     }
   }
   const categories = state.promptRepo.categories?.length ? state.promptRepo.categories : ['all'];
@@ -8168,8 +8288,19 @@ function renderPromptRepoOverlays() {
     ${state.promptRepo.imageViewer ? `<div class="viewer-layer" role="dialog" aria-modal="true" aria-label="提示词大图" tabindex="-1" data-modal-key="prompt-viewer" data-action="prompt-image-close"><button class="viewer-close" aria-label="关闭提示词大图" data-modal-autofocus data-action="prompt-image-close">×</button><img class="viewer-image" data-action="prompt-image-viewer-image" src="${esc(state.promptRepo.imageViewer)}" alt=""></div>` : ''}
   `;
 }
-function syncPromptRepoView() {
+function syncPromptRepoView(options = {}) {
   if (!state.promptRepo?.open) return false;
+  if (options.listOnly === true) {
+    if (promptRepoScrollIsActive() && options.allowDuringScroll !== true) {
+      promptRepoSyncPending = true;
+      return true;
+    }
+    syncPromptRepoListOnly({
+      virtualScroll: true,
+      allowDuringScroll: options.allowDuringScroll === true
+    });
+    return true;
+  }
   if (promptRepoScrollIsActive()) {
     deferredRenderPending = true;
     scheduleDeferredRender();
@@ -8241,8 +8372,15 @@ function promptRepoVirtualWindow(totalItems) {
   };
 }
 function promptRepoVirtualRangeChanged(windowState) {
+  const promptList = $('#promptList');
+  const topSpacer = promptList?.querySelector?.('[data-prompt-spacer="top"]');
+  const bottomSpacer = promptList?.querySelector?.('[data-prompt-spacer="bottom"]');
+  const currentTopPad = Number.parseFloat(topSpacer?.style?.height || '') || 0;
+  const currentBottomPad = Number.parseFloat(bottomSpacer?.style?.height || '') || 0;
   return state.promptRepo.renderedStartIndex !== windowState.startIndex
-    || state.promptRepo.renderedEndIndex !== windowState.endIndex;
+    || state.promptRepo.renderedEndIndex !== windowState.endIndex
+    || Math.abs(currentTopPad - (Number(windowState.topPad) || 0)) > 1
+    || Math.abs(currentBottomPad - (Number(windowState.bottomPad) || 0)) > 1;
 }
 function syncPromptRepoListOnly(options = {}) {
   const promptList = $('#promptList');
@@ -8252,7 +8390,10 @@ function syncPromptRepoListOnly(options = {}) {
     return false;
   }
   const promptWindow = promptRepoVirtualWindow(state.promptRepo.items.length);
-  if (options.virtualScroll && !promptRepoVirtualRangeChanged(promptWindow)) return false;
+  if (options.virtualScroll && !promptRepoVirtualRangeChanged(promptWindow)) {
+    promptRepoSyncPending = false;
+    return false;
+  }
   const scrollTop = promptList.scrollTop;
   if (options.virtualScroll && !promptRepoVirtualWindowNeedsRefresh(state.promptRepo.items.length)) return false;
   const focusedCardKey = document.activeElement?.closest?.('.prompt-card')?.dataset?.promptKey || '';
@@ -8370,6 +8511,7 @@ function cancelPromptRepoVirtualRender(options = {}) {
   promptRepoVirtualRenderToken += 1;
   promptRepoEdgeCheckToken += 1;
   promptRepoScrollRestoreToken += 1;
+  promptRepoCategoryRestoreToken += 1;
   clearTimeout(promptRepoVirtualRenderTimer);
   cancelRenderFrame(promptRepoVirtualRenderFrame);
   cancelRenderFrame(promptRepoEdgeCheckFrame);
@@ -8488,9 +8630,10 @@ function finishPromptRepoScroll(force = false, node = promptRepoScrollIdleNode |
     return;
   }
   const currentList = $('#promptList');
-  if (currentList?.dataset.virtual === '1') {
+  if (promptRepoSyncPending && currentList) {
     promptRepoSyncPending = false;
-    schedulePromptRepoVirtualRender();
+    if (currentList.dataset.virtual === '1') schedulePromptRepoVirtualRender();
+    else syncPromptRepoListOnly({ allowDuringScroll: true });
   }
   promptRepoScrollDelta = 0;
   if (currentList) schedulePromptRepoEdgeCheck(currentList, generation);
@@ -8515,23 +8658,24 @@ function schedulePromptRepoScrollRender() {
 function schedulePromptRepoEdgeCheck(promptList) {
   const generation = arguments[1] === undefined ? promptRepoScrollGeneration : Number(arguments[1]);
   if (!isCurrentPromptRepoScroll(promptList, generation) || promptRepoEdgeCheckFrame || promptRepoEdgeCheckTimer) return;
+  const requestSeq = Number(state.promptRepo.requestSeq || 0);
   const elapsed = Date.now() - promptRepoEdgeCheckLastAt;
   if (elapsed < 120) {
     promptRepoEdgeCheckTimer = setTimeout(() => {
       promptRepoEdgeCheckTimer = 0;
-      schedulePromptRepoEdgeCheck(promptList, generation);
+      if (promptRepoRequestIsCurrent(requestSeq)) schedulePromptRepoEdgeCheck(promptList, generation);
     }, 120 - elapsed);
     return;
   }
   const token = ++promptRepoEdgeCheckToken;
   promptRepoEdgeCheckFrame = requestRenderFrame(() => {
     promptRepoEdgeCheckFrame = 0;
-    if (token !== promptRepoEdgeCheckToken || !isCurrentPromptRepoScroll(promptList, generation)) return;
+    if (token !== promptRepoEdgeCheckToken || !isCurrentPromptRepoScroll(promptList, generation) || !promptRepoRequestIsCurrent(requestSeq)) return;
     const remaining = Number(state.promptRepo.scrollLockUntil || 0) - Date.now();
     if (remaining > 0) {
       promptRepoEdgeCheckTimer = setTimeout(() => {
         promptRepoEdgeCheckTimer = 0;
-        schedulePromptRepoEdgeCheck(promptList, generation);
+        if (promptRepoRequestIsCurrent(requestSeq)) schedulePromptRepoEdgeCheck(promptList, generation);
       }, remaining);
       return;
     }
@@ -8677,31 +8821,42 @@ function renderWorkflowInvokeModal() {
 
 function renderMaskEditor() {
   const editor = state.maskEditor;
-  const refs = state.references;
+  const refs = maskEditorReferences();
   const active = refs.find((ref) => ref.id === editor.activeRefId) || refs[0];
+  const agentMode = editor.mode === 'agent-attachment';
+  const tool = editor.tool || 'brush';
+  const button = (action, value, label, icon, activeState = false) => `<button type="button" class="tool-button ${activeState ? 'active' : ''}" data-action="${action}"${value ? ` data-tool="${value}"` : ''} title="${esc(label)}" aria-label="${esc(label)}" data-tooltip="${esc(label)}">${icon}</button>`;
+  const tools = [
+    ['move', '移动', '↔'], ['brush', '画笔', '✎'], ['rect', '矩形填充', '▣'], ['ellipse', '圆形填充', '◯'],
+    ['line', '直线标注', '╱'], ['arrow', '箭头标注', '➜'], ['polygon', '多边形填充', '⬠'], ['text', '文字标注', 'T'],
+    ['fill', '连续区域填充', '▤'], ['crop', '裁剪框（仅限制编辑区域）', '⌗'], ['eraser', '橡皮擦', '⌫']
+  ];
   return `
     <section class="mask-layer" role="dialog" aria-modal="true" aria-label="编辑遮罩" tabindex="-1" data-modal-key="mask-editor">
       <div class="mask-topbar">
-        <button class="mask-close" aria-label="关闭遮罩编辑器" data-modal-autofocus data-action="close-mask-editor" style="position:static">×</button>
-        <div class="mask-title">编辑遮罩</div>
+        <button type="button" class="mask-close" aria-label="关闭遮罩编辑器" title="取消并关闭" ${editor.pendingText ? '' : 'data-modal-autofocus'} data-action="cancel-mask-editor" style="position:static">×</button>
+        <div class="mask-title">${agentMode ? 'Agent 附件遮罩' : '编辑遮罩'}</div>
         <div class="mask-info" title="根据官方说明，此功能仅辅助限定修改区域">i</div>
-        <div class="mask-tip">根据官方文档说明，此功能仅基于提示词，无法完全控制模型编辑区域。建议附加类似“只编辑涂抹区域”的提示词以提升遵循程度。</div>
-        <button class="mask-save" data-action="save-mask-editor">保存</button>
+        <div class="mask-tip">${esc(imageMaskSupportLabel(agentMode ? agentImageProfile() : imageProfile()))} 建议在提示词中说明需要编辑的区域。</div>
+        <button type="button" class="mask-save" data-action="save-mask-editor" title="确认并保存" aria-label="确认并保存">确认</button>
       </div>
       <div class="mask-body">
         <div class="mask-refs">
-          ${refs.map((ref) => `<button class="mask-ref ${ref.id === active?.id ? 'active' : ''}" data-action="switch-mask-ref" data-id="${esc(ref.id)}"><img data-ref-id="${esc(ref.id)}" alt=""></button>`).join('')}
+          ${refs.map((ref) => `<button class="mask-ref ${ref.id === active?.id ? 'active' : ''}" data-action="switch-mask-ref" data-id="${esc(ref.id)}"><img ${agentMode ? `data-agent-attachment-id="${esc(ref.id)}"` : `data-ref-id="${esc(ref.id)}"`} alt="${esc(ref.name || '图片附件')}">${ref.maskBlobId || ref.annotationBlobId ? '<span class="mask-ref-status">已标注</span>' : ''}</button>`).join('')}
         </div>
-        <div class="mask-canvas-wrap"><div class="mask-canvas-shell ${editor.tool === 'eraser' ? 'is-eraser' : 'is-brush'}" style="--mask-cursor-size:${esc(editor.brushSize || 64)}px;--mask-cursor-color:${esc(editor.color || BRUSH_COLORS[0].value)}"><canvas id="maskBaseCanvas"></canvas><canvas id="maskCanvas"></canvas><div class="mask-cursor" id="maskCursor"></div></div></div>
+        <div class="mask-canvas-wrap"><div class="mask-canvas-shell ${tool === 'eraser' ? 'is-eraser' : ['brush', 'eraser'].includes(tool) ? 'is-brush' : ''}" style="transform-origin:top left;--mask-cursor-size:${esc(editor.brushSize || 64)}px;--mask-cursor-color:${esc(editor.color || BRUSH_COLORS[0].value)}"><canvas id="maskBaseCanvas"></canvas><canvas id="maskCanvas"></canvas><canvas id="maskAnnotationCanvas" aria-hidden="true" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;background:transparent"></canvas><div class="mask-crop-guide" id="maskCropGuide" aria-hidden="true" style="display:none;position:absolute;z-index:4;pointer-events:none;border:2px dashed #f59e0b;box-sizing:border-box"></div><div class="mask-cursor" id="maskCursor"></div></div>${editor.pendingText ? `<div class="mask-text-editor" role="group" aria-label="文字标注输入"><label for="maskTextInput">文字标注<textarea id="maskTextInput" data-action="mask-text-input" data-modal-autofocus maxlength="120" rows="3" placeholder="输入要放到图片上的文字">${esc(editor.pendingText.value || '')}</textarea></label><div class="mask-text-editor-actions"><button type="button" data-action="confirm-mask-text">添加文字</button><button type="button" class="secondary" data-action="cancel-mask-text">取消</button></div></div>` : ''}</div>
       </div>
       <div class="mask-tools">
-        <button class="tool-button ${editor.tool === 'brush' ? 'active' : ''}" data-action="mask-tool" data-tool="brush">笔</button>
-        <button class="tool-button ${editor.tool === 'eraser' ? 'active' : ''}" data-action="mask-tool" data-tool="eraser">擦</button>
-        <input class="brush-size" type="number" min="4" max="160" value="${esc(editor.brushSize || 64)}" data-action="mask-size">
-        ${BRUSH_COLORS.map((c) => `<button class="color-button ${editor.color === c.value ? 'active' : ''}" title="${c.name}" style="background:${c.value}" data-action="mask-color" data-color="${c.value}"></button>`).join('')}
-        <button class="tool-button" data-action="mask-undo">↶</button>
-        <button class="tool-button" data-action="mask-redo">↷</button>
-        <button class="tool-button" data-action="mask-clear">清</button>
+        ${button('mask-center', '', '居中图片（重置平移）', '⌖')}
+        ${tools.map(([value, label, icon]) => button('mask-tool', value, label, icon, tool === value)).join('')}
+        <input class="brush-size" type="number" min="4" max="160" step="1" value="${esc(editor.brushSize || 64)}" data-action="mask-size" title="画笔大小（原图像素）" aria-label="画笔大小（原图像素）" data-tooltip="画笔大小（原图像像素）">
+        ${BRUSH_COLORS.map((c) => `<button type="button" class="color-button ${editor.color === c.value ? 'active' : ''}" title="${esc(c.name)}" aria-label="${esc(c.name)}" data-tooltip="${esc(c.name)}" style="background:${c.value}" data-action="mask-color" data-color="${c.value}"></button>`).join('')}
+        ${button('mask-undo', '', '撤销', '↶')}
+        ${button('mask-redo', '', '重做', '↷')}
+        ${button('mask-delete', '', '删除全部标注', '⌧')}
+        ${button('cancel-mask-editor', '', '取消且不保存', '取消')}
+        ${button('save-mask-editor', '', '确认保存', '确认')}
+        ${button('mask-fullscreen', '', '切换全屏', '⛶')}
       </div>
     </section>
   `;
@@ -8711,6 +8866,14 @@ function bindTransientEvents() {
   $$('[data-action="open-viewer"][role="button"]').forEach((node) => {
     node.addEventListener('keydown', (event) => {
       if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      node.click();
+    });
+  });
+  $$('[data-action="open-detail"][role="button"]').forEach((node) => {
+    node.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      if (event.target.closest?.('[data-action="retry-task"]')) return;
       event.preventDefault();
       node.click();
     });
@@ -9282,16 +9445,23 @@ document.addEventListener('click', async (event) => {
   if (action === 'favorite-task') { favoriteTask(target.dataset.id); return; }
   if (action === 'edit-output') { await editOutput(target.dataset.id); return; }
   if (action === 'open-mask-editor') { await handleReferenceEditAction(target.dataset.refIdOpen); return; }
-  if (action === 'close-mask-editor') { state.maskEditor = null; render(); return; }
+  if (action === 'close-mask-editor' || action === 'cancel-mask-editor') { cancelMaskEditor(); return; }
   if (action === 'switch-mask-ref') { await switchMaskRef(target.dataset.id); return; }
   if (action === 'mask-tool') { setMaskTool(target.dataset.tool); return; }
   if (action === 'mask-color') { setMaskColor(target.dataset.color); return; }
+  if (action === 'mask-center') { centerMaskCanvas(); return; }
+  if (action === 'mask-fullscreen') { await toggleMaskFullscreen(); return; }
   if (action === 'mask-undo') { maskUndo(); return; }
   if (action === 'mask-redo') { maskRedo(); return; }
-  if (action === 'mask-clear') { await maskClear(); return; }
+  if (action === 'mask-clear' || action === 'mask-delete') { await maskClear(); return; }
+  if (action === 'confirm-mask-text') { confirmMaskText(); return; }
+  if (action === 'cancel-mask-text') { cancelMaskText(); return; }
   if (action === 'save-mask-editor') { await saveMaskEditor(); return; }
   if (action === 'open-prompt-repo') { rememberModalOpener('prompt-repo', target); openPromptRepo(); return; }
   if (action === 'close-prompt-repo') {
+    cancelPromptRepoPrefetch();
+    promptRepoScrollRestoreToken += 1;
+    promptRepoCategoryRestoreToken += 1;
     state.promptRepo.open = false;
     state.promptRepo.detail = null;
     delete state.promptRepo.detailIndex;
@@ -9332,6 +9502,7 @@ document.addEventListener('click', async (event) => {
   if (action === 'prompt-image-close') { closePromptRepoImageViewerOverlay(); return; }
   if (action === 'agent-pick-attachment') { $('#agentAttachmentInput')?.click(); return; }
   if (action === 'agent-remove-attachment') { await removeAgentAttachment(target.dataset.id); return; }
+  if (action === 'open-agent-attachment-mask-editor') { openAgentAttachmentMaskEditor(target.dataset.agentAttachmentOpenId || target.dataset.agentAttachmentId); return; }
   if (action === 'select-agent-mention') { selectAgentMention(target.dataset.id); return; }
   if (action === 'agent-chat') { await sendAgentChat(); return; }
   if (action === 'copy-agent-code') {
@@ -9489,6 +9660,9 @@ document.addEventListener('input', (event) => {
     state.maskEditor.brushSize = Math.max(4, Math.min(160, Number(event.target.value) || 64));
     updateMaskToolUi();
   }
+  if (action === 'mask-text-input' && state.maskEditor?.pendingText) {
+    state.maskEditor.pendingText.value = String(event.target.value || '').slice(0, 120);
+  }
 });
 document.addEventListener('focusin', (event) => {
   if (event.target.closest?.('.image-context-menu')) return;
@@ -9509,7 +9683,7 @@ document.addEventListener('keydown', (event) => {
     if (state.workflowInvoke) { state.workflowInvoke = null; render(); return; }
     if (state.workflowDraft) { state.workflowDraft = null; render(); return; }
     if (state.entryAdvancedModal) { state.entryAdvancedModal = null; render(); return; }
-    if (state.maskEditor) { state.maskEditor = null; render(); return; }
+    if (state.maskEditor) { cancelMaskEditor(); return; }
     if (state.promptRepo.open) { state.promptRepo.open = false; render(); return; }
   }
   if (state.imageContextMenu && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
@@ -9549,6 +9723,7 @@ function setPopoverValue(type, value) {
   if (type === 'format') state.settings.output_format = value;
   if (type === 'compression' && state.settings.output_format === 'png') state.settings.transparent_output = value === '是';
   else if (type === 'compression') state.settings.output_compression = Number(value);
+  if (type === 'moderation' && imageModerationSupported(imageProfile())) state.settings.moderation = value === 'low' ? 'low' : 'auto';
   state.popover = null;
   writeComposerSessionSettings();
   persistRender();
@@ -9602,6 +9777,10 @@ function setAgentPopoverValue(type, value) {
   if (type === 'agent-format') settings.output_format = value;
   if (type === 'agent-compression' && settings.output_format === 'png') settings.transparent_output = value === '是';
   else if (type === 'agent-compression') settings.output_compression = Number(value);
+  if (type === 'agent-moderation' && imageModerationSupported(agentImageProfile())) {
+    state.settings.moderation = value === 'low' ? 'low' : 'auto';
+    settings.moderation = state.settings.moderation;
+  }
   state.agent.imageSettings = settings;
   state.popover = null;
   writeStore();
@@ -9715,7 +9894,7 @@ async function loadRuntime(options = {}) {
     reuseTaskApiProfileTemporarily: runtime?.reuseTaskApiProfileTemporarily ?? runtime?.reuseProfile ?? state.preferences?.reuseTaskApiProfileTemporarily ?? DEFAULT_PREFERENCES.reuseTaskApiProfileTemporarily,
     allowPromptRewrite: runtime?.allowPromptRewrite ?? state.preferences?.allowPromptRewrite ?? DEFAULT_PREFERENCES.allowPromptRewrite,
     enterSubmit: runtime?.enterSubmit ?? state.preferences?.enterSubmit ?? DEFAULT_PREFERENCES.enterSubmit,
-    zipDownloadRoutes: Array.isArray(runtime?.zipDownloadRoutes) ? runtime.zipDownloadRoutes : (state.preferences?.zipDownloadRoutes || DEFAULT_PREFERENCES.zipDownloadRoutes)
+    zipDownloadRoutes: normalizeZipDownloadRoutes(runtime?.zipDownloadRoutes || state.preferences?.zipDownloadRoutes)
   };
   if (!localStorage.getItem(THEME_KEY)) localStorage.setItem(THEME_KEY, state.preferences.themeMode || 'light');
   applyTheme();
@@ -10738,11 +10917,15 @@ function observeGalleryImage(img) {
   return true;
 }
 async function hydrateAgentAttachmentImage(img) {
-  const attachment = (state.agent.attachments || []).find((item) => item.id === img?.dataset?.agentAttachmentId);
-  if (!attachment?.blobId) return;
-  const key = `agent:${attachment.id}:${attachment.blobId}`;
+  const attachment = findAgentAttachment(img?.dataset?.agentAttachmentId);
+  const displayBlobId = attachment?.compositedBlobId || attachment?.blobId || attachment?.originalBlobId;
+  if (!displayBlobId) return;
+  const stableKey = `agent:${attachment.id}`;
+  const key = `${stableKey}:${displayBlobId}`;
+  const stale = state.refUrls.get(stableKey);
+  if (stale && stale !== key) revokeMapEntry(state.refUrls, stableKey);
   if (!state.refUrls.has(key)) {
-    const blob = await getBlob(attachment.blobId).catch(() => null);
+    const blob = await getBlob(displayBlobId).catch(() => null);
     if (blob) rememberObjectUrl(state.refUrls, key, URL.createObjectURL(blob), REFERENCE_OBJECT_URL_CACHE_LIMIT);
   }
   if (state.refUrls.has(key) && img?.isConnected !== false) img.src = touchObjectUrl(state.refUrls, key);
@@ -10944,7 +11127,7 @@ async function handlePaste(event) {
 }
 async function removeReference(id) {
   const ref = state.references.find((r) => r.id === id);
-  const blobIds = ref ? [ref.blobId, ref.originalBlobId, ref.compositedBlobId, ref.maskBlobId] : [];
+  const blobIds = ref ? [ref.blobId, ref.originalBlobId, ref.compositedBlobId, ref.maskBlobId, ref.annotationBlobId] : [];
   if (ref) {
     const mentionResult = markReferenceMentionsRemoved(state.composerPrompt, state.composerMentionTokens, ref.id);
     state.composerPrompt = mentionResult.value;
@@ -11029,7 +11212,7 @@ async function addFilesAsWorkflowReferences(files) {
 }
 async function removeWorkflowReference(id) {
   const ref = (state.workflowInvoke?.references || []).find((item) => item.id === id);
-  const blobIds = ref ? [ref.blobId, ref.originalBlobId, ref.compositedBlobId, ref.maskBlobId] : [];
+  const blobIds = ref ? [ref.blobId, ref.originalBlobId, ref.compositedBlobId, ref.maskBlobId, ref.annotationBlobId] : [];
   if (state.workflowInvoke) state.workflowInvoke.references = (state.workflowInvoke.references || []).filter((item) => item.id !== id);
   revokeMapEntry(state.refUrls, `workflow:${id}`);
   const persisted = persistRender();
@@ -11136,7 +11319,7 @@ async function generateImageTask(seedTask = null) {
     state.tasks = state.tasks.filter((item) => item !== task);
     if (taskGenerationStillCurrent) scheduleTaskRemovalPersistence(task.id, task);
     finishTaskGeneration(task.id, taskGeneration.version);
-    queuePendingBlobRelease(referenceSnapshots.flatMap((ref) => [ref.blobId, ref.originalBlobId, ref.compositedBlobId, ref.maskBlobId]), false);
+    queuePendingBlobRelease(referenceSnapshots.flatMap((ref) => [ref.blobId, ref.originalBlobId, ref.compositedBlobId, ref.maskBlobId, ref.annotationBlobId]), false);
     toast('生成前检查失败：任务快照未能保存到本地，未发送网络请求。');
     return null;
   }
@@ -11144,6 +11327,18 @@ async function generateImageTask(seedTask = null) {
   if (preserveAgentScroll()) renderPreservingAgentScroll();
   else render();
   if (meta.onCreated) meta.onCreated(task);
+  if (!seedTask && state.preferences?.clearInputAfterSubmit) {
+    state.composerPrompt = '';
+    state.composerMentionTokens = [];
+    state.composerMentionMenu = null;
+    const promptInput = $('#promptInput');
+    if (promptInput) {
+      promptInput.value = '';
+      autoGrow(promptInput);
+    }
+    syncComposerMentionMenuDom();
+    writeStore();
+  }
   try {
     const apiStartedAt = Date.now();
     const result = await collectGenerationResult(submittedPrompt, effectiveParams, {
@@ -11256,7 +11451,6 @@ async function generateImageTask(seedTask = null) {
     } else {
       queuePendingBlobRelease(completedPartialIds, persisted === true);
     }
-    if (!seedTask && state.preferences?.clearInputAfterSubmit) state.composerPrompt = '';
     notifyTaskComplete(task);
   } catch (err) {
     if (!taskGenerationActive()) return task;
@@ -11356,7 +11550,7 @@ async function collectGenerationResult(prompt, params, options = {}) {
   const discardImageBatchBlobs = async (batch = []) => {
     const ids = new Set();
     for (const image of Array.isArray(batch) ? batch : []) {
-      [image?.blobId, image?.originalBlobId, image?.compositedBlobId, image?.maskBlobId]
+      [image?.blobId, image?.originalBlobId, image?.compositedBlobId, image?.maskBlobId, image?.annotationBlobId]
         .filter(Boolean)
         .forEach((id) => ids.add(id));
     }
@@ -11407,7 +11601,8 @@ async function collectGenerationResult(prompt, params, options = {}) {
     let batch = await persistResponseImages(response, {
       requestedFormat: params.format || params.output_format,
       outputQuality: firstDefined(params.outputQuality, params.output_quality),
-      outputCompression: firstDefined(params.output_compression, params.outputCompression)
+      outputCompression: firstDefined(params.output_compression, params.outputCompression),
+      upstreamOrigin: profileRemoteImageOrigin(profile)
     });
     if (typeof options.isActive === 'function' && !options.isActive()) {
       await discardImageBatchBlobs(batch);
@@ -11597,14 +11792,33 @@ async function sendGenerationRequest(prompt, params = {}, options = {}) {
   const entry = options.entry || currentEntryKey();
   const requestParams = params && typeof params === 'object' ? params : {};
   const sourceRefs = Array.isArray(options.references) ? options.references : state.references;
+  const provider = providerKey(profile);
   if (!validateReferenceCountForProfile(profile, sourceRefs)) throw new Error(`参考图数量超过当前模型限制：${referenceLimit(profile)}`);
-  const refs = await Promise.all(sourceRefs.map(async (ref, index) => ({ ref, blob: await getBlob(ref.blobId), index })));
+  const refs = await Promise.all(sourceRefs.map(async (ref, index) => {
+    const marked = !!(ref?.maskBlobId || ref?.annotationBlobId);
+    const originalBlobId = ref?.originalBlobId
+      || (ref?.compositedBlobId && ref?.blobId === ref.compositedBlobId ? '' : (ref?.blobId || ''));
+    const legacyCompositeId = ref?.blobId && ref.blobId !== originalBlobId ? ref.blobId : '';
+    const compositeBlobId = ref?.compositedBlobId || legacyCompositeId || '';
+    const blobId = provider === 'openai'
+      ? (marked ? originalBlobId : (ref?.blobId || originalBlobId))
+      : (marked ? compositeBlobId : (ref?.blobId || originalBlobId));
+    return { ref, blobId, originalBlobId, compositeBlobId, marked, blob: blobId ? await getBlob(blobId).catch(() => null) : null, index };
+  }));
   if (sourceRefs.length && refs.some((item) => !item.blob)) {
+    if (provider !== 'openai' && refs.some((item) => item.marked && !item.compositeBlobId)) {
+      throw imageResponseError('遮罩合成图已丢失，请重新打开遮罩编辑器并保存后再生成', 'IMAGE_EDIT_MASK_COMPOSITE_MISSING', 'request-validation');
+    }
+    if (refs.some((item) => item.marked && !item.originalBlobId)) {
+      throw imageResponseError('遮罩原图已丢失，请重新上传原图后再生成', 'IMAGE_EDIT_MASK_ORIGINAL_MISSING', 'request-validation');
+    }
+    if (provider !== 'openai' && refs.some((item) => item.marked && item.compositeBlobId && !item.blob)) {
+      throw imageResponseError('遮罩合成文件已丢失，请重新编辑并保存遮罩后再生成', 'IMAGE_EDIT_MASK_COMPOSITE_MISSING', 'request-validation');
+    }
     throw imageResponseError('参考图文件已丢失，请重新上传后再生成', 'IMAGE_EDIT_INPUT_MISSING', 'request-validation');
   }
   const hasRefs = refs.some((item) => item.blob);
   const endpoint = hasRefs ? '/api-proxy/images/edits' : '/api-proxy/images/generations';
-  const provider = providerKey(profile);
   const advanced = effectiveAdvanced(entry, profile, options.advanced);
   const responseOptionsFor = (advancedOverride = options.advanced) => {
     const requestAdvanced = effectiveAdvanced(entry, profile, advancedOverride);
@@ -11615,13 +11829,22 @@ async function sendGenerationRequest(prompt, params = {}, options = {}) {
     };
   };
   const responseOptions = responseOptionsFor(options.advanced);
-  const requestPrompt = options.promptPrepared ? String(prompt || '') : promptWithCanvasConstraint(prompt, provider, requestParams);
+  const requestPromptBase = options.promptPrepared ? String(prompt || '') : promptWithCanvasConstraint(prompt, provider, requestParams);
+  const requestPrompt = provider !== 'openai' && refs.some((item) => item.marked)
+    ? `${requestPromptBase}\n请将参考图中的黄色标注区域作为需要修改的区域，仅编辑这些区域。`
+    : requestPromptBase;
   if (hasRefs) {
     const validRefs = refs.filter((item) => item.blob);
     if (!validRefs.length) throw imageResponseError('参考图文件不存在或为空', 'IMAGE_EDIT_INPUT_EMPTY', 'request-validation');
     if (validRefs.some((item) => !item.blob?.size)) throw imageResponseError('参考图包含空文件', 'IMAGE_EDIT_INPUT_EMPTY_FILE', 'request-validation');
     if (validRefs.some((item) => !String(item.blob?.type || '').toLowerCase().startsWith('image/'))) throw imageResponseError('参考图包含不支持的文件类型', 'IMAGE_EDIT_INPUT_TYPE', 'request-validation');
-    const prepared = await prepareEditReferenceFiles(validRefs);
+    const masksRequested = validRefs.some((item) => item?.marked);
+    if (masksRequested && !openAiImagesProfile(profile)) {
+      toast(imageMaskSupportLabel(profile));
+    }
+    const prepared = openAiImagesProfile(profile)
+      ? await prepareEditReferenceFiles(validRefs)
+      : { refs: validRefs, mask: null };
     const totalBytes = prepared.refs.reduce((sum, item) => sum + Number(item.blob?.size || 0), 0) + Number(prepared.mask?.size || 0);
     if (prepared.refs.some((item) => Number(item.blob?.size || 0) > STREAM_INPUT_FILE_LIMIT)
       || Number(prepared.mask?.size || 0) > STREAM_INPUT_FILE_LIMIT) {
@@ -11685,7 +11908,7 @@ async function sendGenerationRequest(prompt, params = {}, options = {}) {
         );
         fd.append(imageFieldName, blob, filename);
       });
-      if (prepared.mask) fd.append('mask', prepared.mask, 'mask.png');
+      if (prepared.mask && openAiImagesProfile(profile)) fd.append('mask', prepared.mask, 'mask.png');
       if (provider !== 'openai') appendAdvancedToFormData(fd, entry, profile, advancedOverride);
       return fetchImageHttpResponse(endpoint, {
         method: 'POST',
@@ -11784,10 +12007,10 @@ function appendProviderParams(fd, provider, params = {}) {
 function imageOutputParams(params = {}, profile = imageProfile()) {
   const requestParams = params && typeof params === 'object' ? params : {};
   const format = String(firstDefined(requestParams.format, requestParams.output_format, state.settings.output_format) || 'png').toLowerCase();
-  const out = {
-    output_format: format,
-    moderation: firstDefined(requestParams.moderation, state.settings.moderation)
-  };
+  const out = { output_format: format };
+  if (imageModerationSupported(profile)) {
+    out.moderation = firstDefined(requestParams.moderation, state.settings.moderation);
+  }
   if (!profile?.codexCli) {
     out.quality = normalizeImageQuality(firstDefined(requestParams.quality, state.settings.quality));
   }
@@ -11921,21 +12144,165 @@ async function prepareEditReferenceFiles(validRefs = []) {
           `主图：${normalizedOriginal.info.width}x${normalizedOriginal.info.height}；遮罩：${normalizedMask.info.width}x${normalizedMask.info.height}。`
         );
       }
+      let requestMask = normalizedMask.blob;
+      if (first.ref.maskFormat !== OPENAI_MASK_FORMAT) {
+        try {
+          requestMask = await openAiMaskBlobFromLegacyOverlayBlob(
+            normalizedMask.blob,
+            normalizedOriginal.info.width,
+            normalizedOriginal.info.height
+          );
+        } catch (error) {
+          throw imageResponseError(
+            '旧版遮罩无法转换为 OpenAI 像素遮罩，请重新绘制遮罩',
+            'IMAGE_EDIT_MASK_DECODE_FAILED',
+            'request-validation',
+            error?.message || '旧版遮罩转换失败'
+          );
+        }
+      }
       const workingSize = maskWorkingSize(normalizedOriginal.info.width, normalizedOriginal.info.height);
       if (workingSize.width !== normalizedOriginal.info.width || workingSize.height !== normalizedOriginal.info.height) {
         const [workingOriginal, workingMask] = await Promise.all([
           resizeMaskImageBlobToPng(normalizedOriginal.blob, workingSize.width, workingSize.height, '遮罩主图'),
-          resizeMaskImageBlobToPng(normalizedMask.blob, workingSize.width, workingSize.height, '遮罩')
+          resizeMaskImageBlobToPng(requestMask, workingSize.width, workingSize.height, '遮罩')
         ]);
         blob = workingOriginal;
         mask = workingMask;
       } else {
-        mask = normalizedMask.blob;
+        mask = requestMask;
       }
     }
     prepared.push({ ...item, blob });
   }
   return { refs: prepared, mask };
+}
+function remoteImageLengthRange(value) {
+  const length = String(value || '').length;
+  if (length <= 63) return '0-63';
+  if (length <= 255) return '64-255';
+  if (length <= 2047) return '256-2047';
+  return '2048+';
+}
+function stripOneRemoteImageOuterQuote(value) {
+  const text = String(value || '').trim();
+  if (text.length < 2) return text;
+  const first = text[0];
+  const last = text[text.length - 1];
+  if ((first === '"' && last === '"') || (first === "'" && last === "'")) return text.slice(1, -1).trim();
+  return text;
+}
+function isPrivateRemoteImageHostname(value) {
+  const host = String(value || '').trim().toLowerCase().replace(/\.$/, '');
+  if (!host || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')
+    || host.endsWith('.internal') || host.endsWith('.lan') || host.endsWith('.home')
+    || host === 'host.docker.internal' || host.includes(':')) return true;
+  if (!/^\d+\.\d+\.\d+\.\d+$/.test(host)) return false;
+  const octets = host.split('.').map(Number);
+  if (octets.some((item) => !Number.isInteger(item) || item < 0 || item > 255)) return true;
+  const [a, b, c, d] = octets;
+  return a === 0
+    || a === 10
+    || (a === 100 && b >= 64 && b <= 127)
+    || a === 127
+    || (a === 169 && b === 254)
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && (b === 0 || b === 2 || b === 168 || (b === 88 && c === 99)))
+    || (a === 198 && (b === 18 || b === 19 || b === 51))
+    || (a === 203 && b === 0 && c === 113)
+    || a >= 224
+    || (a === 255 && b === 255 && c === 255 && d === 255);
+}
+function remoteImageSourceField(value) {
+  return String(value || '').trim().replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 64);
+}
+function remoteImageScheme(value) {
+  const match = String(value || '').trim().match(/^([A-Za-z][A-Za-z0-9+.-]*:)/);
+  return match ? match[1].toLowerCase() : '';
+}
+function isClearlyRelativeRemoteImagePath(value) {
+  const text = String(value || '').trim();
+  if (!text || /[\s]/.test(text)) return false;
+  if (remoteImageScheme(text)) return false;
+  if (/^(?:\/(?!\/)|\.\.?\/)/.test(text)) return true;
+  if (/^[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~!$&'()*+,;=:@%~-]+)+(?:[?#].*)?$/.test(text)) return true;
+  return /\.(?:png|jpe?g|webp|gif|avif|bmp|tiff?)(?:[?#].*)?$/i.test(text);
+}
+function classifyRemoteImageUrl(value, options = {}) {
+  const sourceField = remoteImageSourceField(options.sourceField);
+  const original = String(value ?? '').trim();
+  const text = stripOneRemoteImageOuterQuote(original);
+  const baseResult = {
+    ok: false,
+    url: '',
+    normalizedUrl: '',
+    category: 'INVALID_URL',
+    code: 'REMOTE_IMAGE_URL_INVALID',
+    protocol: remoteImageScheme(text),
+    hostPresent: false,
+    relative: false,
+    sourceField,
+    lengthRange: remoteImageLengthRange(text)
+  };
+  if (!text) return baseResult;
+  if (/\\/.test(text) || /^[\\/]{2}/.test(text)) return baseResult;
+  if (/\s/.test(text)) return baseResult;
+  const isRelative = isClearlyRelativeRemoteImagePath(text);
+  baseResult.relative = isRelative;
+  let parsed;
+  if (isRelative) {
+    const upstreamOrigin = String(options.upstreamOrigin || '').trim();
+    if (!upstreamOrigin) return { ...baseResult, category: 'RELATIVE_ORIGIN_MISSING', code: 'REMOTE_IMAGE_RELATIVE_ORIGIN_MISSING' };
+    try {
+      const origin = new URL(upstreamOrigin);
+      if (origin.protocol !== 'https:' || origin.username || origin.password || !origin.hostname || isPrivateRemoteImageHostname(origin.hostname)) {
+        return { ...baseResult, category: 'RELATIVE_ORIGIN_INVALID', code: 'REMOTE_IMAGE_RELATIVE_ORIGIN_INVALID' };
+      }
+      parsed = new URL(text, origin.origin);
+    } catch {
+      return { ...baseResult, category: 'RELATIVE_ORIGIN_INVALID', code: 'REMOTE_IMAGE_RELATIVE_ORIGIN_INVALID' };
+    }
+  } else {
+    try { parsed = new URL(text); } catch { return baseResult; }
+  }
+  const protocol = String(parsed?.protocol || '').toLowerCase();
+  const hostPresent = !!String(parsed?.hostname || '').trim();
+  const shared = { ...baseResult, protocol, hostPresent };
+  if (!hostPresent || !protocol) return shared;
+  if (protocol !== 'https:') return { ...shared, category: 'NON_HTTPS', code: 'REMOTE_IMAGE_NON_HTTPS' };
+  if (parsed.username || parsed.password) return { ...shared, category: 'CREDENTIALS', code: 'REMOTE_IMAGE_CREDENTIALS' };
+  if (isPrivateRemoteImageHostname(parsed.hostname)) return { ...shared, category: 'PRIVATE_HOST', code: 'REMOTE_IMAGE_PRIVATE_HOST' };
+  const normalizedUrl = parsed.href;
+  return { ...shared, ok: true, url: normalizedUrl, normalizedUrl, category: 'VALID', code: 'REMOTE_IMAGE_URL_OK' };
+}
+function normalizeRemoteImageUrl(value, options = {}) {
+  const result = classifyRemoteImageUrl(value, options);
+  return result.ok ? result.url : '';
+}
+function verifiedRemoteImageOrigin(value) {
+  const result = classifyRemoteImageUrl(value);
+  if (!result.ok) return '';
+  try { return new URL(result.url).origin; } catch { return ''; }
+}
+function profileRemoteImageOrigin(profile = imageProfile(), runtime = state.runtime) {
+  return verifiedRemoteImageOrigin(firstDefined(
+    profile?.baseUrl,
+    profile?.base_url,
+    runtime?.baseUrl,
+    runtime?.base_url
+  ));
+}
+function remoteImageDiagnosticCode(value, fallback = 'REMOTE_IMAGE_FETCH_FAILED') {
+  const fallbackText = String(fallback || '').trim().toUpperCase();
+  const safeFallback = /^(?:HTTP_[1-5]\d{2}|REMOTE_IMAGE_FETCH_FAILED)$/.test(fallbackText)
+    ? fallbackText
+    : 'REMOTE_IMAGE_FETCH_FAILED';
+  const text = String(value ?? '').trim();
+  if (!text || text.length > 64 || /:\/\//.test(text) || /[?=&]/.test(text) || /(?:^|[^A-Z0-9])(?:DATA|BASE64|SIGNATURE|TOKEN|PROMPT)(?:[^A-Z0-9]|$)/i.test(text)) return safeFallback;
+  const upper = text.toUpperCase();
+  if (/^(?:INVALID_URL|NON_HTTPS|CREDENTIALS|PRIVATE_HOST|RELATIVE_ORIGIN_MISSING|RELATIVE_ORIGIN_INVALID)$/.test(upper)) return upper;
+  if (/^(?:HTTP_[1-5]\d{2}|BROWSER_NETWORK_OR_CORS|REMOTE_IMAGE_[A-Z0-9_.-]{1,48}|UPSTREAM_[A-Z0-9_.-]{1,48})$/.test(upper)) return upper;
+  return safeFallback;
 }
 async function fetchRemoteImageBlob(url, options = {}) {
   const timeoutMs = Math.max(1000, Math.min(Number(options.timeoutMs) || 120000, 600000));
@@ -11949,67 +12316,101 @@ async function fetchRemoteImageBlob(url, options = {}) {
   const abortFromExternal = () => controller.abort();
   externalSignal?.addEventListener?.('abort', abortFromExternal, { once: true });
   const diagnostics = Array.isArray(options.diagnostics) ? options.diagnostics : null;
-  const remoteHost = (() => {
-    const baseUrl = typeof window !== 'undefined' && window.location?.href ? window.location.href : 'https://localhost/';
-    try { return new URL(String(url || ''), baseUrl).hostname.toLowerCase(); } catch { return ''; }
-  })();
-  const recordAttempt = (attempt) => {
+  const rawUrl = String(url ?? '').trim();
+  const isBlobUrl = /^blob:/i.test(rawUrl) && transientObjectUrls.has(rawUrl);
+  const classification = isBlobUrl
+    ? {
+      ok: true,
+      url: rawUrl,
+      normalizedUrl: rawUrl,
+      category: 'LOCAL_BLOB',
+      code: 'LOCAL_BLOB',
+      protocol: 'blob:',
+      hostPresent: false,
+      sourceField: remoteImageSourceField(options.sourceField),
+      lengthRange: remoteImageLengthRange(rawUrl)
+    }
+    : classifyRemoteImageUrl(rawUrl, {
+      upstreamOrigin: options.upstreamOrigin,
+      sourceField: options.sourceField
+    });
+  const recordAttempt = (attempt = {}) => {
     if (!diagnostics || diagnostics.length >= 8) return;
+    const status = Number(attempt.status) || 0;
+    const fallbackCategory = status >= 100 && status <= 599 ? `HTTP_${status}` : 'REMOTE_IMAGE_FETCH_FAILED';
     diagnostics.push({
-      transport: attempt.transport || '',
-      host: remoteHost,
-      status: Number(attempt.status) || 0,
-      code: String(attempt.code || '').replace(/[^A-Z0-9_.-]/gi, '').slice(0, 96),
+      sourceField: classification.sourceField || remoteImageSourceField(attempt.sourceField),
+      category: remoteImageDiagnosticCode(attempt.category || attempt.code || classification.category, fallbackCategory),
+      protocol: String(attempt.protocol ?? (classification.protocol || '')).toLowerCase().slice(0, 16),
+      hostPresent: attempt.hostPresent === undefined ? classification.hostPresent === true : !!attempt.hostPresent,
+      lengthRange: classification.lengthRange,
+      status,
       contentType: String(attempt.contentType || '').split(';')[0].toLowerCase().slice(0, 80)
     });
   };
   const readFailureCode = async (response, fallback) => {
     const contentType = String(response?.headers?.get?.('content-type') || '').toLowerCase();
-    if (!/json/.test(contentType)) return { code: fallback, contentType };
+    const safeFallback = remoteImageDiagnosticCode(fallback, 'REMOTE_IMAGE_FETCH_FAILED');
+    if (!/json/.test(contentType)) return { code: safeFallback, contentType };
     try {
       const text = await response.clone().text();
       const payload = JSON.parse(text.slice(0, 8192));
-      const code = firstDefined(payload?.error?.code, payload?.code, fallback);
+      const code = remoteImageDiagnosticCode(firstDefined(payload?.error?.code, payload?.code), safeFallback);
       return { code, contentType };
     } catch {
-      return { code: fallback, contentType };
+      return { code: safeFallback, contentType };
     }
   };
   try {
     if (externalSignal?.aborted) throw new DOMException('请求已停止', 'AbortError');
-    const sources = [String(url || '')];
-    if (options.useProxy !== false && sources[0] && !sources[0].startsWith('/api-proxy/image-download')) {
-      sources.push(`/api-proxy/image-download?url=${encodeURIComponent(sources[0])}`);
+    if (!classification.ok) {
+      recordAttempt({ category: classification.category, protocol: classification.protocol, hostPresent: classification.hostPresent });
+      return null;
+    }
+    const normalizedUrl = classification.url;
+    const sources = [normalizedUrl];
+    if (!isBlobUrl && options.useProxy !== false && normalizedUrl && !normalizedUrl.startsWith('/api-proxy/image-download')) {
+      sources.push(`/api-proxy/image-download?url=${encodeURIComponent(normalizedUrl)}`);
     }
     let lastError = null;
     for (let index = 0; index < sources.length; index += 1) {
       const source = sources[index];
-      const transport = index === 0 ? 'browser-direct' : 'site-proxy';
+      let response;
       try {
-        const response = await fetch(source, {
+        response = await fetch(source, {
           credentials: index === 0 ? 'omit' : 'same-origin',
           cache: 'no-store',
           referrerPolicy: 'no-referrer',
           signal: controller.signal
         });
+      } catch (error) {
+        if (error?.name === 'AbortError' || externalSignal?.aborted) throw error;
+        recordAttempt({ category: index === 0 ? 'BROWSER_NETWORK_OR_CORS' : 'REMOTE_IMAGE_FETCH_FAILED' });
+        lastError = error;
+        continue;
+      }
+      try {
         if (!response?.ok) {
           const failure = await readFailureCode(response, `HTTP_${response?.status || 0}`);
-          recordAttempt({ transport, status: response?.status, code: failure.code, contentType: failure.contentType });
+          recordAttempt({ status: response?.status, category: failure.code, contentType: failure.contentType });
           lastError = new Error(`远程图片下载失败：HTTP ${response?.status || 0}`);
           continue;
         }
         const contentType = normalizeImageMime(response?.headers?.get?.('content-type'));
-        const blob = await response.blob();
+        let blob;
+        try { blob = await response.blob(); } catch (error) {
+          if (error?.name === 'AbortError' || externalSignal?.aborted) throw error;
+          recordAttempt({ status: response?.status, category: 'REMOTE_IMAGE_FETCH_FAILED', contentType });
+          lastError = error;
+          continue;
+        }
         const normalized = await normalizeImageBlobType(blob, contentType);
         if (normalized.blob && String(normalized.info?.type || '').startsWith('image/')) return normalized.blob;
-        recordAttempt({ transport, status: response?.status, code: 'REMOTE_IMAGE_NOT_IMAGE', contentType });
+        recordAttempt({ status: response?.status, category: 'REMOTE_IMAGE_NOT_IMAGE', contentType });
         lastError = new Error('远程响应不是可识别的图片');
       } catch (error) {
         if (error?.name === 'AbortError' || externalSignal?.aborted) throw error;
-        recordAttempt({
-          transport,
-          code: error?.code || (index === 0 ? 'BROWSER_NETWORK_OR_CORS' : 'REMOTE_IMAGE_FETCH_FAILED')
-        });
+        recordAttempt({ status: response?.status, category: 'REMOTE_IMAGE_FETCH_FAILED', contentType: response?.headers?.get?.('content-type') });
         lastError = error;
       }
     }
@@ -12021,7 +12422,7 @@ async function fetchRemoteImageBlob(url, options = {}) {
         `远程图片下载超过 ${Math.round(timeoutMs / 1000)} 秒`,
         'IMAGE_RESPONSE_REMOTE_TIMEOUT',
         'image-fetch',
-        `图片地址：${String(url || '').slice(0, 240)}`
+        '远程图片下载超时，未保存图片地址。'
       );
     }
     if (error?.name === 'AbortError' || externalSignal?.aborted) {
@@ -12035,7 +12436,13 @@ async function fetchRemoteImageBlob(url, options = {}) {
 }
 function remoteImageFetchFailureSummary(attempts = []) {
   const list = Array.isArray(attempts) ? attempts : [];
-  const codes = list.map((attempt) => String(attempt?.code || '').toUpperCase());
+  const codes = list.map((attempt) => String(attempt?.category || attempt?.code || '').toUpperCase());
+  if (codes.includes('INVALID_URL') || codes.includes('REMOTE_IMAGE_URL_INVALID')) return '远程图片地址无效';
+  if (codes.includes('NON_HTTPS') || codes.includes('REMOTE_IMAGE_NON_HTTPS')) return '远程图片地址必须使用 HTTPS';
+  if (codes.includes('CREDENTIALS') || codes.includes('REMOTE_IMAGE_CREDENTIALS')) return '远程图片地址不允许包含凭据';
+  if (codes.includes('PRIVATE_HOST') || codes.includes('REMOTE_IMAGE_PRIVATE_HOST')) return '远程图片地址不允许访问内部网络';
+  if (codes.includes('RELATIVE_ORIGIN_MISSING') || codes.includes('REMOTE_IMAGE_RELATIVE_ORIGIN_MISSING')) return '相对远程图片地址缺少已验证的上游来源';
+  if (codes.includes('RELATIVE_ORIGIN_INVALID') || codes.includes('REMOTE_IMAGE_RELATIVE_ORIGIN_INVALID')) return '相对远程图片地址的上游来源无效';
   if (codes.some((code) => code.includes('DNS'))) return '远程图片域名解析失败';
   if (codes.some((code) => code.includes('REDIRECT'))) return '远程图片重定向被安全策略拒绝';
   if (codes.some((code) => code.includes('TIMEOUT'))) return '远程图片下载超时';
@@ -12085,10 +12492,27 @@ async function persistResponseImages(response, options = {}) {
     const rawImage = firstDefined(item.image, item.image_data, item.imageData, item.image_bytes, item.imageBytes);
     let b64 = firstDefined(item.b64_json, item.b64Json, item.base64, item.base64_image, item.base64Image, item.image_base64, item.imageBase64);
     let dataUrl = firstDefined(item.data_url, item.dataUrl, item.image_data_url, item.imageDataUrl);
-    let remoteUrl = firstDefined(item.url, item.image_url, item.imageUrl, item.uri, item.src, item.href, item.download_url, item.downloadUrl) || '';
+    const genericRemoteUrl = item.imageContainer === true ? firstDefined(item.url, item.uri, item.src, item.href) : '';
+    let remoteUrl = firstDefined(
+      item.image_url,
+      item.imageUrl,
+      item.image_uri,
+      item.imageUri,
+      item.image_src,
+      item.imageSrc,
+      item.download_url,
+      item.downloadUrl,
+      genericRemoteUrl
+    ) || '';
+    const unquotedRemoteUrl = stripOneRemoteImageOuterQuote(remoteUrl);
+    if (!dataUrl && /^data:image\//i.test(unquotedRemoteUrl)) {
+      dataUrl = unquotedRemoteUrl;
+      remoteUrl = '';
+    }
     if (!b64 && !dataUrl && !remoteUrl && typeof rawImage === 'string') {
-      if (/^data:image\//i.test(rawImage)) dataUrl = rawImage;
-      else if (/^https?:\/\//i.test(rawImage)) remoteUrl = rawImage;
+      const normalizedRawImage = stripOneRemoteImageOuterQuote(rawImage);
+      if (/^data:image\//i.test(normalizedRawImage)) dataUrl = normalizedRawImage;
+      else if (/^https?:\/\//i.test(normalizedRawImage) || isClearlyRelativeRemoteImagePath(normalizedRawImage)) remoteUrl = normalizedRawImage;
       else b64 = rawImage;
     }
     if (!dataUrl && /^data:image\//i.test(String(remoteUrl || ''))) {
@@ -12105,13 +12529,19 @@ async function persistResponseImages(response, options = {}) {
     const images = (await Promise.all(unique.map(async ({ b64, dataUrl, remoteUrl, ...candidate }) => {
       try {
         let blob = null;
+        const remoteClassification = remoteUrl
+          ? classifyRemoteImageUrl(remoteUrl, { upstreamOrigin: options.upstreamOrigin, sourceField: candidate.sourceField })
+          : null;
+        const safeRemoteUrl = remoteClassification?.ok ? remoteClassification.url : remoteUrl;
         const candidateMime = imageCandidateMime({ ...candidate, b64_json: b64, data_url: dataUrl }, 'image/png');
         if (b64) blob = dataUrlToBlob(String(b64).startsWith('data:') ? b64 : `data:${candidateMime};base64,${b64}`);
         else if (dataUrl) blob = dataUrlToBlob(dataUrl);
         else if (remoteUrl) blob = await fetchRemoteImageBlob(remoteUrl, {
           signal: options.signal,
           timeoutMs: options.remoteTimeoutMs,
-          diagnostics: remoteImageAttempts
+          diagnostics: remoteImageAttempts,
+          upstreamOrigin: options.upstreamOrigin,
+          sourceField: candidate.sourceField
         });
          const normalized = await normalizeImageBlobType(blob, candidateMime);
          if (!normalized.blob) {
@@ -12151,9 +12581,9 @@ async function persistResponseImages(response, options = {}) {
          }
          const blobId = await putBlob(output.blob);
          const info = output.info;
-         return {
-           blobId,
-           remoteUrl: /^blob:|^data:/i.test(String(remoteUrl || '')) ? '' : remoteUrl,
+          return {
+            blobId,
+            remoteUrl: /^blob:|^data:/i.test(String(safeRemoteUrl || '')) ? '' : safeRemoteUrl,
            width: info.width,
            height: info.height,
            type: info.type || output.blob.type,
@@ -12174,7 +12604,7 @@ async function persistResponseImages(response, options = {}) {
     if (!images.length) {
       if (remoteFetchFailures && remoteFetchFailures === unique.length) {
         const detail = remoteImageAttempts.slice(0, 8)
-          .map((attempt) => `${attempt.transport || 'remote'} ${attempt.host || '未知主机'} ${attempt.code || 'FAILED'}${attempt.status ? ` HTTP ${attempt.status}` : ''}`)
+          .map((attempt) => `${attempt.sourceField || 'remote'} ${attempt.category || 'FAILED'}${attempt.status ? ` HTTP ${attempt.status}` : ''}`)
           .join('；');
         const error = imageResponseError(
           `${remoteImageFetchFailureSummary(remoteImageAttempts)}：图片响应包含 ${remoteFetchFailures} 个图片地址，但本站无法下载`,
@@ -12202,33 +12632,86 @@ async function persistResponseImages(response, options = {}) {
 }
 function collectImageCandidates(response) {
   const out = [];
+  const candidateOriginSymbol = Symbol('candidateOrigin');
   const seenObjects = new Set();
-  const stack = [{ value: response, key: '', depth: 0 }];
+  const stack = [{
+    value: response,
+    key: '',
+    depth: 0,
+    allowGenericUrl: false,
+    allowImageString: true,
+    requireImageSemantic: false,
+    root: true
+  }];
   const maxDepth = 12;
   const maxNodes = 20000;
   let scannedNodes = 0;
-  const imageValueKeys = new Set([
+  const imageListKeys = new Set([
+    'data', 'images', 'image', 'output', 'outputs', 'candidates'
+  ]);
+  const semanticContainerKeys = new Set(['content', 'parts', 'items']);
+  const singleResultWrapperKeys = new Set([
+    'payload', 'response', 'responses', 'result', 'results'
+  ]);
+  const wrapperContainerKeys = new Set([
+    'body', 'payload', 'response', 'responses', 'envelope', 'choices', 'result', 'results'
+  ]);
+  const b64Keys = new Set([
     'b64_json', 'b64json', 'base64', 'base64_image', 'base64image',
     'image_base64', 'imagebase64', 'image_data', 'imagedata',
-    'image_bytes', 'imagebytes', 'image', 'images', 'data', 'output',
-    'outputs', 'result', 'results', 'data_url', 'dataurl',
-    'image_data_url', 'imagedataurl', 'url', 'image_url', 'imageurl',
-    'uri', 'src', 'href'
+    'image_bytes', 'imagebytes'
   ]);
-  const addStringCandidate = (value, key) => {
-    const text = String(value || '').trim();
+  const dataUrlKeys = new Set(['data_url', 'dataurl', 'image_data_url', 'imagedataurl']);
+  const explicitUrlKeys = new Set([
+    'image_url', 'imageurl', 'image_uri', 'imageuri', 'image_src', 'imagesrc',
+    'download_url', 'downloadurl'
+  ]);
+  const normalizeKey = (key) => String(key || '').replace(/[-\s]/g, '_').toLowerCase();
+  const outputFormat = firstDefined(response?.output_format, response?.outputFormat, response?.format, response?.response_format?.output_format);
+  const hasImageSemantic = (value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const nonImageTokens = new Set(['non', 'not', 'text', 'meta', 'metadata', 'link']);
+    const isPositiveImageMarker = (marker) => {
+      const normalized = String(marker || '')
+        .trim()
+        .replace(/([a-z])([A-Z])/g, '$1_$2')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '');
+      if (!/^image(?:$|_)/.test(normalized)) return false;
+      const tokens = normalized.split('_').filter(Boolean);
+      return !tokens.some((token) => nonImageTokens.has(token));
+    };
+    const typedMarkers = [value.type, value.kind]
+      .map((marker) => String(marker || '').trim())
+      .filter(Boolean);
+    if (typedMarkers.some((marker) => !isPositiveImageMarker(marker))) return false;
+    const mime = firstDefined(value.mime, value.mime_type, value.mimeType, value.content_type, value.contentType);
+    if (/^image\//i.test(String(mime || '').trim())) return true;
+    return [value.type, value.kind, value.object].some(isPositiveImageMarker);
+  };
+  const pushCandidate = (candidate, origin) => {
+    if (origin && typeof candidate === 'object') {
+      Object.defineProperty(candidate, candidateOriginSymbol, { value: origin, enumerable: false });
+    }
+    out.push(candidate);
+  };
+  const addStringCandidate = (value, key, context = {}) => {
+    const text = stripOneRemoteImageOuterQuote(value);
     if (!text) return;
-    const normalizedKey = String(key || '').replace(/[-\s]/g, '_').toLowerCase();
+    const normalizedKey = normalizeKey(key);
     const dataUrl = /^data:image\//i.test(text);
     const remoteUrl = /^https?:\/\//i.test(text);
-    const base64 = imageValueKeys.has(normalizedKey)
-      && !['data', 'output', 'outputs', 'result', 'results'].includes(normalizedKey)
+    const base64 = (b64Keys.has(normalizedKey) || context.allowImageString === true)
       && /^[A-Za-z0-9+/_=-]{16,}$/.test(text);
+    const allowUrl = explicitUrlKeys.has(normalizedKey)
+      || context.allowGenericUrl === true
+      || context.imageSemantic === true
+      || (context.root === true && remoteUrl);
     if (!dataUrl && !remoteUrl && !base64) return;
-    const outputFormat = firstDefined(response?.output_format, response?.outputFormat, response?.format, response?.response_format?.output_format);
-    if (dataUrl) out.push({ data_url: text, output_format: outputFormat });
-    else if (remoteUrl) out.push({ url: text });
-    else out.push({ b64_json: text, output_format: outputFormat });
+    if (dataUrl && (context.allowImageString === true || dataUrlKeys.has(normalizedKey))) pushCandidate({ data_url: text, output_format: outputFormat, sourceField: normalizedKey }, context.origin);
+    else if (remoteUrl && allowUrl) pushCandidate({ url: text, output_format: outputFormat, sourceField: normalizedKey, imageContainer: context.allowGenericUrl === true }, context.origin);
+    else if (base64) pushCandidate({ b64_json: text, output_format: outputFormat, sourceField: normalizedKey }, context.origin);
   };
   while (stack.length && scannedNodes < maxNodes) {
     const entry = stack.pop();
@@ -12237,74 +12720,138 @@ function collectImageCandidates(response) {
     const depth = Number(entry?.depth) || 0;
     if (value === null || value === undefined || depth > maxDepth) continue;
     if (typeof value === 'string') {
-      addStringCandidate(value, key);
+      addStringCandidate(value, key, entry);
       continue;
     }
     if (typeof value !== 'object' || seenObjects.has(value)) continue;
     seenObjects.add(value);
     scannedNodes += 1;
     if (!Array.isArray(value)) {
-      const directImageValue = firstDefined(
-        value.b64_json,
-        value.b64Json,
-        value.base64,
-        value.base64_image,
-        value.base64Image,
-        value.image_base64,
-        value.imageBase64,
-        value.image_data,
-        value.imageData,
-        value.image_bytes,
-        value.imageBytes,
-        value.image,
-        value.data_url,
-        value.dataUrl,
-        value.image_data_url,
-        value.imageDataUrl,
-        value.url,
-        value.image_url,
-        value.imageUrl,
-        value.uri,
-        value.src,
-        value.href,
-        value.download_url,
-        value.downloadUrl
-      );
-      if (typeof directImageValue === 'string' && directImageValue.trim()) {
-        const candidate = { ...value };
-        const directB64 = firstDefined(
-          value.b64_json,
-          value.b64Json,
-          value.base64,
-          value.base64_image,
-          value.base64Image,
-          value.image_base64,
-          value.imageBase64
-        );
-        const directDataUrl = firstDefined(value.data_url, value.dataUrl, value.image_data_url, value.imageDataUrl);
-        const directUrl = firstDefined(value.url, value.image_url, value.imageUrl, value.uri, value.src, value.href, value.download_url, value.downloadUrl);
+      const imageSemantic = entry.requireImageSemantic === true && hasImageSemantic(value);
+      const genericUrlAllowed = entry.allowGenericUrl === true || imageSemantic;
+      const imageStringAllowed = entry.allowImageString === true || imageSemantic;
+      const directB64 = firstDefined(...[
+        'b64_json', 'b64Json', 'base64', 'base64_image', 'base64Image',
+        'image_base64', 'imageBase64', 'image_data', 'imageData',
+        'image_bytes', 'imageBytes'
+      ].map((name) => value[name]));
+      const directDataUrl = firstDefined(...[
+        'data_url', 'dataUrl', 'image_data_url', 'imageDataUrl'
+      ].map((name) => value[name]));
+      const directExplicitUrl = firstDefined(...[
+        'image_url', 'imageUrl', 'image_uri', 'imageUri', 'image_src', 'imageSrc',
+        'download_url', 'downloadUrl'
+      ].map((name) => value[name]));
+      const directGenericFields = ['url', 'uri', 'src', 'href'];
+      const directGenericField = genericUrlAllowed
+        ? directGenericFields.find((field) => firstDefined(value[field])) || ''
+        : '';
+      const directGenericUrl = directGenericField ? value[directGenericField] : '';
+      const rawImage = firstDefined(value.image, value.image_data, value.imageData, value.image_bytes, value.imageBytes);
+      const rawImageText = typeof rawImage === 'string' ? rawImage.trim() : '';
+      const hasRawImage = !!rawImageText && (imageStringAllowed
+        || /^data:image\//i.test(rawImageText)
+        || /^https?:\/\//i.test(rawImageText)
+        || /^[A-Za-z0-9+/_=-]{16,}$/.test(rawImageText));
+      if (directB64 || directDataUrl || directExplicitUrl || directGenericUrl || hasRawImage) {
+        const candidate = { ...value, imageContainer: genericUrlAllowed };
+        const sourceField = directB64 ? 'b64_json' : directDataUrl ? 'data_url' : directExplicitUrl ? 'image_url' : directGenericField || (hasRawImage ? 'image' : '');
         if (!candidate.b64_json && directB64) candidate.b64_json = directB64;
         if (!candidate.data_url && directDataUrl) candidate.data_url = directDataUrl;
-        if (!candidate.url && directUrl) candidate.url = directUrl;
-        if (!candidate.data_url && !candidate.url && /^data:image\//i.test(directImageValue)) candidate.data_url = directImageValue;
-        if (!candidate.url && /^https?:\/\//i.test(directImageValue)) candidate.url = directImageValue;
-        out.push(candidate);
-        continue;
+        if (!candidate.url && (directExplicitUrl || directGenericUrl)) candidate.url = directExplicitUrl || directGenericUrl;
+        if (!candidate.data_url && !candidate.url && /^data:image\//i.test(rawImageText)) candidate.data_url = rawImageText;
+        if (!candidate.url && /^https?:\/\//i.test(rawImageText)) candidate.url = rawImageText;
+        if (!candidate.b64_json && !candidate.data_url && !candidate.url
+          && /^[A-Za-z0-9+/_=-]{16,}$/.test(rawImageText)) candidate.b64_json = rawImageText;
+        candidate.sourceField = candidate.sourceField || sourceField;
+        pushCandidate(candidate, value);
       }
     }
     if (Array.isArray(value)) {
       for (let index = value.length - 1; index >= 0; index -= 1) {
-        stack.push({ value: value[index], key, depth: depth + 1 });
+        const child = value[index];
+        const childOrigin = child && typeof child === 'object' ? child : { parent: value, index };
+        stack.push({
+          value: child,
+          key,
+          depth: depth + 1,
+          allowGenericUrl: entry.allowGenericUrl === true,
+          allowImageString: entry.allowImageString === true,
+          requireImageSemantic: entry.requireImageSemantic === true,
+          imageSemantic: entry.imageSemantic === true,
+          origin: childOrigin,
+          root: false
+        });
       }
     } else {
       const entries = Object.entries(value);
       for (let index = entries.length - 1; index >= 0; index -= 1) {
         const [childKey, child] = entries[index];
-        stack.push({ value: child, key: childKey, depth: depth + 1 });
+        const normalizedChildKey = normalizeKey(childKey);
+        const imageContainer = imageListKeys.has(normalizedChildKey);
+        const semanticContainer = semanticContainerKeys.has(normalizedChildKey);
+        const wrapperContainer = wrapperContainerKeys.has(normalizedChildKey);
+        if (!imageContainer && !semanticContainer && !wrapperContainer) continue;
+        const allowGenericUrl = imageContainer || singleResultWrapperKeys.has(normalizedChildKey);
+        const childOrigin = child && typeof child === 'object' ? child : value;
+        stack.push({
+          value: child,
+          key: childKey,
+          depth: depth + 1,
+          allowGenericUrl,
+          allowImageString: imageContainer,
+          requireImageSemantic: semanticContainer,
+          imageSemantic: false,
+          origin: childOrigin,
+          root: false
+        });
       }
     }
   }
-  return out;
+  const seenSources = new Set();
+  const digestSource = (value) => {
+    const text = String(value || '');
+    let first = 2166136261;
+    let second = 2246822519;
+    for (let index = 0; index < text.length; index += 1) {
+      const code = text.charCodeAt(index);
+      first = Math.imul(first ^ code, 16777619);
+      second = Math.imul(second ^ (code + index), 3266489917);
+    }
+    return `${text.length}:${(first >>> 0).toString(16)}:${(second >>> 0).toString(16)}`;
+  };
+  const normalizeCandidateUrl = (value) => {
+    const text = stripOneRemoteImageOuterQuote(value);
+    try { return new URL(text).href; } catch { return text; }
+  };
+  const sourceOriginIds = new WeakMap();
+  let nextSourceOriginId = 1;
+  const sourceOriginId = (candidate) => {
+    const origin = candidate?.[candidateOriginSymbol];
+    if (!origin || typeof origin !== 'object') return '';
+    if (!sourceOriginIds.has(origin)) sourceOriginIds.set(origin, nextSourceOriginId++);
+    return String(sourceOriginIds.get(origin));
+  };
+  const candidateSourceIdentity = (candidate) => {
+    const origin = sourceOriginId(candidate);
+    const dataUrl = firstDefined(candidate?.data_url, candidate?.dataUrl, candidate?.image_data_url, candidate?.imageDataUrl);
+    if (typeof dataUrl === 'string' && dataUrl.trim()) return `${origin}:data:${digestSource(stripOneRemoteImageOuterQuote(dataUrl))}`;
+    const b64 = firstDefined(candidate?.b64_json, candidate?.b64Json, candidate?.base64, candidate?.base64_image, candidate?.base64Image, candidate?.image_base64, candidate?.imageBase64);
+    if (typeof b64 === 'string' && b64.trim()) return `${origin}:b64:${digestSource(stripOneRemoteImageOuterQuote(b64))}`;
+    const remoteUrl = firstDefined(candidate?.url, candidate?.remoteUrl, candidate?.image_url, candidate?.imageUrl, candidate?.image_uri, candidate?.imageUri, candidate?.image_src, candidate?.imageSrc);
+    if (typeof remoteUrl === 'string' && remoteUrl.trim()) return `${origin}:url:${digestSource(normalizeCandidateUrl(remoteUrl))}`;
+    const rawImage = candidate?.image;
+    if (typeof rawImage === 'string' && rawImage.trim()) return `${origin}:image:${digestSource(stripOneRemoteImageOuterQuote(rawImage))}`;
+    return '';
+  };
+  const unique = [];
+  for (const candidate of out) {
+    const identity = candidateSourceIdentity(candidate);
+    if (identity && seenSources.has(identity)) continue;
+    if (identity) seenSources.add(identity);
+    unique.push(candidate);
+  }
+  return unique;
 }
 function streamCandidateSource(candidate) {
   const dataUrl = firstDefined(candidate?.data_url, candidate?.dataUrl);
@@ -12615,6 +13162,9 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     imageInfoFromBlob,
     detectImageMimeFromBytes,
     imageProfile,
+    openAiImagesProfile,
+    imageModerationSupported,
+    imageMaskSupportLabel,
     profileSelectionKey,
     encodeProfileHeaderValue,
     findImageProfileById,
@@ -12677,10 +13227,28 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     galleryVirtualWindowNeedsRefresh,
     promptRepoVirtualWindowNeedsRefresh,
     promptItemStableKey,
+    promptRepoAnchorSelector,
     renderGalleryListOnly,
     promptRepoVirtualWindow,
     measurePromptRepoVirtualLayout,
     maskCanvasHasPaint,
+    openMaskEditor,
+    maskClear,
+    maskUndo,
+    maskRedo,
+    composeReferenceWithMask,
+    saveMaskEditor,
+    confirmMaskText,
+    cancelMaskText,
+    setMaskTool,
+    setMaskColor,
+    centerMaskCanvas,
+    toggleMaskFullscreen,
+    persistCanvasToRefDraft,
+    OPENAI_MASK_FORMAT,
+    openAiMaskPixelsFromOverlay,
+    overlayPixelsFromOpenAiMask,
+    openAiMaskBlobFromOverlayCanvas,
     shouldCloseModalFromClick,
     returnedPromptFromResponse,
     normalizeComparableValue,
@@ -12715,6 +13283,10 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     consumeImageStream,
     consumeImageHttpResponse,
     classifyImageResponse,
+    classifyRemoteImageUrl,
+    normalizeRemoteImageUrl,
+    verifiedRemoteImageOrigin,
+    profileRemoteImageOrigin,
     fetchRemoteImageBlob,
     remoteImageFetchFailureSummary,
     rememberObjectUrl,
@@ -12775,6 +13347,14 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     initialAgentImageSettings,
     agentImageParams,
     agentImageProfile,
+    agentAttachmentBlobIds,
+    agentAttachmentSummary,
+    cloneReferenceSnapshotsForAgent,
+    renderAgentTaskCard,
+    renderAgentAttachmentTray,
+    renderMaskEditor,
+    normalizeZipDownloadRoutes,
+    routeAllowed,
     setAgentImageParam,
     renderSidebar,
     renderAgentStage,
@@ -12803,7 +13383,10 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
       if (patch.activeImageProfileId !== undefined) state.activeImageProfileId = patch.activeImageProfileId;
       if (patch.agentConfig) state.agentConfig = { ...state.agentConfig, ...patch.agentConfig };
       if (patch.agent) state.agent = migrateAgentThreads({ ...state.agent, ...patch.agent }, { interruptPending: false });
-      if (patch.preferences) state.preferences = { ...state.preferences, ...patch.preferences };
+      if (patch.preferences) {
+        state.preferences = { ...state.preferences, ...patch.preferences };
+        state.preferences.zipDownloadRoutes = normalizeZipDownloadRoutes(state.preferences.zipDownloadRoutes);
+      }
       if (patch.settings) state.settings = { ...state.settings, ...patch.settings };
       if (patch.confirmDialog !== undefined) state.confirmDialog = patch.confirmDialog;
       if (patch.workflowDraft !== undefined) state.workflowDraft = patch.workflowDraft;
@@ -13052,10 +13635,9 @@ async function runConfirmDialog() {
     if (!thread) return;
     agentRequestControllers.get(thread.id)?.abort?.();
     agentRequestControllers.delete(thread.id);
-    const draftBlobIds = (state.agent.attachments || []).map((item) => item?.blobId).filter(Boolean);
+    const draftBlobIds = agentAttachmentBlobIds(state.agent.attachments || []);
     const messageBlobIds = (state.agent.messagesByThread?.[thread.id] || [])
-      .flatMap((message) => Array.isArray(message?.attachments) ? message.attachments.map((item) => item?.blobId) : [])
-      .filter(Boolean);
+      .flatMap((message) => agentAttachmentBlobIds(message?.attachments || []));
     const clearedBlobIds = [...new Set([...draftBlobIds, ...messageBlobIds])];
     state.agent.attachments = [];
     state.agent.inputDraft = '';
@@ -13068,9 +13650,13 @@ async function runConfirmDialog() {
     return;
   }
   if (dialog.kind === 'delete-agent-thread') {
+    const deletedThreadBlobIds = (state.agent.messagesByThread?.[dialog.payload?.threadId] || [])
+      .flatMap((message) => agentAttachmentBlobIds(message?.attachments || []));
     state.agent = deleteAgentThread(state.agent, dialog.payload?.projectId, dialog.payload?.threadId);
     state.agentScrollIntent = 'force-bottom';
-    persistRender();
+    const persisted = persistRender();
+    if (persisted === true) await deleteUnreferencedBlobIds(deletedThreadBlobIds);
+    else queuePendingBlobRelease(deletedThreadBlobIds, false);
     return;
   }
   if (dialog.kind === 'reference-action') {
@@ -13118,8 +13704,7 @@ async function downloadSelected() {
   toast(`已打包 ${selected.length} 个任务`);
 }
 function routeAllowed(route) {
-  const routes = state.preferences?.zipDownloadRoutes;
-  return !Array.isArray(routes) || !routes.length || routes.includes(route);
+  return normalizeZipDownloadRoutes(state.preferences?.zipDownloadRoutes).includes(route);
 }
 function downloadBlob(blob, name) {
   const url = URL.createObjectURL(blob);
@@ -13248,7 +13833,12 @@ let promptSearchPromise = null;
 const promptCategoryPagePromises = new Map();
 const promptDetailChunkPromises = new Map();
 const promptPageCache = new Map();
+const promptPageRequestPromises = new Map();
 const promptDetailChunkCache = new Map();
+let promptRepoPrefetchTimer = 0;
+let promptRepoPrefetchHandleType = '';
+let promptRepoPrefetchKey = '';
+let promptRepoPrefetchToken = 0;
 function applyLoadedPromptBootstrap(data) {
   if (!data || !Array.isArray(data.categories)) throw new Error('invalid prompt bootstrap');
   promptBootstrapCache = data;
@@ -13281,6 +13871,90 @@ function promptRepoPageCacheKey(page, overrides = {}) {
     query: overrides.query !== undefined ? overrides.query : (state.promptRepo.query || '')
   });
 }
+function promptRepoRequestKey(page, requestSeq, cacheKey, category, query) {
+  return JSON.stringify({
+    page: Number(page) || 1,
+    requestSeq: Number(requestSeq) || 0,
+    cacheKey: String(cacheKey || ''),
+    category: category || 'all',
+    query: String(query || '')
+  });
+}
+function promptRepoRequestIsCurrent(requestSeq) {
+  return !!state.promptRepo?.open && Number(state.promptRepo.requestSeq || 0) === Number(requestSeq || 0);
+}
+function cancelPromptRepoPrefetch() {
+  promptRepoPrefetchToken += 1;
+  if (promptRepoPrefetchTimer) {
+    if (promptRepoPrefetchHandleType === 'idle' && typeof cancelIdleCallback === 'function') cancelIdleCallback(promptRepoPrefetchTimer);
+    else clearTimeout(promptRepoPrefetchTimer);
+  }
+  promptRepoPrefetchTimer = 0;
+  promptRepoPrefetchHandleType = '';
+  promptRepoPrefetchKey = '';
+}
+function schedulePromptRepoPrefetch(options = {}) {
+  const repo = state.promptRepo;
+  const requestSeq = Number(options.requestSeq ?? repo?.requestSeq ?? 0);
+  const firstPage = Number(options.page ?? repo?.page ?? 0);
+  if (!repo?.open || Number(repo.requestSeq || 0) !== requestSeq || firstPage !== 1 || Number(repo.pages || 1) <= firstPage) return;
+  const nextPage = firstPage + 1;
+  const category = options.category !== undefined ? options.category : (repo.category || 'all');
+  const query = options.query !== undefined ? options.query : (repo.query || '');
+  const cacheKey = options.cacheKey || promptRepoPageCacheKey(nextPage, { category, query });
+  if (promptPageCache.has(cacheKey)) return;
+  const key = promptRepoRequestKey(nextPage, requestSeq, cacheKey, category, query);
+  if (promptPageRequestPromises.has(key) || promptRepoPrefetchKey === key) return;
+  cancelPromptRepoPrefetch();
+  promptRepoPrefetchKey = key;
+  const token = promptRepoPrefetchToken;
+  const run = () => {
+    if (token !== promptRepoPrefetchToken) return;
+    promptRepoPrefetchTimer = 0;
+    promptRepoPrefetchHandleType = '';
+    if (!promptRepoRequestIsCurrent(requestSeq)) return;
+    void loadPromptPage({
+      background: true,
+      prefetch: true,
+      page: nextPage,
+      requestSeq,
+      cacheKey,
+      category,
+      query
+    }).catch(() => {});
+  };
+  if (typeof requestIdleCallback === 'function') {
+    promptRepoPrefetchHandleType = 'idle';
+    promptRepoPrefetchTimer = requestIdleCallback(run, { timeout: 500 });
+  } else {
+    promptRepoPrefetchHandleType = 'timeout';
+    promptRepoPrefetchTimer = setTimeout(run, 0);
+  }
+}
+function requestPromptRepoPageData(options = {}) {
+  const page = Number(options.page) || 1;
+  const requestSeq = Number(options.requestSeq) || 0;
+  const category = options.category || 'all';
+  const query = String(options.query || '');
+  const cacheKey = options.cacheKey || promptRepoPageCacheKey(page, { category, query });
+  if (!options.skipCache) {
+    const cached = promptPageCache.get(cacheKey);
+    if (cached) return Promise.resolve(cached);
+  }
+  const key = promptRepoRequestKey(page, requestSeq, cacheKey, category, query);
+  const existing = promptPageRequestPromises.get(key);
+  if (existing) return existing;
+  const q = encodeURIComponent(query);
+  const cat = category && category !== 'all' ? `&cat=${encodeURIComponent(category)}` : '';
+  const request = fetchJson(`/api/prompts?page=${page}&limit=${PROMPT_PAGE_SIZE}${cat}&q=${q}`)
+    .then((data) => {
+      rememberPromptPageCache(cacheKey, data);
+      return data;
+    })
+    .finally(() => promptPageRequestPromises.delete(key));
+  promptPageRequestPromises.set(key, request);
+  return request;
+}
 function rememberPromptPageCache(key, data) {
   if (!key || !data) return;
   promptPageCache.delete(key);
@@ -13292,11 +13966,17 @@ function rememberPromptPageCache(key, data) {
 }
 function applyPromptPageData(data, page) {
   const prompts = Array.isArray(data?.prompts) ? data.prompts : [];
-  state.promptRepo.page = data?.page || page;
+  const requestedPage = Number(page) || 1;
+  const currentPage = Number(state.promptRepo.page) || 0;
+  if (requestedPage <= 1 && currentPage > 1) return false;
+  if (requestedPage > 1 && currentPage >= requestedPage) return false;
+  const resolvedPage = Number(data?.page) || requestedPage;
+  state.promptRepo.page = requestedPage > 1 ? Math.max(currentPage, resolvedPage, requestedPage) : resolvedPage;
   state.promptRepo.pages = data?.pages || 1;
   state.promptRepo.total = data?.total || 0;
-  if (page <= 1) state.promptRepo.items = prompts;
+  if (requestedPage <= 1) state.promptRepo.items = prompts;
   else state.promptRepo.items.push(...prompts);
+  return true;
 }
 async function loadPromptBootstrap() {
   const inline = readInlinePromptBootstrap();
@@ -13552,7 +14232,7 @@ function primePromptBootstrapCache(data) {
   if (allData) rememberPromptPageCache(promptRepoPageCacheKey(1, { category: 'all', query: '' }), allData);
 }
 function applyPromptBootstrapToRepo(data, requestSeq) {
-  if (!state.promptRepo.open) return false;
+  if (!promptRepoRequestIsCurrent(requestSeq)) return false;
   promptBootstrapCache = data;
   primePromptBootstrapCache(data);
   state.promptRepo.categories = data.categories?.length ? data.categories : ['all'];
@@ -13563,6 +14243,7 @@ function applyPromptBootstrapToRepo(data, requestSeq) {
   applyPromptPageData(pageData, 1);
   state.promptRepo.loading = false;
   state.promptRepo.loadingLabel = '';
+  schedulePromptRepoPrefetch({ page: 1, requestSeq });
   return true;
 }
 function restorePromptRepoScroll(scrollTop) {
@@ -13580,9 +14261,9 @@ function restorePromptRepoScroll(scrollTop) {
 }
 function restorePromptCategoryScroll(scrollTop) {
   if (scrollTop === null || scrollTop === undefined) return;
-  const restoreToken = ++promptRepoScrollRestoreToken;
+  const restoreToken = ++promptRepoCategoryRestoreToken;
   const restore = () => {
-    if (restoreToken !== promptRepoScrollRestoreToken) return;
+    if (restoreToken !== promptRepoCategoryRestoreToken) return;
     const categories = $('#promptCategories');
     if (!categories) return;
     setScrollTopIfNeeded(categories, Math.min(scrollTop, Math.max(0, categories.scrollHeight - categories.clientHeight)));
@@ -13600,6 +14281,9 @@ function capturePromptRepoViewportSnapshot() {
   const snapshot = {
     scrollTop: state.promptRepo.scrollTop || 0,
     categoryScrollTop: state.promptRepo.categoryScrollTop || 0,
+    requestSeq: Number(state.promptRepo.requestSeq || 0),
+    anchorPromptKey: '',
+    anchorId: '',
     anchorIndex: '',
     anchorOffset: 0
   };
@@ -13614,6 +14298,8 @@ function capturePromptRepoViewportSnapshot() {
       return rect.bottom > listTop + 8;
     }) || cards[0];
     if (anchor) {
+      snapshot.anchorPromptKey = anchor.dataset.promptKey || '';
+      snapshot.anchorId = anchor.dataset.id || '';
       snapshot.anchorIndex = anchor.dataset.index || '';
       snapshot.anchorOffset = anchor.getBoundingClientRect().top - listTop;
     }
@@ -13624,18 +14310,33 @@ function capturePromptRepoViewportSnapshot() {
   }
   return snapshot;
 }
+function promptRepoAnchorSelector(snapshot = {}) {
+  const promptKey = String(snapshot.anchorPromptKey || snapshot.anchorKey || '');
+  if (promptKey) return `.prompt-card[data-prompt-key="${cssEscape(promptKey)}"]`;
+  const index = snapshot.anchorIndex === undefined || snapshot.anchorIndex === null ? '' : String(snapshot.anchorIndex);
+  if (index) return `.prompt-card[data-index="${cssEscape(index)}"]`;
+  const id = snapshot.anchorId === undefined || snapshot.anchorId === null ? '' : String(snapshot.anchorId);
+  return id ? `.prompt-card[data-id="${cssEscape(id)}"]` : '';
+}
 function restorePromptRepoViewportSnapshot(snapshot) {
   if (!snapshot) return;
   const restoreToken = ++promptRepoScrollRestoreToken;
   state.promptRepo.scrollLockUntil = Date.now() + 240;
-  requestAnimationFrame(() => {
-    if (restoreToken !== promptRepoScrollRestoreToken || promptRepoScrollIsActive()) return;
+  const delays = [0, 24, 80, 180, 420];
+  const anchorSelector = promptRepoAnchorSelector(snapshot);
+  const restore = (attempt = 0) => {
+    if (restoreToken !== promptRepoScrollRestoreToken) return;
+    if (snapshot.requestSeq && !promptRepoRequestIsCurrent(snapshot.requestSeq)) return;
+    if (promptRepoScrollIsActive()) {
+      if (attempt + 1 < delays.length) setTimeout(() => restore(attempt + 1), delays[attempt + 1]);
+      return;
+    }
     const nextList = $('#promptList');
     if (nextList) {
       const maxTop = Math.max(0, nextList.scrollHeight - nextList.clientHeight);
       setScrollTopIfNeeded(nextList, Math.min(snapshot.scrollTop || 0, maxTop));
-      if (snapshot.anchorIndex) {
-        const anchor = nextList.querySelector(`.prompt-card[data-index="${snapshot.anchorIndex}"]`);
+      if (anchorSelector) {
+        const anchor = nextList.querySelector(anchorSelector);
         if (anchor) {
           const listTop = nextList.getBoundingClientRect().top;
           const delta = (anchor.getBoundingClientRect().top - listTop) - (snapshot.anchorOffset || 0);
@@ -13651,7 +14352,16 @@ function restorePromptRepoViewportSnapshot(snapshot) {
       setScrollTopIfNeeded(categories, Math.min(snapshot.categoryScrollTop || 0, Math.max(0, categories.scrollHeight - categories.clientHeight)));
       state.promptRepo.categoryScrollTop = categories.scrollTop;
     }
-  });
+    if (attempt + 1 < delays.length && nextList && anchorSelector) {
+      const anchor = nextList.querySelector(anchorSelector);
+      if (anchor) {
+        const listTop = nextList.getBoundingClientRect().top;
+        const drift = (anchor.getBoundingClientRect().top - listTop) - (snapshot.anchorOffset || 0);
+        if (Math.abs(drift) > 1) setTimeout(() => restore(attempt + 1), delays[attempt + 1]);
+      }
+    }
+  };
+  requestAnimationFrame(() => restore(0));
 }
 function consumePromptRepoPointerSnapshot() {
   const snapshot = state.promptRepo?.pointerOpenSnapshot || null;
@@ -13694,6 +14404,10 @@ function flushPromptRepoViewportRestore() {
 }
 function openPromptRepo() {
   rememberModalOpener('prompt-repo');
+  const previousRepo = state.promptRepo || {};
+  cancelPromptRepoPrefetch();
+  promptRepoScrollRestoreToken += 1;
+  promptRepoCategoryRestoreToken += 1;
   state.promptRepo = {
     open: true,
     page: 0,
@@ -13701,18 +14415,18 @@ function openPromptRepo() {
     total: 0,
     loading: true,
     items: [],
-    query: state.promptRepo.query || '',
-    category: state.promptRepo.category || 'all',
-    categories: state.promptRepo.categories || ['all'],
-    categoriesLoading: !state.promptRepo.categories?.length || state.promptRepo.categories.length <= 1,
-    loadingLabel: state.promptRepo.query ? '搜索索引加载中...' : '加载提示词中...',
+    query: previousRepo.query || '',
+    category: previousRepo.category || 'all',
+    categories: previousRepo.categories || ['all'],
+    categoriesLoading: !previousRepo.categories?.length || previousRepo.categories.length <= 1,
+    loadingLabel: previousRepo.query ? '搜索索引加载中...' : '加载提示词中...',
     detail: null,
     imageViewer: null,
     composing: false,
-    requestSeq: (state.promptRepo.requestSeq || 0) + 1,
+    requestSeq: (previousRepo.requestSeq || 0) + 1,
     scrollTop: 0,
-    categoryScrollTop: state.promptRepo.categoryScrollTop || 0,
-    viewportHeight: state.promptRepo.viewportHeight || 620
+    categoryScrollTop: previousRepo.categoryScrollTop || 0,
+    viewportHeight: previousRepo.viewportHeight || 620
   };
   render();
   const requestSeq = state.promptRepo.requestSeq;
@@ -13738,6 +14452,7 @@ function openPromptRepo() {
           applyPromptPageData(pageData, 1);
           state.promptRepo.loading = false;
           state.promptRepo.loadingLabel = '';
+          schedulePromptRepoPrefetch({ page: 1, requestSeq });
           if (!syncPromptRepoView()) render();
           restorePromptCategoryScroll(state.promptRepo.categoryScrollTop || 0);
         });
@@ -13801,11 +14516,15 @@ function applyPromptCategoryPreview(category, requestSeq, categoryScrollTop) {
   applyPromptPageData(pageData, 1);
   state.promptRepo.loading = false;
   state.promptRepo.loadingLabel = '';
+  schedulePromptRepoPrefetch({ page: 1, requestSeq });
   if (!syncPromptRepoView()) render();
   restorePromptCategoryScroll(categoryScrollTop);
   return true;
 }
 function resetPromptRepoList(options = {}) {
+  cancelPromptRepoPrefetch();
+  promptRepoScrollRestoreToken += 1;
+  promptRepoCategoryRestoreToken += 1;
   const categoryScrollTop = options.categoryScrollTop ?? state.promptRepo.categoryScrollTop ?? 0;
   const keepExistingUntilLoaded = !!options.keepExistingUntilLoaded && state.promptRepo.items.length > 0;
   state.promptRepo.page = 0;
@@ -13849,6 +14568,7 @@ function resetPromptRepoList(options = {}) {
     applyPromptPageData(prebuilt, 1);
     state.promptRepo.loading = false;
     state.promptRepo.loadingLabel = '';
+    schedulePromptRepoPrefetch({ page: 1, requestSeq });
     if (!syncPromptRepoView()) render();
     restorePromptCategoryScroll(categoryScrollTop);
     return;
@@ -13870,6 +14590,7 @@ function resetPromptRepoList(options = {}) {
             applyPromptPageData(pageData, 1);
             state.promptRepo.loading = false;
             state.promptRepo.loadingLabel = '';
+            schedulePromptRepoPrefetch({ page: 1, requestSeq });
             if (!syncPromptRepoView()) render();
             restorePromptCategoryScroll(categoryScrollTop);
           });
@@ -13892,15 +14613,17 @@ function setPromptCategory(category) {
   resetPromptRepoList({ categoryScrollTop, keepExistingUntilLoaded: false });
 }
 async function loadPromptCategories() {
+  const requestSeq = Number(state.promptRepo.requestSeq || 0);
   state.promptRepo.categoriesLoading = true;
   try {
     const data = await fetchJson('/api/prompts?categories=1');
-    if (!state.promptRepo.open) return;
+    if (!promptRepoRequestIsCurrent(requestSeq)) return;
     state.promptRepo.categories = data.categories?.length ? data.categories : ['all'];
     if ((state.promptRepo.category || 'all') === 'all') state.promptRepo.total = data.total || state.promptRepo.total || 0;
     state.promptRepo.categoriesLoading = false;
     if (!syncPromptRepoView()) render();
   } catch (err) {
+    if (!promptRepoRequestIsCurrent(requestSeq)) return;
     if (!state.promptRepo.categories?.length) state.promptRepo.categories = ['all'];
     state.promptRepo.categoriesLoading = false;
   }
@@ -13908,52 +14631,65 @@ async function loadPromptCategories() {
 async function loadPromptPage(options = {}) {
   const force = !!options.force;
   const background = !!options.background;
-  if (!state.promptRepo.open || (!force && state.promptRepo.loading) || state.promptRepo.page >= state.promptRepo.pages) return;
-  const requestSeq = state.promptRepo.requestSeq || 0;
-  const promptList = $('#promptList');
-  const restoreScrollTop = promptList ? promptList.scrollTop : null;
-  const page = state.promptRepo.page + 1;
-  const cacheKey = promptRepoPageCacheKey(page);
-  const cached = promptPageCache.get(cacheKey);
-  if (cached && !options.skipCache) {
-    applyPromptPageData(cached, page);
+  const prefetch = background || options.prefetch === true;
+  const requestSeq = Number(options.requestSeq ?? state.promptRepo?.requestSeq ?? 0);
+  if (!promptRepoRequestIsCurrent(requestSeq)) return null;
+  if (!prefetch && !force && state.promptRepo.loading) return null;
+  const page = Number(options.page) || (Number(state.promptRepo.page) || 0) + 1;
+  if (!Number.isInteger(page) || page < 1 || page > Math.max(1, Number(state.promptRepo.pages) || 1)) return null;
+  if (page > 1 && Number(state.promptRepo.page) >= page) return null;
+  const category = options.category !== undefined ? options.category : (state.promptRepo.category || 'all');
+  const query = options.query !== undefined ? options.query : (state.promptRepo.query || '');
+  const cacheKey = options.cacheKey || promptRepoPageCacheKey(page, { category, query });
+  const viewportSnapshot = capturePromptRepoViewportSnapshot();
+  const hadItems = state.promptRepo.items.length > 0;
+  const cached = !options.skipCache ? promptPageCache.get(cacheKey) : null;
+  const applyData = (data) => {
+    if (!promptRepoRequestIsCurrent(requestSeq)) return null;
+    const applied = applyPromptPageData(data, page);
     state.promptRepo.loading = false;
     state.promptRepo.loadingLabel = '';
-    if (!syncPromptRepoView()) render();
-    restorePromptRepoScroll(restoreScrollTop);
+    const listOnly = page > 1 || hadItems;
+    if (listOnly) syncPromptRepoView({ listOnly: true });
+    else if (!syncPromptRepoView()) render();
     restorePromptCategoryScroll(state.promptRepo.categoryScrollTop || 0);
-    if (page > 1) return;
-  } else {
-    if (!background) {
-      state.promptRepo.loading = true;
-      state.promptRepo.loadingLabel = state.promptRepo.query ? '搜索提示词中...' : '加载提示词中...';
+    restorePromptRepoViewportSnapshot({ ...viewportSnapshot, requestSeq });
+    if (page === 1 && applied) schedulePromptRepoPrefetch({ page: 1, requestSeq, category, query });
+    return data;
+  };
+  if (cached) return applyData(cached);
+  if (!prefetch) {
+    state.promptRepo.loading = true;
+    state.promptRepo.loadingLabel = state.promptRepo.query ? '搜索提示词中...' : '加载提示词中...';
+    if (!hadItems) {
       if (!syncPromptRepoView()) render();
-      restorePromptRepoScroll(restoreScrollTop);
       restorePromptCategoryScroll(state.promptRepo.categoryScrollTop || 0);
+      restorePromptRepoViewportSnapshot({ ...viewportSnapshot, requestSeq });
     }
   }
-  let stale = false;
   try {
-    const q = encodeURIComponent(state.promptRepo.query || '');
-    const cat = state.promptRepo.category && state.promptRepo.category !== 'all' ? `&cat=${encodeURIComponent(state.promptRepo.category)}` : '';
-    const data = await fetchJson(`/api/prompts?page=${page}&limit=${PROMPT_PAGE_SIZE}${cat}&q=${q}`);
-    if ((state.promptRepo.requestSeq || 0) !== requestSeq) {
-      stale = true;
-      return;
-    }
-    rememberPromptPageCache(cacheKey, data);
-    applyPromptPageData(data, page);
-    state.promptRepo.loadingLabel = '';
+    const data = await requestPromptRepoPageData({
+      page,
+      requestSeq,
+      cacheKey,
+      category,
+      query,
+      skipCache: !!options.skipCache
+    });
+    return applyData(data);
   } catch (err) {
-    if (!cached) toast('提示词仓库加载失败');
-  } finally {
-    if (stale || (state.promptRepo.requestSeq || 0) !== requestSeq) return;
-    if (background) return;
-    state.promptRepo.loading = false;
-    state.promptRepo.loadingLabel = '';
-    if (!syncPromptRepoView()) render();
-    restorePromptRepoScroll(restoreScrollTop);
-    restorePromptCategoryScroll(state.promptRepo.categoryScrollTop || 0);
+    if (!promptRepoRequestIsCurrent(requestSeq)) return null;
+    if (!prefetch) {
+      state.promptRepo.loading = false;
+      state.promptRepo.loadingLabel = '';
+      if (!hadItems) {
+        if (!syncPromptRepoView()) render();
+        restorePromptCategoryScroll(state.promptRepo.categoryScrollTop || 0);
+        restorePromptRepoViewportSnapshot({ ...viewportSnapshot, requestSeq });
+      }
+      toast('提示词仓库加载失败');
+    }
+    return null;
   }
 }
 async function fullPromptItem(item) {
@@ -14340,6 +15076,10 @@ function cloneReferenceSnapshotsForAgent(sourceAttachments = []) {
     type: ref.type,
     blobId: ref.compositedBlobId || ref.blobId,
     originalBlobId: ref.originalBlobId || ref.blobId,
+    compositedBlobId: ref.compositedBlobId || '',
+    maskBlobId: ref.maskBlobId || '',
+    annotationBlobId: ref.annotationBlobId || '',
+    maskFormat: ref.maskFormat || '',
     width: ref.width,
     height: ref.height
   }));
@@ -14855,7 +15595,20 @@ function deleteProject() {
 }
 async function performDeleteProject(id) {
   if (state.agent.projects.length <= 1) return toast('至少保留一个项目');
+  const deletingActiveProject = id === state.agent.activeProjectId;
   const threadIds = projectThreads(id).map((thread) => thread.id);
+  const deletedProjectBlobIds = [
+    ...(deletingActiveProject ? agentAttachmentBlobIds(state.agent.attachments || []) : []),
+    ...threadIds
+    .flatMap((threadId) => (state.agent.messagesByThread?.[threadId] || [])
+      .flatMap((message) => agentAttachmentBlobIds(message?.attachments || [])))
+  ];
+  if (deletingActiveProject) {
+    state.agent.attachments = [];
+    state.agent.inputDraft = '';
+    state.agent.composerMentionTokens = [];
+    state.agentComposerMentionMenu = null;
+  }
   state.agent.projects = state.agent.projects.filter((p) => p.id !== id);
   delete state.agent.threadsByProject[id];
   delete state.agent.activeThreadIdByProject[id];
@@ -14863,7 +15616,9 @@ async function performDeleteProject(id) {
   state.agent.activeProjectId = state.agent.projects[0].id;
   ensureAgentProjectThread(state.agent.activeProjectId);
   await saveAgentProjects();
-  persistRender();
+  const persisted = persistRender();
+  if (persisted === true) await deleteUnreferencedBlobIds(deletedProjectBlobIds);
+  else queuePendingBlobRelease(deletedProjectBlobIds, false);
 }
 async function saveAgentProjects() {
   await fetchJson('/api/settings/save', {
@@ -15149,26 +15904,57 @@ function fillTemplate(template, values) {
   return String(template || '').replace(/\{\{\s*([\w.-]+)\s*\}\}/g, (_, key) => values[key] ?? '');
 }
 
-function openMaskEditor(refId) {
-  if (!state.references.length) return;
-  state.maskEditor = {
-    activeRefId: refId || state.references[0].id,
+function createMaskEditorState(mode, activeRefId, agentAttachmentId = '') {
+  return {
+    mode,
+    agentAttachmentId,
+    activeRefId,
     tool: 'brush',
     color: BRUSH_COLORS[0].value,
     brushSize: 64,
     history: {},
-    redo: {}
+    redo: {},
+    drafts: {},
+    crop: null,
+    panX: 0,
+    panY: 0,
+    zoom: 1,
+    pendingText: null,
+    loadToken: 0,
+    fullscreen: false
   };
+}
+function openMaskEditor(refId) {
+  if (!state.references.length) return;
+  state.maskEditor = createMaskEditorState('gallery-reference', refId || state.references[0].id);
+  render();
+}
+function openAgentAttachmentMaskEditor(attachmentId) {
+  const attachment = findAgentAttachment(attachmentId);
+  if (!attachment || !isAgentImageAttachment(attachment)) return toast('未找到可编辑的 Agent 图片附件');
+  state.maskEditor = createMaskEditorState('agent-attachment', attachment.id, attachment.id);
+  render();
+}
+function cancelMaskEditor() {
+  if (!state.maskEditor) return;
+  if (document.fullscreenElement && document.exitFullscreen) void document.exitFullscreen().catch(() => {});
+  state.maskEditor = null;
   render();
 }
 async function switchMaskRef(id) {
-  await persistCanvasToRefDraft();
+  if (!state.maskEditor || !maskEditorReference(id)) return;
+  captureMaskDraft();
   state.maskEditor.activeRefId = id;
+  state.maskEditor.crop = state.maskEditor.drafts?.[id]?.crop || null;
+  state.maskEditor.panX = Number(state.maskEditor.drafts?.[id]?.panX || 0);
+  state.maskEditor.panY = Number(state.maskEditor.drafts?.[id]?.panY || 0);
+  state.maskEditor.zoom = Number(state.maskEditor.drafts?.[id]?.zoom || 1);
   render();
 }
+const MASK_TOOLS = new Set(['move', 'brush', 'rect', 'ellipse', 'line', 'arrow', 'polygon', 'text', 'fill', 'crop', 'eraser']);
 function setMaskTool(tool) {
-  if (!state.maskEditor) return;
-  state.maskEditor.tool = tool === 'eraser' ? 'eraser' : 'brush';
+  if (!state.maskEditor || !MASK_TOOLS.has(tool)) return;
+  state.maskEditor.tool = tool;
   updateMaskToolUi();
 }
 function setMaskColor(color) {
@@ -15176,174 +15962,589 @@ function setMaskColor(color) {
   state.maskEditor.color = color;
   updateMaskToolUi();
 }
+function confirmMaskText() {
+  const editor = state.maskEditor;
+  const pending = editor?.pendingText;
+  const annotationCanvas = $('#maskAnnotationCanvas');
+  const annotationContext = annotationCanvas?.getContext('2d');
+  const value = String(pending?.value || '').trim().slice(0, 120);
+  if (!editor || !pending || !annotationCanvas || !annotationContext || !value) return false;
+  pushMaskHistory();
+  annotationContext.save();
+  annotationContext.fillStyle = editor.color || BRUSH_COLORS[0].value;
+  annotationContext.font = `${Math.max(12, Number(editor.brushSize) || 32)}px sans-serif`;
+  annotationContext.textBaseline = 'alphabetic';
+  annotationContext.fillText(value, Number(pending.x) || 0, Number(pending.y) || 0);
+  annotationContext.restore();
+  editor.pendingText = null;
+  captureMaskDraft();
+  render();
+  return true;
+}
+function cancelMaskText() {
+  if (!state.maskEditor?.pendingText) return false;
+  state.maskEditor.pendingText = null;
+  render();
+  return true;
+}
+function maskCanvasScale() {
+  const canvas = $('#maskCanvas');
+  if (!canvas) return 1;
+  const rect = canvas.getBoundingClientRect();
+  return Math.max(.01, Number(rect.width || 0) / Math.max(1, Number(canvas.width || 0)));
+}
+function syncMaskViewport() {
+  const editor = state.maskEditor;
+  const shell = $('.mask-canvas-shell');
+  if (!editor || !shell) return;
+  shell.style.transform = `translate(${Number(editor.panX || 0)}px, ${Number(editor.panY || 0)}px) scale(${Math.max(.1, Math.min(8, Number(editor.zoom) || 1))})`;
+  const cursor = $('#maskCursor');
+  if (cursor) {
+    const cssSize = (Number(editor.brushSize) || 64) * maskCanvasScale();
+    cursor.style.width = `${Math.max(2, cssSize)}px`;
+    cursor.style.height = `${Math.max(2, cssSize)}px`;
+  }
+  syncMaskCropGuide();
+}
+function centerMaskCanvas() {
+  if (!state.maskEditor) return;
+  state.maskEditor.panX = 0;
+  state.maskEditor.panY = 0;
+  syncMaskViewport();
+}
+async function toggleMaskFullscreen() {
+  const layer = $('.mask-layer');
+  if (!layer) return;
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen?.();
+    else await layer.requestFullscreen?.();
+  } catch (error) {
+    toast(`全屏切换失败：${error?.message || error}`);
+  }
+  if (state.maskEditor) state.maskEditor.fullscreen = !!document.fullscreenElement;
+  syncMaskViewport();
+}
 function updateMaskToolUi() {
   const editor = state.maskEditor;
   if (!editor) return;
   const shell = $('.mask-canvas-shell');
   if (shell) {
+    const paintTool = editor.tool === 'brush' || editor.tool === 'eraser';
     shell.classList.toggle('is-eraser', editor.tool === 'eraser');
-    shell.classList.toggle('is-brush', editor.tool !== 'eraser');
-    shell.style.setProperty('--mask-cursor-size', `${Number(editor.brushSize) || 64}px`);
+    shell.classList.toggle('is-brush', paintTool);
     shell.style.setProperty('--mask-cursor-color', editor.color || BRUSH_COLORS[0].value);
+    if (!paintTool) $('#maskCursor')?.classList.remove('visible');
   }
   $$('[data-action="mask-tool"]').forEach((button) => button.classList.toggle('active', button.dataset.tool === editor.tool));
   $$('.color-button[data-color]').forEach((button) => button.classList.toggle('active', button.dataset.color === editor.color));
+  updateMaskHistoryButtons();
+  syncMaskViewport();
+}
+function maskColorRgb(value = BRUSH_COLORS[0].value) {
+  const match = /^#([\da-f]{6})$/i.exec(String(value || '').trim());
+  if (!match) return [250, 204, 21];
+  const hex = match[1];
+  return [Number.parseInt(hex.slice(0, 2), 16), Number.parseInt(hex.slice(2, 4), 16), Number.parseInt(hex.slice(4, 6), 16)];
+}
+function openAiMaskPixelsFromOverlay(pixels, width, height) {
+  const pixelWidth = Math.max(0, Number(width) || 0);
+  const pixelHeight = Math.max(0, Number(height) || 0);
+  const source = pixels instanceof Uint8ClampedArray ? pixels : new Uint8ClampedArray(pixels || []);
+  const output = new Uint8ClampedArray(pixelWidth * pixelHeight * 4);
+  for (let offset = 0; offset < output.length; offset += 4) {
+    const selected = Number(source[offset + 3] || 0) > 0;
+    output[offset] = 255;
+    output[offset + 1] = 255;
+    output[offset + 2] = 255;
+    output[offset + 3] = selected ? 0 : 255;
+  }
+  return output;
+}
+function overlayPixelsFromOpenAiMask(pixels, width, height, color = BRUSH_COLORS[0].value) {
+  const pixelWidth = Math.max(0, Number(width) || 0);
+  const pixelHeight = Math.max(0, Number(height) || 0);
+  const source = pixels instanceof Uint8ClampedArray ? pixels : new Uint8ClampedArray(pixels || []);
+  const output = new Uint8ClampedArray(pixelWidth * pixelHeight * 4);
+  const [red, green, blue] = maskColorRgb(color);
+  for (let offset = 0; offset < output.length; offset += 4) {
+    const alpha = source[offset + 3] === undefined ? 255 : Number(source[offset + 3]);
+    const selected = alpha === 0;
+    output[offset] = red;
+    output[offset + 1] = green;
+    output[offset + 2] = blue;
+    output[offset + 3] = selected ? 220 : 0;
+  }
+  return output;
+}
+function imageDataForPixels(context, pixels, width, height) {
+  const imageData = typeof context?.createImageData === 'function'
+    ? context.createImageData(width, height)
+    : typeof ImageData === 'function'
+      ? new ImageData(width, height)
+      : null;
+  if (!imageData?.data) throw new Error('当前浏览器不支持遮罩像素编辑');
+  imageData.data.set(pixels);
+  return imageData;
+}
+async function openAiMaskBlobFromOverlayCanvas(canvas, width, height) {
+  const sourceContext = canvas?.getContext?.('2d');
+  const targetWidth = Math.max(1, Number(width) || 0);
+  const targetHeight = Math.max(1, Number(height) || 0);
+  if (!sourceContext?.getImageData || !canvas?.width || !canvas?.height) throw new Error('当前浏览器无法读取遮罩画布');
+  const targetCanvas = document.createElement('canvas');
+  targetCanvas.width = targetWidth;
+  targetCanvas.height = targetHeight;
+  const targetContext = targetCanvas.getContext('2d');
+  if (!targetContext?.getImageData || !targetContext?.putImageData) throw new Error('当前浏览器无法创建遮罩画布');
+  if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+    targetContext.drawImage(canvas, 0, 0, targetWidth, targetHeight);
+  } else {
+    targetContext.putImageData(sourceContext.getImageData(0, 0, canvas.width, canvas.height), 0, 0);
+  }
+  const sourcePixels = targetContext.getImageData(0, 0, targetWidth, targetHeight).data;
+  targetContext.putImageData(
+    imageDataForPixels(targetContext, openAiMaskPixelsFromOverlay(sourcePixels, targetWidth, targetHeight), targetWidth, targetHeight),
+    0,
+    0
+  );
+  const blob = await new Promise((resolve) => targetCanvas.toBlob(resolve, 'image/png'));
+  if (!blob) throw new Error('遮罩导出失败');
+  return blob;
+}
+async function openAiMaskBlobFromLegacyOverlayBlob(blob, width, height) {
+  if (!blob?.size || !width || !height) throw new Error('无法读取旧版遮罩尺寸');
+  const objectUrl = URL.createObjectURL(blob);
+  const image = new Image();
+  image.decoding = 'async';
+  try {
+    await new Promise((resolve, reject) => {
+      image.onload = resolve;
+      image.onerror = reject;
+      image.src = objectUrl;
+    });
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('当前浏览器无法创建旧版遮罩画布');
+    context.drawImage(image, 0, 0, width, height);
+    return await openAiMaskBlobFromOverlayCanvas(canvas, width, height);
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+function drawMaskOverlayFromOpenAiMask(context, maskImage, width, height, color = BRUSH_COLORS[0].value) {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const maskContext = canvas.getContext('2d');
+  if (!maskContext?.getImageData || !maskContext?.putImageData) throw new Error('当前浏览器不支持遮罩预览');
+  maskContext.drawImage(maskImage, 0, 0, width, height);
+  const maskPixels = maskContext.getImageData(0, 0, width, height).data;
+  maskContext.putImageData(imageDataForPixels(maskContext, overlayPixelsFromOpenAiMask(maskPixels, width, height, color), width, height), 0, 0);
+  context.drawImage(canvas, 0, 0, width, height);
+}
+function drawDataUrlIntoCanvas(canvas, dataUrl) {
+  if (!canvas || !dataUrl) return Promise.resolve();
+  return new Promise((resolve) => {
+    const image = new Image();
+    image.onload = () => {
+      const context = canvas.getContext('2d');
+      context?.drawImage(image, 0, 0, canvas.width, canvas.height);
+      resolve();
+    };
+    image.onerror = () => resolve();
+    image.src = dataUrl;
+  });
+}
+function canvasHasPixels(canvas) {
+  if (!canvas?.width || !canvas?.height) return false;
+  try {
+    const data = canvas.getContext('2d')?.getImageData(0, 0, canvas.width, canvas.height).data;
+    for (let index = 3; index < (data?.length || 0); index += 4) if (data[index] > 0) return true;
+  } catch {}
+  return false;
+}
+function canvasPngBlob(canvas) {
+  return new Promise((resolve) => canvas?.toBlob?.((blob) => resolve(blob), 'image/png'));
+}
+function syncMaskCropGuide() {
+  const guide = $('#maskCropGuide');
+  const canvas = $('#maskCanvas');
+  const crop = state.maskEditor?.crop;
+  if (!guide || !canvas || !crop) {
+    if (guide) guide.style.display = 'none';
+    return;
+  }
+  const scale = maskCanvasScale();
+  guide.style.display = 'block';
+  guide.style.left = `${Number(crop.x || 0) * scale}px`;
+  guide.style.top = `${Number(crop.y || 0) * scale}px`;
+  guide.style.width = `${Number(crop.width || 0) * scale}px`;
+  guide.style.height = `${Number(crop.height || 0) * scale}px`;
+}
+function captureMaskDraft() {
+  const editor = state.maskEditor;
+  const canvas = $('#maskCanvas');
+  if (!editor || !canvas) return null;
+  const id = editor.activeRefId;
+  const annotation = $('#maskAnnotationCanvas');
+  const draft = {
+    maskDataUrl: canvas.toDataURL('image/png'),
+    annotationDataUrl: annotation?.toDataURL('image/png') || '',
+    crop: editor.crop ? { ...editor.crop } : null,
+    panX: Number(editor.panX || 0),
+    panY: Number(editor.panY || 0),
+    zoom: Number(editor.zoom || 1),
+    width: canvas.width,
+    height: canvas.height
+  };
+  editor.drafts[id] = draft;
+  return draft;
+}
+function restoreMaskSnapshot(snapshot) {
+  const canvas = $('#maskCanvas');
+  const annotation = $('#maskAnnotationCanvas');
+  if (!canvas || !snapshot) return Promise.resolve();
+  const ctx = canvas.getContext('2d');
+  const annotationCtx = annotation?.getContext('2d');
+  ctx?.clearRect(0, 0, canvas.width, canvas.height);
+  annotationCtx?.clearRect(0, 0, annotation.width, annotation.height);
+  return Promise.all([
+    drawDataUrlIntoCanvas(canvas, snapshot.maskDataUrl),
+    drawDataUrlIntoCanvas(annotation, snapshot.annotationDataUrl)
+  ]).then(() => {
+    if (state.maskEditor) {
+      state.maskEditor.crop = snapshot.crop ? { ...snapshot.crop } : null;
+      updateMaskToolUi();
+    }
+  });
 }
 async function setupMaskCanvas() {
   const baseCanvas = $('#maskBaseCanvas');
   const canvas = $('#maskCanvas');
-  if (!baseCanvas || !canvas || !state.maskEditor) return;
-  const ref = state.references.find((r) => r.id === state.maskEditor.activeRefId) || state.references[0];
-  if (ref && !ref.originalBlobId) ref.originalBlobId = ref.blobId;
-  const blob = await getBlob(ref?.originalBlobId || ref?.blobId).catch(() => null);
-  if (!blob) return;
+  const annotationCanvas = $('#maskAnnotationCanvas');
+  const editor = state.maskEditor;
+  if (!baseCanvas || !canvas || !annotationCanvas || !editor) return;
+  const token = Number(editor.loadToken || 0) + 1;
+  editor.loadToken = token;
+  const ref = maskEditorReference() || maskEditorReferences()[0];
+  const originalBlobId = ref?.originalBlobId || ref?.blobId;
+  const blob = originalBlobId ? await getBlob(originalBlobId).catch(() => null) : null;
+  if (!blob || !state.maskEditor || editor.loadToken !== token) return;
   const img = new Image();
-  img.src = URL.createObjectURL(blob);
+  const objectUrl = URL.createObjectURL(blob);
+  img.src = objectUrl;
   await new Promise((resolve, reject) => { img.onload = resolve; img.onerror = reject; });
-  const maxW = Math.min(img.naturalWidth, 1600);
-  const scale = maxW / img.naturalWidth;
-  const width = Math.round(img.naturalWidth * scale);
-  const height = Math.round(img.naturalHeight * scale);
-  baseCanvas.width = width;
-  baseCanvas.height = height;
-  canvas.width = width;
-  canvas.height = height;
-  const baseCtx = baseCanvas.getContext('2d');
-  const ctx = canvas.getContext('2d');
-  baseCtx.drawImage(img, 0, 0, width, height);
-  ctx.clearRect(0, 0, width, height);
-  URL.revokeObjectURL(img.src);
-  const maskBlob = ref?.maskBlobId ? await getBlob(ref.maskBlobId).catch(() => null) : null;
-  if (maskBlob) {
-    const maskImg = new Image();
-    maskImg.src = URL.createObjectURL(maskBlob);
-    await new Promise((resolve, reject) => { maskImg.onload = resolve; maskImg.onerror = reject; });
-    ctx.drawImage(maskImg, 0, 0, width, height);
-    URL.revokeObjectURL(maskImg.src);
+  if (!state.maskEditor || editor.loadToken !== token) { URL.revokeObjectURL(objectUrl); return; }
+  const maxW = Math.min(img.naturalWidth || 1, 1600);
+  const scale = maxW / Math.max(1, img.naturalWidth || 1);
+  const width = Math.max(1, Math.round((img.naturalWidth || 1) * scale));
+  const height = Math.max(1, Math.round((img.naturalHeight || 1) * scale));
+  [baseCanvas, canvas, annotationCanvas].forEach((node) => { node.width = width; node.height = height; });
+  const shell = $('.mask-canvas-shell');
+  if (shell) { shell.style.width = `${width}px`; shell.style.height = `${height}px`; }
+  baseCanvas.getContext('2d')?.drawImage(img, 0, 0, width, height);
+  canvas.getContext('2d')?.clearRect(0, 0, width, height);
+  annotationCanvas.getContext('2d')?.clearRect(0, 0, width, height);
+  URL.revokeObjectURL(objectUrl);
+  const draft = editor.drafts?.[ref.id];
+  if (draft) {
+    await restoreMaskSnapshot(draft);
+  } else {
+    const maskBlob = ref?.maskBlobId ? await getBlob(ref.maskBlobId).catch(() => null) : null;
+    if (maskBlob) {
+      const maskImg = new Image();
+      const maskUrl = URL.createObjectURL(maskBlob);
+      maskImg.src = maskUrl;
+      await new Promise((resolve, reject) => { maskImg.onload = resolve; maskImg.onerror = reject; });
+      if (ref?.maskFormat === OPENAI_MASK_FORMAT) drawMaskOverlayFromOpenAiMask(canvas.getContext('2d'), maskImg, width, height, editor.color || BRUSH_COLORS[0].value);
+      else canvas.getContext('2d')?.drawImage(maskImg, 0, 0, width, height);
+      URL.revokeObjectURL(maskUrl);
+    }
+    const annotationBlob = ref?.annotationBlobId ? await getBlob(ref.annotationBlobId).catch(() => null) : null;
+    if (annotationBlob) {
+      const annotationImg = new Image();
+      const annotationUrl = URL.createObjectURL(annotationBlob);
+      annotationImg.src = annotationUrl;
+      await new Promise((resolve, reject) => { annotationImg.onload = resolve; annotationImg.onerror = reject; });
+      annotationCanvas.getContext('2d')?.drawImage(annotationImg, 0, 0, width, height);
+      URL.revokeObjectURL(annotationUrl);
+    }
   }
-  installCanvasDrawing(canvas, ctx);
+  installCanvasDrawing(canvas, canvas.getContext('2d'));
   updateMaskToolUi();
+  if (!window.__maskResizeBound) {
+    window.__maskResizeBound = true;
+    window.addEventListener('resize', () => { if (state.maskEditor) syncMaskViewport(); });
+  }
+}
+function withMaskCropClip(context, fn) {
+  const crop = state.maskEditor?.crop;
+  context.save();
+  if (crop?.width > 0 && crop?.height > 0) {
+    context.beginPath();
+    context.rect(crop.x, crop.y, crop.width, crop.height);
+    context.clip();
+  }
+  try { fn(); } finally { context.restore(); }
+}
+function normalizedMaskRect(a, b) {
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  return { x, y, width: Math.abs(a.x - b.x), height: Math.abs(a.y - b.y) };
+}
+function drawMaskShape(context, tool, start, end, points = []) {
+  const color = state.maskEditor?.color || BRUSH_COLORS[0].value;
+  context.save();
+  context.fillStyle = color;
+  context.strokeStyle = color;
+  context.lineWidth = Math.max(1, Number(state.maskEditor?.brushSize) || 64);
+  context.lineCap = 'round';
+  context.lineJoin = 'round';
+  if (tool === 'rect') {
+    const rect = normalizedMaskRect(start, end);
+    context.fillRect(rect.x, rect.y, rect.width, rect.height);
+  } else if (tool === 'ellipse') {
+    const rect = normalizedMaskRect(start, end);
+    context.beginPath();
+    context.ellipse(rect.x + rect.width / 2, rect.y + rect.height / 2, Math.max(1, rect.width / 2), Math.max(1, rect.height / 2), 0, 0, Math.PI * 2);
+    context.fill();
+  } else if (tool === 'polygon' && points.length >= 3) {
+    context.beginPath();
+    context.moveTo(points[0].x, points[0].y);
+    points.slice(1).forEach((point) => context.lineTo(point.x, point.y));
+    context.closePath();
+    context.fill();
+  }
+  context.restore();
+}
+function drawAnnotationShape(context, tool, start, end) {
+  const color = state.maskEditor?.color || BRUSH_COLORS[0].value;
+  context.save();
+  context.strokeStyle = color;
+  context.fillStyle = color;
+  context.lineWidth = Math.max(2, Number(state.maskEditor?.brushSize) / 4 || 12);
+  context.lineCap = 'round';
+  context.lineJoin = 'round';
+  context.beginPath();
+  context.moveTo(start.x, start.y);
+  context.lineTo(end.x, end.y);
+  context.stroke();
+  if (tool === 'arrow') {
+    const angle = Math.atan2(end.y - start.y, end.x - start.x);
+    const head = Math.max(10, Number(state.maskEditor?.brushSize) || 32);
+    context.beginPath();
+    context.moveTo(end.x, end.y);
+    context.lineTo(end.x - head * Math.cos(angle - Math.PI / 6), end.y - head * Math.sin(angle - Math.PI / 6));
+    context.lineTo(end.x - head * Math.cos(angle + Math.PI / 6), end.y - head * Math.sin(angle + Math.PI / 6));
+    context.closePath();
+    context.fill();
+  }
+  context.restore();
+}
+function fillMaskRegion(canvas, point) {
+  const context = canvas.getContext('2d');
+  if (!context) return;
+  const width = canvas.width;
+  const height = canvas.height;
+  const image = context.getImageData(0, 0, width, height);
+  const pixels = image.data;
+  const startX = Math.max(0, Math.min(width - 1, Math.floor(point.x)));
+  const startY = Math.max(0, Math.min(height - 1, Math.floor(point.y)));
+  const startIndex = (startY * width + startX) * 4;
+  const filled = pixels[startIndex + 3] > 0;
+  const nextAlpha = filled ? 0 : 220;
+  const visited = new Uint8Array(width * height);
+  const queue = [[startX, startY]];
+  const crop = state.maskEditor?.crop;
+  const same = (x, y) => {
+    if (x < 0 || y < 0 || x >= width || y >= height) return false;
+    if (crop && (x < crop.x || y < crop.y || x > crop.x + crop.width || y > crop.y + crop.height)) return false;
+    const index = y * width + x;
+    if (visited[index]) return false;
+    visited[index] = 1;
+    return (pixels[index * 4 + 3] > 0) === filled;
+  };
+  while (queue.length) {
+    const [x, y] = queue.shift();
+    const index = (y * width + x) * 4;
+    pixels[index] = 250; pixels[index + 1] = 204; pixels[index + 2] = 21; pixels[index + 3] = nextAlpha;
+    [[x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]].forEach(([nx, ny]) => { if (same(nx, ny)) queue.push([nx, ny]); });
+  }
+  context.putImageData(image, 0, 0);
 }
 function installCanvasDrawing(canvas, ctx) {
+  if (!canvas || !ctx) return;
+  const annotationCanvas = $('#maskAnnotationCanvas');
+  const annotationCtx = annotationCanvas?.getContext('2d');
   let drawing = false;
   let last = null;
+  let start = null;
+  let polygonPoints = [];
+  let moving = false;
   const point = (event) => {
     const rect = canvas.getBoundingClientRect();
-    const touch = event.touches?.[0] || event.changedTouches?.[0] || event;
-    return { x: (touch.clientX - rect.left) * (canvas.width / rect.width), y: (touch.clientY - rect.top) * (canvas.height / rect.height) };
+    return { x: (event.clientX - rect.left) * (canvas.width / Math.max(1, rect.width)), y: (event.clientY - rect.top) * (canvas.height / Math.max(1, rect.height)) };
   };
   const updateCursor = (event, visible = true) => {
     const cursor = $('#maskCursor');
     const shell = $('.mask-canvas-shell');
     if (!cursor || !shell) return;
-    if (!visible) { cursor.classList.remove('visible'); return; }
+    if (!visible || !['brush', 'eraser'].includes(state.maskEditor?.tool)) { cursor.classList.remove('visible'); return; }
     const rect = shell.getBoundingClientRect();
     cursor.style.left = `${event.clientX - rect.left}px`;
     cursor.style.top = `${event.clientY - rect.top}px`;
     cursor.classList.add('visible');
+    syncMaskViewport();
   };
-  const drawSegment = (from, to) => {
+  const drawBrush = (from, to) => withMaskCropClip(ctx, () => {
     ctx.save();
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    ctx.lineWidth = Number(state.maskEditor.brushSize) || 64;
-    if (state.maskEditor.tool === 'eraser') {
-      ctx.globalCompositeOperation = 'destination-out';
-    } else {
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.globalAlpha = 1;
-      ctx.strokeStyle = state.maskEditor.color || BRUSH_COLORS[0].value;
-      ctx.fillStyle = state.maskEditor.color || BRUSH_COLORS[0].value;
-    }
-    ctx.beginPath();
-    ctx.moveTo(from.x, from.y);
-    ctx.lineTo(to.x, to.y);
-    ctx.stroke();
+    ctx.lineWidth = Number(state.maskEditor?.brushSize) || 64;
+    ctx.globalCompositeOperation = state.maskEditor?.tool === 'eraser' ? 'destination-out' : 'source-over';
+    ctx.strokeStyle = state.maskEditor?.color || BRUSH_COLORS[0].value;
+    ctx.fillStyle = state.maskEditor?.color || BRUSH_COLORS[0].value;
+    ctx.beginPath(); ctx.moveTo(from.x, from.y); ctx.lineTo(to.x, to.y); ctx.stroke();
+    ctx.beginPath(); ctx.arc(to.x, to.y, ctx.lineWidth / 2, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
-  };
-  const drawDot = (p) => {
-    ctx.save();
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    const radius = (Number(state.maskEditor.brushSize) || 64) / 2;
-    if (state.maskEditor.tool === 'eraser') {
-      ctx.globalCompositeOperation = 'destination-out';
-    } else {
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.globalAlpha = 1;
-      ctx.fillStyle = state.maskEditor.color || BRUSH_COLORS[0].value;
-    }
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  };
-  const start = (event) => {
+  });
+  const startEvent = (event) => {
+    if (!state.maskEditor) return;
+    const tool = state.maskEditor.tool;
     event.preventDefault();
     canvas.setPointerCapture?.(event.pointerId);
-    pushMaskHistory();
-    drawing = true;
-    last = point(event);
-    drawDot(last);
-    updateCursor(event);
-  };
-  const move = (event) => {
-    updateCursor(event);
-    if (!drawing) return;
-    event.preventDefault();
-    const events = typeof event.getCoalescedEvents === 'function' ? event.getCoalescedEvents() : [event];
-    for (const item of events) {
-      const p = point(item);
-      drawSegment(last, p);
-      last = p;
+    const p = point(event);
+    if (tool === 'move') {
+      moving = true; last = { x: event.clientX, y: event.clientY }; return;
     }
+    if (tool === 'polygon') {
+      if (!polygonPoints.length) pushMaskHistory();
+      polygonPoints.push(p);
+      if (event.detail >= 2) {
+        if (polygonPoints.length >= 3) withMaskCropClip(ctx, () => drawMaskShape(ctx, 'polygon', polygonPoints[0], polygonPoints[polygonPoints.length - 1], polygonPoints));
+        polygonPoints = [];
+      }
+      return;
+    }
+    if (tool === 'fill') { pushMaskHistory(); fillMaskRegion(canvas, p); return; }
+    if (tool === 'crop') { pushMaskHistory(); drawing = true; start = p; return; }
+    if (tool === 'text') {
+      captureMaskDraft();
+      state.maskEditor.pendingText = { x: p.x, y: p.y, value: '' };
+      render();
+      return;
+    }
+    pushMaskHistory();
+    drawing = true; start = p; last = p;
+    if (tool === 'brush' || tool === 'eraser') drawBrush(p, p);
   };
-  const end = (event) => {
-    drawing = false;
-    last = null;
+  const moveEvent = (event) => {
+    updateCursor(event);
+    if (moving && state.maskEditor) {
+      state.maskEditor.panX += event.clientX - last.x;
+      state.maskEditor.panY += event.clientY - last.y;
+      last = { x: event.clientX, y: event.clientY };
+      syncMaskViewport();
+      return;
+    }
+    if (!drawing || !state.maskEditor) return;
+    event.preventDefault();
+    const p = point(event);
+    if (state.maskEditor.tool === 'brush' || state.maskEditor.tool === 'eraser') { drawBrush(last, p); last = p; }
+  };
+  const endEvent = (event) => {
+    if (state.maskEditor && drawing && start) {
+      const p = point(event);
+      const tool = state.maskEditor.tool;
+      if (tool === 'crop') {
+        const crop = normalizedMaskRect(start, p);
+        state.maskEditor.crop = crop.width > 2 && crop.height > 2 ? crop : null;
+      } else if (tool === 'rect' || tool === 'ellipse') withMaskCropClip(ctx, () => drawMaskShape(ctx, tool, start, p));
+      else if ((tool === 'line' || tool === 'arrow') && annotationCtx) drawAnnotationShape(annotationCtx, tool, start, p);
+    }
+    drawing = false; moving = false; start = null; last = null;
     if (event?.pointerId !== undefined) canvas.releasePointerCapture?.(event.pointerId);
+    updateMaskToolUi();
   };
-  canvas.addEventListener('pointerdown', start);
-  canvas.addEventListener('pointermove', move);
-  canvas.addEventListener('pointerup', end);
-  canvas.addEventListener('pointercancel', end);
-  canvas.addEventListener('pointerleave', (event) => { if (!drawing) updateCursor(event, false); });
+  const wheel = (event) => {
+    if (!state.maskEditor) return;
+    event.preventDefault();
+    const editor = state.maskEditor;
+    const oldZoom = Math.max(.1, Number(editor.zoom) || 1);
+    const nextZoom = Math.max(.25, Math.min(8, oldZoom * (event.deltaY < 0 ? 1.1 : .9)));
+    const shell = $('.mask-canvas-shell');
+    const rect = shell?.getBoundingClientRect();
+    if (rect) {
+      const localX = (event.clientX - rect.left) / oldZoom;
+      const localY = (event.clientY - rect.top) / oldZoom;
+      editor.panX -= localX * (nextZoom - oldZoom);
+      editor.panY -= localY * (nextZoom - oldZoom);
+    }
+    editor.zoom = nextZoom;
+    syncMaskViewport();
+  };
+  canvas.addEventListener('pointerdown', startEvent);
+  canvas.addEventListener('pointermove', moveEvent);
+  canvas.addEventListener('pointerup', endEvent);
+  canvas.addEventListener('pointercancel', endEvent);
+  canvas.addEventListener('pointerleave', (event) => { if (!drawing && !moving) updateCursor(event, false); });
+  canvas.addEventListener('wheel', wheel, { passive: false });
+}
+function maskSnapshot() {
+  const canvas = $('#maskCanvas');
+  const annotation = $('#maskAnnotationCanvas');
+  if (!canvas) return null;
+  return {
+    maskDataUrl: canvas.toDataURL('image/png'),
+    annotationDataUrl: annotation?.toDataURL('image/png') || '',
+    crop: state.maskEditor?.crop ? { ...state.maskEditor.crop } : null
+  };
 }
 function pushMaskHistory() {
-  const canvas = $('#maskCanvas');
-  const id = state.maskEditor.activeRefId;
-  if (!canvas || !id) return;
-  state.maskEditor.history[id] = state.maskEditor.history[id] || [];
-  state.maskEditor.history[id].push(canvas.toDataURL('image/png'));
-  state.maskEditor.history[id] = state.maskEditor.history[id].slice(-20);
+  const id = state.maskEditor?.activeRefId;
+  const snapshot = maskSnapshot();
+  if (!id || !snapshot) return;
+  state.maskEditor.history[id] = [...(state.maskEditor.history[id] || []), snapshot].slice(-20);
   state.maskEditor.redo[id] = [];
+  updateMaskHistoryButtons();
 }
-function maskUndo() {
-  const canvas = $('#maskCanvas');
-  const id = state.maskEditor?.activeRefId;
-  const stack = state.maskEditor?.history?.[id] || [];
-  if (!canvas || !stack.length) return;
-  state.maskEditor.redo[id] = state.maskEditor.redo[id] || [];
-  state.maskEditor.redo[id].push(canvas.toDataURL('image/png'));
-  restoreCanvasDataUrl(stack.pop());
+function updateMaskHistoryButtons() {
+  const editor = state.maskEditor;
+  if (!editor) return;
+  const id = editor.activeRefId;
+  const undo = $(`[data-action="mask-undo"]`);
+  const redo = $(`[data-action="mask-redo"]`);
+  if (undo) undo.disabled = !(editor.history?.[id] || []).length;
+  if (redo) redo.disabled = !(editor.redo?.[id] || []).length;
 }
-function maskRedo() {
-  const canvas = $('#maskCanvas');
-  const id = state.maskEditor?.activeRefId;
-  const stack = state.maskEditor?.redo?.[id] || [];
-  if (!canvas || !stack.length) return;
-  state.maskEditor.history[id].push(canvas.toDataURL('image/png'));
-  restoreCanvasDataUrl(stack.pop());
+async function maskUndo() {
+  const editor = state.maskEditor;
+  const id = editor?.activeRefId;
+  const stack = editor?.history?.[id] || [];
+  const current = maskSnapshot();
+  if (!editor || !stack.length || !current) return;
+  editor.redo[id] = [...(editor.redo[id] || []), current].slice(-20);
+  await restoreMaskSnapshot(stack.pop());
+  updateMaskHistoryButtons();
+}
+async function maskRedo() {
+  const editor = state.maskEditor;
+  const id = editor?.activeRefId;
+  const stack = editor?.redo?.[id] || [];
+  const current = maskSnapshot();
+  if (!editor || !stack.length || !current) return;
+  editor.history[id] = [...(editor.history[id] || []), current].slice(-20);
+  await restoreMaskSnapshot(stack.pop());
+  updateMaskHistoryButtons();
 }
 function restoreCanvasDataUrl(url) {
   const canvas = $('#maskCanvas');
-  const ctx = canvas.getContext('2d');
-  const img = new Image();
-  img.onload = () => {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-  };
-  img.src = url;
+  if (!canvas) return Promise.resolve();
+  const context = canvas.getContext('2d');
+  context?.clearRect(0, 0, canvas.width, canvas.height);
+  return drawDataUrlIntoCanvas(canvas, url);
 }
 function maskCanvasHasPaint(canvas) {
   if (!canvas) return false;
@@ -15356,97 +16557,130 @@ function maskCanvasHasPaint(canvas) {
   return false;
 }
 async function maskClear() {
-  const ref = state.references.find((r) => r.id === state.maskEditor.activeRefId);
-  if (!ref) return;
   const canvas = $('#maskCanvas');
   if (!canvas) return;
   pushMaskHistory();
-  canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
-  const oldMaskBlobId = ref.maskBlobId;
-  ref.maskBlobId = '';
-  revokeMapEntry(state.refUrls, ref.id);
-  if (oldMaskBlobId) await deleteUnreferencedBlobIds([oldMaskBlobId]);
-  toast('已清空当前遮罩');
+  canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
+  $('#maskAnnotationCanvas')?.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
+  if (state.maskEditor) state.maskEditor.crop = null;
+  updateMaskToolUi();
+  toast('已清空当前标注（确认保存后生效）');
+  return true;
 }
 async function persistCanvasToRefDraft() {
-  const canvas = $('#maskCanvas');
-  const ref = state.references.find((r) => r.id === state.maskEditor?.activeRefId);
-  if (!canvas || !ref) return;
-  if (!ref.originalBlobId) ref.originalBlobId = ref.blobId;
-  if (!maskCanvasHasPaint(canvas)) {
-    const oldMaskBlobId = ref.maskBlobId;
-    ref.maskBlobId = '';
-    if (oldMaskBlobId) await deleteUnreferencedBlobIds([oldMaskBlobId]);
-    return;
-  }
-  const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
-  if (!blob) return;
-  const oldMaskBlobId = ref.maskBlobId;
-  const nextMaskBlobId = await putBlob(blob);
-  ref.maskBlobId = nextMaskBlobId;
-  ref.type = ref.type || 'image/png';
-  const size = await imageSizeFromBlob(blob).catch(() => ({}));
-  ref.width = size.width;
-  ref.height = size.height;
-  revokeMapEntry(state.refUrls, ref.id);
-  if (oldMaskBlobId) await deleteUnreferencedBlobIds([oldMaskBlobId]);
+  captureMaskDraft();
+  return true;
 }
-async function composeReferenceWithMask(ref) {
-  if (!ref?.originalBlobId) ref.originalBlobId = ref?.blobId;
-  const originalBlob = await getBlob(ref.originalBlobId).catch(() => null);
-  if (!originalBlob) return;
-  if (!ref.maskBlobId) {
-    const oldBlobId = ref.blobId;
-    ref.blobId = ref.originalBlobId;
-    ref.compositedBlobId = ref.originalBlobId;
-    ref.type = originalBlob.type || ref.type || 'image/png';
-    if (oldBlobId && oldBlobId !== ref.originalBlobId) await deleteUnreferencedBlobIds([oldBlobId]);
-    return;
+async function buildMaskSaveBundle(ref, draft) {
+  const originalBlobId = ref?.originalBlobId || ref?.blobId || '';
+  const originalBlob = originalBlobId ? await getBlob(originalBlobId).catch(() => null) : null;
+  if (!originalBlob) throw new Error(`${ref?.name || '参考图'} 原图文件不存在，请重新上传`);
+  const info = await imageInfoFromBlob(originalBlob).catch(() => ({}));
+  const width = Number(info.width || ref.width || 0);
+  const height = Number(info.height || ref.height || 0);
+  if (!width || !height) throw new Error(`${ref?.name || '参考图'} 原图尺寸读取失败，请重新上传`);
+  const sourceWidth = Math.max(1, Number(draft?.width || width));
+  const sourceHeight = Math.max(1, Number(draft?.height || height));
+  const targetCanvas = document.createElement('canvas');
+  targetCanvas.width = sourceWidth; targetCanvas.height = sourceHeight;
+  const annotationCanvas = document.createElement('canvas');
+  annotationCanvas.width = sourceWidth; annotationCanvas.height = sourceHeight;
+  await drawDataUrlIntoCanvas(targetCanvas, draft?.maskDataUrl || '');
+  await drawDataUrlIntoCanvas(annotationCanvas, draft?.annotationDataUrl || '');
+  const hasMask = canvasHasPixels(targetCanvas);
+  const hasAnnotation = canvasHasPixels(annotationCanvas);
+  const maskBlob = hasMask ? await openAiMaskBlobFromOverlayCanvas(targetCanvas, width, height) : null;
+  let normalizedAnnotationBlob = null;
+  if (hasAnnotation) {
+    const annotationTarget = document.createElement('canvas');
+    annotationTarget.width = width; annotationTarget.height = height;
+    annotationTarget.getContext('2d')?.drawImage(annotationCanvas, 0, 0, width, height);
+    normalizedAnnotationBlob = await canvasPngBlob(annotationTarget);
   }
-  const maskBlob = await getBlob(ref.maskBlobId).catch(() => null);
-  if (!maskBlob) return;
-  const baseImg = new Image();
-  const maskImg = new Image();
-  const baseObjectUrl = URL.createObjectURL(originalBlob);
-  const maskObjectUrl = URL.createObjectURL(maskBlob);
-  baseImg.src = baseObjectUrl;
-  maskImg.src = maskObjectUrl;
-  try {
-    await Promise.all([
-      new Promise((resolve, reject) => { baseImg.onload = resolve; baseImg.onerror = reject; }),
-      new Promise((resolve, reject) => { maskImg.onload = resolve; maskImg.onerror = reject; })
-    ]);
-    const canvas = document.createElement('canvas');
-    canvas.width = baseImg.naturalWidth;
-    canvas.height = baseImg.naturalHeight;
-    const ctx = canvas.getContext('2d');
-    if (!ctx || !canvas.width || !canvas.height) return;
-    ctx.drawImage(baseImg, 0, 0, canvas.width, canvas.height);
-    ctx.globalAlpha = .42;
-    ctx.drawImage(maskImg, 0, 0, canvas.width, canvas.height);
-    ctx.globalAlpha = 1;
-    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
-    if (!blob) return;
-    const oldBlobId = ref.blobId;
-    const nextBlobId = await putBlob(blob);
-    ref.blobId = nextBlobId;
-    ref.compositedBlobId = nextBlobId;
-    ref.type = 'image/png';
-    ref.width = canvas.width;
-    ref.height = canvas.height;
-    revokeMapEntry(state.refUrls, ref.id);
-    if (oldBlobId && oldBlobId !== ref.originalBlobId) await deleteUnreferencedBlobIds([oldBlobId]);
-  } finally {
-    URL.revokeObjectURL(baseObjectUrl);
-    URL.revokeObjectURL(maskObjectUrl);
+  let compositedBlob = null;
+  if (hasMask || hasAnnotation) {
+    const baseImg = new Image();
+    const baseUrl = URL.createObjectURL(originalBlob);
+    baseImg.src = baseUrl;
+    try {
+      await new Promise((resolve, reject) => { baseImg.onload = resolve; baseImg.onerror = reject; });
+      const compositeCanvas = document.createElement('canvas');
+      compositeCanvas.width = width; compositeCanvas.height = height;
+      const compositeCtx = compositeCanvas.getContext('2d');
+      if (!compositeCtx) throw new Error('当前浏览器无法创建遮罩合成画布');
+      compositeCtx.drawImage(baseImg, 0, 0, width, height);
+      if (hasMask) { compositeCtx.globalAlpha = .42; compositeCtx.drawImage(targetCanvas, 0, 0, width, height); }
+      if (hasAnnotation) { compositeCtx.globalAlpha = 1; compositeCtx.drawImage(annotationCanvas, 0, 0, width, height); }
+      compositeCtx.globalAlpha = 1;
+      compositedBlob = await canvasPngBlob(compositeCanvas);
+    } finally {
+      URL.revokeObjectURL(baseUrl);
+    }
   }
+  return { originalBlobId, width, height, type: originalBlob.type || 'image/png', maskBlob, annotationBlob: normalizedAnnotationBlob, compositedBlob, hasMask, hasAnnotation };
+}
+async function composeReferenceWithMask(ref, draft) {
+  return buildMaskSaveBundle(ref, draft);
 }
 async function saveMaskEditor() {
-  await persistCanvasToRefDraft();
-  for (const ref of state.references) await composeReferenceWithMask(ref);
+  const editor = state.maskEditor;
+  if (!editor) return;
+  captureMaskDraft();
+  const targets = editor.mode === 'agent-attachment' ? [maskEditorReference()] : maskEditorReferences();
+  const previous = targets.filter(Boolean).map((ref) => ({ ref, snapshot: { ...ref } }));
+  const createdBlobIds = [];
+  const oldBlobIds = [];
+  const changes = [];
+  try {
+    for (const ref of targets.filter(Boolean)) {
+      const draft = editor.drafts?.[ref.id];
+      if (!draft) continue;
+      const bundle = await composeReferenceWithMask(ref, draft);
+      const putTrackedBlob = async (blob) => {
+        if (!blob) return '';
+        const id = await putBlob(blob);
+        if (id && id !== bundle.originalBlobId) createdBlobIds.push(id);
+        return id;
+      };
+      const nextMaskBlobId = await putTrackedBlob(bundle.maskBlob);
+      const nextAnnotationBlobId = await putTrackedBlob(bundle.annotationBlob);
+      const nextCompositedBlobId = bundle.compositedBlob ? await putTrackedBlob(bundle.compositedBlob) : bundle.originalBlobId;
+      oldBlobIds.push(ref.maskBlobId, ref.annotationBlobId, ref.compositedBlobId, ref.blobId);
+      changes.push({ ref, bundle, nextMaskBlobId, nextAnnotationBlobId, nextCompositedBlobId });
+    }
+  } catch (error) {
+    if (createdBlobIds.length) await deleteUnreferencedBlobIds(createdBlobIds);
+    toast(`遮罩合成失败：${error?.message || error}`);
+    return false;
+  }
+  changes.forEach(({ ref, bundle, nextMaskBlobId, nextAnnotationBlobId, nextCompositedBlobId }) => {
+    ref.originalBlobId = bundle.originalBlobId;
+    ref.maskBlobId = nextMaskBlobId;
+    ref.annotationBlobId = nextAnnotationBlobId;
+    ref.compositedBlobId = nextCompositedBlobId;
+    ref.maskFormat = nextMaskBlobId ? OPENAI_MASK_FORMAT : '';
+    ref.width = bundle.width;
+    ref.height = bundle.height;
+    ref.type = bundle.type || ref.type || 'image/png';
+    ref.blobId = editor.mode === 'agent-attachment' ? bundle.originalBlobId : nextCompositedBlobId;
+  });
   state.maskEditor = null;
-  persistRender();
-  toast('遮罩编辑已保存并替换参考图');
+  const committed = persistRender();
+  if (committed !== true && committed !== 'idb') {
+    previous.forEach(({ ref, snapshot }) => Object.assign(ref, snapshot));
+    state.maskEditor = editor;
+    render();
+    if (createdBlobIds.length) await deleteUnreferencedBlobIds(createdBlobIds);
+    toast('遮罩状态保存失败，请重试');
+    return;
+  }
+  for (const ref of targets.filter(Boolean)) {
+    revokeMapEntry(state.refUrls, editor.mode === 'agent-attachment' ? `agent:${ref.id}` : ref.id);
+  }
+  const oldIds = [...new Set(oldBlobIds.filter(Boolean))].filter((id) => !createdBlobIds.includes(id));
+  if (oldIds.length) await deleteUnreferencedBlobIds(oldIds);
+  toast(editor.mode === 'agent-attachment' ? 'Agent 附件遮罩已保存' : '遮罩编辑已保存并替换参考图');
+  return true;
 }
 
 function applyPromptFromUrl() {

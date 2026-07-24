@@ -21,8 +21,26 @@ ok(index.includes('/assets/homepage-v3.js?v=home-v3-'), '/ must load the standal
 ok(index.includes('/assets/homepage-v3.css?v=home-v3-'), '/ must load the standalone homepage v3 stylesheet with a cache-busted URL.');
 ok(!/assets\/index-[^"']+\.js/.test(index), '/ must not load the legacy React homepage bundle.');
 
-ok(!prompts.includes('filteredData=filteredData.concat(rows)'), '/prompts still appends unlimited prompt DOM data.');
-ok(prompts.includes('filteredData=rows'), '/prompts should replace current page rows instead of appending.');
+ok(/PROMPT_DOM_LIMIT\s*=\s*ITEMS_PER_PAGE\s*\*\s*2/.test(prompts)
+  && /rows\.slice\(0,PROMPT_DOM_LIMIT\)/.test(prompts)
+  && /rows\.slice\(0,ITEMS_PER_PAGE\)/.test(prompts)
+  && /Math\.ceil\(overflow\/ITEMS_PER_PAGE\)/.test(prompts)
+  && /function evictPromptWindow\(count\)/.test(prompts)
+  && /filteredData=filteredData\.slice\(evictedCount\)\.concat\(nextRows\)/.test(prompts)
+  && /anchor\.getBoundingClientRect\(\)\.top/.test(prompts)
+  && /grid\.scrollTop\+=delta/.test(prompts), '/prompts progressive rendering must enforce a fixed sliding DOM/data window with scroll anchoring.');
+ok(!prompts.includes('filteredData=filteredData.concat(rows)'), '/prompts must not append raw page rows without the fixed window.');
+ok(!prompts.includes('if(filteredData.length>=PROMPT_DOM_LIMIT){clearSentinelObserver();return;}'), '/prompts must continue sentinel prefetch after reaching the DOM window cap.');
+ok(prompts.includes('function reloadList(){cancelImagePrewarm();clearPromptPrefetch();filteredData=[];'), '/prompts category/search changes must reset accumulated rows and prefetch state.');
+ok(prompts.includes('prefetchCacheKey(page,viewKey)')
+  && prompts.includes('fetchWithAbort(url,{cache:"force-cache"},"prefetch")'), '/prompts prefetch must use a keyed independent cache/request slot.');
+ok(prompts.includes('requestSeq!==pageRequestSeq') && prompts.includes('viewKey!==promptViewKey()'), '/prompts async page results must reject stale request/view results.');
+ok(prompts.includes('new IntersectionObserver(function(entries)')
+  && prompts.includes('root:grid')
+  && prompts.includes('rootMargin:isMobileViewport()?"700px 0px":"900px 0px"'), '/prompts must prefetch from a bounded sentinel in the actual scroll grid.');
+ok(prompts.includes('function hasMorePromptPage(page){return !!totalItems&&Math.max(0,(Number(page)||0)-1)*ITEMS_PER_PAGE<totalItems}')
+  && prompts.includes('if(!hasMorePromptPage(page)){clearSentinelObserver();return;}')
+  && prompts.includes('hasNext=hasMorePromptPage(currentPage+1)'), '/prompts next-page guards must use the pending page start index so a final partial page is loadable.');
 ok(prompts.includes('function updatePager()'), '/prompts pager state function missing.');
 ok(prompts.includes('sessionStorage.setItem("prompt_to_use"'), '/prompts use-prompt handoff missing.');
 ok(prompts.includes('localStorage.setItem("gpt-image2-pending-prompt"'), '/prompts localStorage prompt handoff missing.');

@@ -243,6 +243,100 @@ ok(typeof hooks.extractAgentPromptOptions === 'function', 'extractAgentPromptOpt
 ok(typeof hooks.recommendedAgentPromptOption === 'function', 'recommendedAgentPromptOption hook missing');
 ok(typeof hooks.parseAgentOptionSelection === 'function', 'parseAgentOptionSelection hook missing');
 ok(typeof hooks.renderAgentMessage === 'function', 'renderAgentMessage hook missing');
+ok(typeof hooks.renderAgentTaskCard === 'function', 'Agent task card renderer hook missing');
+ok(typeof hooks.renderAgentAttachmentTray === 'function', 'Agent attachment tray renderer hook missing');
+ok(typeof hooks.renderMaskEditor === 'function', 'mask editor renderer hook missing');
+ok(typeof hooks.imageMaskSupportLabel === 'function', 'image mask support label hook missing');
+ok(typeof hooks.agentAttachmentSummary === 'function', 'Agent attachment summary hook missing');
+const openAiMaskSupportLabel = hooks.imageMaskSupportLabel({ provider: 'openai', apiMode: 'images', model: 'gpt-image-2' });
+const googleMaskSupportLabel = hooks.imageMaskSupportLabel({ provider: 'google', apiMode: 'images', model: 'gemini-3.1-flash-image' });
+const xaiMaskSupportLabel = hooks.imageMaskSupportLabel({ provider: 'xai', apiMode: 'images', model: 'grok-imagine-image' });
+ok(openAiMaskSupportLabel.includes('像素遮罩') && !openAiMaskSupportLabel.includes('只发送原图'), 'OpenAI mask label should keep the pixel-mask contract');
+ok([googleMaskSupportLabel, xaiMaskSupportLabel].every((label) => label.includes('黄色半透明标注合成图')
+  && label.includes('提示词中说明标注区域')
+  && label.includes('不发送独立 mask')),
+  'Google/xAI mask labels should describe composited annotation, region prompt guidance, and no independent mask');
+ok(typeof hooks.agentAttachmentBlobIds === 'function', 'Agent attachment Blob cleanup hook missing');
+ok(typeof hooks.normalizeZipDownloadRoutes === 'function' && typeof hooks.routeAllowed === 'function', 'ZIP route normalization hooks missing');
+const maskedAgentAttachment = {
+  id: 'agent-mask-test',
+  kind: 'image',
+  type: 'image/png',
+  name: 'masked.png',
+  blobId: 'agent-base-blob',
+  originalBlobId: 'agent-original-blob',
+  compositedBlobId: 'agent-composited-blob',
+  maskBlobId: 'agent-mask-blob'
+};
+const maskedAgentTrayHtml = hooks.renderAgentAttachmentTray([maskedAgentAttachment], true);
+ok(maskedAgentTrayHtml.includes('has-mask')
+  && maskedAgentTrayHtml.includes('已标注')
+  && maskedAgentTrayHtml.includes('open-agent-attachment-mask-editor'), 'Agent image attachments with a saved mask should expose the mask editor and status badge');
+const maskedAgentBlobIds = hooks.agentAttachmentBlobIds([maskedAgentAttachment]);
+ok(['agent-base-blob', 'agent-original-blob', 'agent-composited-blob', 'agent-mask-blob'].every((id) => maskedAgentBlobIds.includes(id)), 'Agent attachment cleanup should retain base, original, composited, and mask Blob IDs');
+const retryableAgentTaskHtml = hooks.renderAgentTaskCard({ id: 'agent-retry-test', status: 'error', error: 'request failed', images: [], expectedCount: 1, actualCount: 0, createdAt: Date.now() });
+ok(retryableAgentTaskHtml.includes('data-action="retry-task"') && retryableAgentTaskHtml.includes('agent-task-retry'), 'embedded Agent task cards should expose retry for failed tasks');
+const galleryComposerSource = source.slice(source.indexOf('function renderGalleryComposer()'), source.indexOf('function renderImageProfileSelect('));
+const agentImageControlsSource = source.slice(source.indexOf('function renderAgentImageParamControls()'), source.indexOf('function renderAgentComposer()'));
+ok(galleryComposerSource.includes('imageModerationSupported(profile)') && galleryComposerSource.includes('state.settings.moderation'), 'gallery moderation control should be gated by the active OpenAI Images profile and shared settings');
+ok(agentImageControlsSource.includes('imageModerationSupported(profile)') && agentImageControlsSource.includes('state.settings.moderation'), 'Agent moderation control should use the same shared image settings');
+const moderationActionSource = source.slice(source.indexOf('function setPopoverValue('), source.indexOf('function toggleTheme('));
+ok(moderationActionSource.includes("state.settings.moderation = value === 'low' ? 'low' : 'auto';")
+  && moderationActionSource.includes('settings.moderation = state.settings.moderation;'), 'gallery and Agent moderation actions should write one shared setting');
+const proRenderTaskSource = source.slice(source.indexOf('async function renderProWorkbenchTask('), source.indexOf('async function hydrateProResult('));
+const hydrateProResultSource = source.slice(source.indexOf('async function hydrateProResult('), source.indexOf('function renderPopover('));
+ok(proRenderTaskSource.includes('imageModerationSupported(profile)')
+  && !/transparent:\s*!\!state\.settings\.transparent_output,\s*moderation:/.test(proRenderTaskSource),
+  'professional workbench task snapshots should only persist moderation for OpenAI Images profiles');
+ok(hydrateProResultSource.includes('if (imageModerationSupported(activeProfile())) task.requestedParams.moderation')
+  && !/transparent:\s*!\!state\.settings\.transparent_output,\s*moderation:/.test(hydrateProResultSource),
+  'hydrated professional workbench result snapshots should gate moderation to the actual OpenAI request contract');
+const generationSubmitSource = source.slice(source.indexOf('async function generateImageTask('), source.indexOf('function activeProject()'));
+const clearInputOffset = generationSubmitSource.indexOf("if (!seedTask && state.preferences?.clearInputAfterSubmit)");
+const clearInputBlock = clearInputOffset >= 0 ? generationSubmitSource.slice(clearInputOffset, generationSubmitSource.indexOf('try {', clearInputOffset)) : '';
+ok(clearInputOffset >= 0
+  && clearInputBlock.includes("state.composerPrompt = '';")
+  && clearInputBlock.includes("promptInput.value = '';"), 'gallery submission should clear the visible and persisted prompt immediately after the task snapshot is saved');
+const deleteProjectSource = source.slice(source.indexOf('async function performDeleteProject('), source.indexOf('async function saveAgentProjects('));
+ok(deleteProjectSource.includes('deletingActiveProject ? agentAttachmentBlobIds(state.agent.attachments || []) : []')
+  && deleteProjectSource.includes('state.agent.attachments = [];')
+  && deleteProjectSource.includes('state.agentComposerMentionMenu = null;'), 'deleting the active Agent project should release and clear draft attachment state including mask Blob IDs');
+const composeMaskSource = source.slice(source.indexOf('async function composeReferenceWithMask('), source.indexOf('async function saveMaskEditor('));
+const saveMaskSource = source.slice(source.indexOf('async function saveMaskEditor('), source.indexOf('function applyPromptFromUrl('));
+const prepareMaskSource = source.slice(source.indexOf('async function prepareEditReferenceFiles('), source.indexOf('function remoteImageLengthRange('));
+ok(composeMaskSource.includes('return buildMaskSaveBundle(ref, draft);')
+  && !composeMaskSource.includes('deleteUnreferencedBlobIds'), 'mask composition must run through the real bundle builder without deleting old Blobs mid-build');
+ok(saveMaskSource.includes('composeReferenceWithMask(ref, draft)')
+  && saveMaskSource.includes('const putTrackedBlob = async (blob)')
+  && saveMaskSource.indexOf('await putBlob(blob)') < saveMaskSource.indexOf('createdBlobIds.push(id)'),
+  'mask save must call composeReferenceWithMask and register each successful Blob immediately for rollback');
+ok(saveMaskSource.includes('catch (error)')
+  && saveMaskSource.includes('deleteUnreferencedBlobIds(createdBlobIds)'),
+  'mask save must clean every already-created Blob when a later transaction step fails');
+ok(prepareMaskSource.includes('first.ref.maskFormat !== OPENAI_MASK_FORMAT')
+  && prepareMaskSource.includes('openAiMaskBlobFromLegacyOverlayBlob'),
+  'legacy color overlay masks must be converted to OpenAI alpha semantics only at send time');
+ok(source.includes('maskBaseCanvas') && source.includes('maskCanvas') && source.includes('maskAnnotationCanvas'),
+  'mask editor must preserve separate base, mask, and annotation canvas layers');
+ok(!/\b(alert|confirm|prompt)\s*\(/.test(source)
+  && source.includes('pendingText')
+  && source.includes('mask-text-input')
+  && source.includes('confirm-mask-text')
+  && source.includes('cancel-mask-text'),
+  'mask text annotations must use the accessible in-editor textarea and must not call native dialogs');
+const annotationOnlyAgentAttachment = { ...maskedAgentAttachment, maskBlobId: '', annotationBlobId: 'agent-annotation-blob' };
+const annotationOnlyTrayHtml = hooks.renderAgentAttachmentTray([annotationOnlyAgentAttachment], true);
+ok(annotationOnlyTrayHtml.includes('has-mask')
+  && annotationOnlyTrayHtml.includes('已标注')
+  && annotationOnlyTrayHtml.includes('open-agent-attachment-mask-editor'), 'Agent annotation-only image attachments should show marked status and keep the editor action');
+const annotationOnlyBlobIds = hooks.agentAttachmentBlobIds([annotationOnlyAgentAttachment]);
+ok(annotationOnlyBlobIds.includes('agent-annotation-blob'), 'Agent annotation-only cleanup should retain annotation Blob IDs');
+const annotationOnlySummary = hooks.agentAttachmentSummary([annotationOnlyAgentAttachment]);
+ok(annotationOnlySummary.includes('已保存标注') && !annotationOnlySummary.includes('已保存遮罩'), 'Agent annotation-only attachment summaries should show annotation status without calling it a mask');
+const maskOnlySummary = hooks.agentAttachmentSummary([maskedAgentAttachment]);
+ok(maskOnlySummary.includes('已保存遮罩') && !maskOnlySummary.includes('已保存标注'), 'Agent mask-only attachment summaries should retain the saved mask status');
+const unmarkedSummary = hooks.agentAttachmentSummary([{ ...maskedAgentAttachment, maskBlobId: '', annotationBlobId: '' }]);
+ok(!unmarkedSummary.includes('已保存遮罩') && !unmarkedSummary.includes('已保存标注'), 'Unmarked Agent attachment summaries should omit mask and annotation status');
 ok(typeof hooks.expectedProviderResolution === 'function', 'expectedProviderResolution hook missing');
 ok(typeof hooks.isTierResolutionMatch === 'function', 'isTierResolutionMatch hook missing');
 ok(typeof hooks.taskReferenceDisplayBlobId === 'function', 'taskReferenceDisplayBlobId hook missing');
@@ -260,9 +354,17 @@ ok(typeof hooks.galleryVirtualRangeChanged === 'function', 'galleryVirtualRangeC
 ok(typeof hooks.galleryVirtualWindowNeedsRefresh === 'function', 'galleryVirtualWindowNeedsRefresh hook missing');
 ok(typeof hooks.promptRepoVirtualWindowNeedsRefresh === 'function', 'promptRepoVirtualWindowNeedsRefresh hook missing');
 ok(typeof hooks.promptItemStableKey === 'function', 'promptItemStableKey hook missing');
+ok(typeof hooks.promptRepoAnchorSelector === 'function', 'promptRepoAnchorSelector hook missing');
 const duplicatePromptKeyA = hooks.promptItemStableKey({ id: 1, c: '分类 A', i: 'https://example.com/a.webp' }, 4);
 const duplicatePromptKeyB = hooks.promptItemStableKey({ id: 1, c: '分类 B', i: 'https://example.com/b.webp' }, 4);
 ok(duplicatePromptKeyA !== duplicatePromptKeyB, 'prompt virtual DOM keys must distinguish duplicate IDs from different categories or sources');
+const duplicateAnchorSelectorA = hooks.promptRepoAnchorSelector({ anchorPromptKey: duplicatePromptKeyA, anchorIndex: '4', anchorId: '1' });
+const duplicateAnchorSelectorB = hooks.promptRepoAnchorSelector({ anchorPromptKey: duplicatePromptKeyB, anchorIndex: '4', anchorId: '1' });
+ok(duplicateAnchorSelectorA !== duplicateAnchorSelectorB
+  && duplicateAnchorSelectorA.includes('data-prompt-key')
+  && duplicateAnchorSelectorB.includes('data-prompt-key'), 'prompt viewport anchors must prefer stable prompt keys when duplicate IDs have different categories or sources');
+ok(hooks.promptRepoAnchorSelector({ anchorIndex: '4', anchorId: '1' }).includes('data-index')
+  && hooks.promptRepoAnchorSelector({ anchorId: '1' }).includes('data-id'), 'prompt viewport anchors should fall back from exact index to ID only when no stable key exists');
 ok(source.includes('data-prompt-key') && source.includes('currentCards.get(key)'), 'prompt virtual DOM should reuse cards through stable prompt keys instead of raw IDs');
 const standalonePromptGridCss = (promptPage.match(/\.grid\{[^}]*\}/) || [''])[0];
 const standalonePromptCardCss = (promptPage.match(/\.card\{[^}]*\}/) || [''])[0];
@@ -350,6 +452,44 @@ ok(!macosCss.includes('html.is-scrolling'), 'shared macOS CSS must not override 
 ok(promptPage.includes('scroller.addEventListener("scroll",markPromptScrolling,{passive:true})')
   && !promptPage.includes('document.documentElement.classList.add("is-scrolling")')
   && !promptPage.includes('finishPromptScrolling'), 'standalone prompt repository should retain passive scroll observation without a visual state rewrite');
+ok(promptPage.includes('function prefetchNextPage()')
+  && promptPage.includes('prefetchCacheKey(page,viewKey)')
+  && promptPage.includes('fetchWithAbort(url,{cache:"force-cache"},"prefetch")'), 'standalone prompt repository should use an independent prefetch request slot and cache key');
+ok(promptPage.includes('new IntersectionObserver(function(entries)')
+  && promptPage.includes('root:grid')
+  && promptPage.includes('rootMargin:isMobileViewport()?"700px 0px":"900px 0px"'), 'standalone prompt repository should prefetch from a sentinel in the actual scroll grid');
+ok(promptPage.includes('function appendItems(rows,startIdx)')
+  && promptPage.includes('applyPagePayload(data,page,cachePageKey(page),{append:true})')
+  && promptPage.includes('else if(!append)renderEmptyState'), 'standalone prompt repository should append successful pages and preserve existing cards on later-page failures');
+ok(promptPage.includes('var PROMPT_DOM_LIMIT = ITEMS_PER_PAGE * 2;')
+  && promptPage.includes('function evictPromptWindow(count)')
+  && promptPage.includes('Math.ceil(overflow/ITEMS_PER_PAGE)')
+  && promptPage.includes('filteredData=filteredData.slice(evictedCount).concat(nextRows)')
+  && promptPage.includes('grid.scrollTop+=delta')
+  && !promptPage.includes('if(filteredData.length>=PROMPT_DOM_LIMIT){clearSentinelObserver();return;}'), 'standalone prompt repository should keep a sliding bounded window, preserve scroll position, and continue prefetching after eviction');
+ok(promptPage.includes('function hasMorePromptPage(page){return !!totalItems&&Math.max(0,(Number(page)||0)-1)*ITEMS_PER_PAGE<totalItems}')
+  && promptPage.includes('if(!hasMorePromptPage(page)){clearSentinelObserver();return;}')
+  && promptPage.includes('hasNext=hasMorePromptPage(currentPage+1)')
+  && !promptPage.includes('if(!totalItems||page*ITEMS_PER_PAGE>=totalItems){clearSentinelObserver();return;}'), 'standalone prompt repository should load final partial pages and stop only after the current page end reaches total');
+const paginationHelperStart = promptPage.indexOf('function hasMorePromptPage(page){');
+const paginationHelperEnd = promptPage.indexOf('function loadCategories', paginationHelperStart);
+if (paginationHelperStart >= 0 && paginationHelperEnd > paginationHelperStart) {
+  const paginationContext = { ITEMS_PER_PAGE: 48, totalItems: 0 };
+  vm.runInNewContext(`var ITEMS_PER_PAGE=48; var totalItems=0; ${promptPage.slice(paginationHelperStart, paginationHelperEnd)}`, paginationContext);
+  for (const testCase of [
+    { total: 49, page: 2, expected: true }, { total: 49, page: 3, expected: false },
+    { total: 96, page: 2, expected: true }, { total: 96, page: 3, expected: false },
+    { total: 97, page: 3, expected: true }, { total: 97, page: 4, expected: false },
+    { total: 100, page: 3, expected: true }, { total: 100, page: 4, expected: false },
+    { total: 144, page: 3, expected: true }, { total: 144, page: 4, expected: false },
+    { total: 145, page: 4, expected: true }, { total: 145, page: 5, expected: false },
+  ]) {
+    paginationContext.totalItems = testCase.total;
+    ok(paginationContext.hasMorePromptPage(testCase.page) === testCase.expected, `prompt pagination boundary failed for total=${testCase.total}, page=${testCase.page}`);
+  }
+} else {
+  ok(false, 'prompt pagination boundary helper could not be evaluated');
+}
 ok(typeof hooks.buildGalleryPreviewBlob === 'function' && typeof hooks.hydrateGalleryPreviewImage === 'function', 'gallery preview hydration hooks missing');
 ok(source.includes('if (!state.galleryVirtual) state.galleryVirtual = {};') && source.includes('classList.contains(\'is-scrolling\') !== next'), 'scroll handlers should avoid allocating state objects and mutating classes on every event');
 ok(source.includes('if (isScrolling || galleryScrollActivity)') && source.includes('galleryVirtualHydratePending = true') && source.includes('const forceHydrate = galleryVirtualHydratePending || options.forceHydrate === true'), 'reference image hydration should be deferred during active scrolling and restored after scrolling stops');
@@ -427,6 +567,26 @@ ok(source.includes('const GALLERY_PREVIEW_CONCURRENCY = 2') && source.includes('
 ok(source.includes('const galleryPreviewConsumers = new WeakMap()') && source.includes('function releaseGalleryImageWork(card)') && source.includes('galleryDeferredHydrations.delete(img)'), 'removed gallery cards should cancel pending preview work before decoding');
 ok(source.includes('function pruneGalleryPreviewConsumers(job)') && source.includes('job.cancelled') && source.includes('job.consumers'), 'shared gallery preview jobs should stop when no live card consumes them');
 ok(source.includes('let promptRepoSyncPending = false') && source.includes('if (promptRepoScrollIsActive())') && source.includes('if (promptRepoSyncPending) nextRenderFrame'), 'prompt repository pagination should defer DOM replacement until scrolling settles');
+ok(source.includes('function syncPromptRepoView(options = {})')
+  && source.includes('if (options.listOnly === true)')
+  && source.includes('syncPromptRepoListOnly({'), 'prompt repository page appends should use a list-only patch path instead of remounting the modal');
+ok(source.includes('function schedulePromptRepoPrefetch(options = {})')
+  && source.includes('page: nextPage')
+  && source.includes('prefetch: true')
+  && source.includes('schedulePromptRepoPrefetch({ page: 1, requestSeq'), 'homepage prompt repository should prefetch page 2 after a successful page 1 result');
+ok(source.includes('function promptRepoRequestIsCurrent(requestSeq)')
+  && source.includes('if (!promptRepoRequestIsCurrent(requestSeq)) return null;')
+  && source.includes('state.promptRepo.requestSeq !== requestSeq'), 'prompt repository responses and prefetches must be guarded by the active request generation');
+const promptPageLoadSource = source.slice(source.indexOf('async function loadPromptPage('), source.indexOf('async function fullPromptItem('));
+ok(promptPageLoadSource.includes('const hadItems = state.promptRepo.items.length > 0;')
+  && promptPageLoadSource.includes('if (!hadItems) {')
+  && promptPageLoadSource.includes("toast('提示词仓库加载失败')"), 'prompt repository page failures should retain existing items and only show an empty-state replacement for an initial empty load');
+ok(source.includes("anchorPromptKey: ''")
+  && source.includes('function promptRepoAnchorSelector(snapshot = {})')
+  && source.includes('data-prompt-key="${cssEscape(promptKey)}"')
+  && source.includes('data-id="${cssEscape(id)}"')
+  && source.includes('const delays = [0, 24, 80, 180, 420]'), 'prompt repository viewport restoration should use a stable prompt key and bounded idle retries');
+ok(homeCss.includes('.prompt-list {') && homeCss.includes('overflow-anchor: auto;'), 'prompt repository list should retain native overflow anchoring');
 ok(source.includes('renderGalleryListOnly({ virtualScroll: true, allowDuringScroll })')
   && source.includes('options.allowDuringScroll !== true'), 'large gallery jumps should patch the virtual window in the current scroll frame without hydrating images inside that frame');
 ok(source.includes('function syncAgentTaskCardDom(task)') && source.includes('function scheduleAgentTaskCardSync(task)'), 'Agent streaming updates should have a local task-card DOM path');
@@ -455,8 +615,10 @@ ok(hooks.classifyImageResponse('application/json', 'da') === 'undetermined', 'sp
 ok(hooks.classifyImageResponse('text/event-stream', '{"data":[]}') === 'json', 'JSON content must win over a conflicting event-stream header after body sniffing');
 ok(typeof hooks.fetchRemoteImageBlob === 'function', 'fetchRemoteImageBlob hook missing');
 ok(typeof hooks.remoteImageFetchFailureSummary === 'function', 'remoteImageFetchFailureSummary hook missing');
+ok(typeof hooks.classifyRemoteImageUrl === 'function' && typeof hooks.normalizeRemoteImageUrl === 'function', 'remote image URL classification hooks missing');
 ok(hooks.remoteImageFetchFailureSummary([{ code: 'UPSTREAM_DNS_FAILED' }]) === '远程图片域名解析失败', 'remote image DNS failures should have a distinct summary');
 ok(hooks.remoteImageFetchFailureSummary([{ code: 'BROWSER_NETWORK_OR_CORS' }, { code: 'REMOTE_IMAGE_NOT_IMAGE' }]) === '远程图片响应不是可识别的图片', 'remote image diagnostics should prefer the proxy image response outcome over a direct CORS failure');
+ok(hooks.remoteImageFetchFailureSummary([{ category: 'PRIVATE_HOST' }]) === '远程图片地址不允许访问内部网络', 'local remote image policy failures should retain a deterministic summary');
 ok(typeof hooks.hydrateBlobImage === 'function', 'hydrateBlobImage hook missing');
 ok(typeof hooks.rememberObjectUrl === 'function', 'rememberObjectUrl hook missing');
 ok(typeof hooks.mergeGenerationPartialErrors === 'function', 'mergeGenerationPartialErrors hook missing');
@@ -963,6 +1125,83 @@ ok(
     && stringImageCandidates.some((item) => item.image === 'object-image-value'),
   'image candidate collector should support string images in containers and image/base64 compatibility fields'
 );
+const quotedRemote = hooks.classifyRemoteImageUrl('  "https://images.example/assets/result.png?sig=hidden"  ', { sourceField: 'image_url' });
+ok(quotedRemote.ok && quotedRemote.url === 'https://images.example/assets/result.png?sig=hidden' && quotedRemote.sourceField === 'image_url', 'remote URL classification should trim and remove one matching outer quote without decoding the URL');
+const relativeRemote = hooks.classifyRemoteImageUrl("'/assets/result.png'", { upstreamOrigin: 'https://images.example/v1' });
+ok(relativeRemote.ok && relativeRemote.url === 'https://images.example/assets/result.png', 'relative image URLs should resolve only against a verified HTTPS upstream origin');
+ok(hooks.normalizeRemoteImageUrl('images/result.png', { upstreamOrigin: 'https://images.example/v1' }) === 'https://images.example/images/result.png', 'path-relative image URLs should resolve when they are clearly image paths');
+ok(hooks.classifyRemoteImageUrl('/assets/result.png').category === 'RELATIVE_ORIGIN_MISSING', 'relative image URLs without an upstream origin should be rejected locally');
+ok(hooks.classifyRemoteImageUrl('http://images.example/result.png').category === 'NON_HTTPS', 'HTTP image URLs should be rejected locally');
+ok(hooks.classifyRemoteImageUrl('not a URL').category === 'INVALID_URL', 'malformed image URLs should be rejected locally');
+ok(hooks.classifyRemoteImageUrl('https://user:pass@images.example/result.png').category === 'CREDENTIALS', 'credential-bearing image URLs should be rejected locally');
+ok(hooks.classifyRemoteImageUrl('https://127.0.0.1/result.png').category === 'PRIVATE_HOST', 'private image hosts should be rejected locally');
+const unrelatedImageFields = hooks.collectImageCandidates({
+  data: [{ b64_json: 'c3RyaW5nLWJhc2U2NC1pbWFnZQ==' }],
+  metadata: { uri: 'https://unrelated.example/not-an-image.png', href: 'https://unrelated.example/not-an-image-2.png' },
+  uri: 'https://unrelated.example/root-not-an-image.png'
+});
+ok(!unrelatedImageFields.some((item) => String(item.url || item.uri || item.href || '').includes('unrelated.example')), 'image candidate collector should ignore unrelated uri and href fields outside standard image containers');
+for (const field of ['uri', 'src', 'href']) {
+  const aliasUrl = `https://images.example/alias-${field}.png`;
+  const aliasCandidates = hooks.collectImageCandidates({ data: [{ [field]: aliasUrl }] });
+  ok(aliasCandidates.length === 1 && aliasCandidates[0].url === aliasUrl, `standard image data container should normalize ${field} to url`);
+  const rootAliasCandidates = hooks.collectImageCandidates({ [field]: aliasUrl });
+  const metadataAliasCandidates = hooks.collectImageCandidates({ metadata: { [field]: aliasUrl } });
+  ok(rootAliasCandidates.length === 0 && metadataAliasCandidates.length === 0, `${field} aliases outside standard image containers should not be collected`);
+}
+for (const wrapper of ['result', 'response', 'payload']) {
+  const wrapperUrl = `https://images.example/${wrapper}-single.png`;
+  const wrapperCandidates = hooks.collectImageCandidates({ [wrapper]: { url: wrapperUrl } });
+  ok(wrapperCandidates.length === 1 && wrapperCandidates[0].url === wrapperUrl, `${wrapper} wrapper should normalize a single generic URL`);
+}
+for (const duplicatePayload of [
+  { result: { image: 'https://images.example/result-image.png' } },
+  { data: [{ image: 'https://images.example/data-image.png' }] }
+]) {
+  ok(hooks.collectImageCandidates(duplicatePayload).length === 1, 'a single image object should not be collected twice through its direct field and child traversal');
+}
+const semanticCandidates = hooks.collectImageCandidates({
+  data: {
+    content: [
+      { type: 'text', url: 'https://unrelated.example/text.png' },
+      { type: 'text', object: 'image_part', url: 'https://unrelated.example/conflicting-image-marker.png' },
+      { type: 'image_url', url: 'https://images.example/content-image.png' }
+    ],
+    items: [
+      { kind: 'metadata', url: 'https://unrelated.example/metadata.png' },
+      { mime_type: 'image/png', url: 'https://images.example/mime-image.png' }
+    ],
+    parts: [{ object: 'image_part', url: 'https://images.example/part-image.png' }]
+  }
+});
+ok(!semanticCandidates.some((item) => String(item.url || '').includes('unrelated.example')), 'text and metadata containers should not expose generic URLs as images');
+ok(
+  semanticCandidates.some((item) => item.url === 'https://images.example/content-image.png')
+    && semanticCandidates.some((item) => item.url === 'https://images.example/mime-image.png')
+    && semanticCandidates.some((item) => item.url === 'https://images.example/part-image.png'),
+  'typed image content should expose generic URLs when image semantics are explicit'
+);
+const deniedMarkerCandidates = hooks.collectImageCandidates({
+  data: {
+    content: [
+      { type: 'non_image', url: 'https://unrelated.example/non-image.png' },
+      { kind: 'not_image', url: 'https://unrelated.example/not-image.png' },
+      { type: 'text_image_reference', url: 'https://unrelated.example/text-image-reference.png' },
+      { type: 'image_url', url: 'https://images.example/allowed-image-url.png' }
+    ]
+  }
+});
+ok(!deniedMarkerCandidates.some((item) => String(item.url || '').includes('unrelated.example')), 'negative image markers should not expose generic URLs as images');
+ok(deniedMarkerCandidates.some((item) => item.url === 'https://images.example/allowed-image-url.png'), 'positive image markers should continue to expose generic URLs');
+for (const unsafeRelativeUrl of [
+  '//evil.example/assets/result.png',
+  String.raw`\\evil.example\assets\result.png`,
+  String.raw`/\evil.example\assets\result.png`
+]) {
+  const unsafeClassification = hooks.classifyRemoteImageUrl(unsafeRelativeUrl, { upstreamOrigin: 'https://images.example/v1' });
+  const unsafeNormalized = hooks.normalizeRemoteImageUrl(unsafeRelativeUrl, { upstreamOrigin: 'https://images.example/v1' });
+  ok(unsafeClassification.category === 'INVALID_URL' && unsafeNormalized === '' && !String(unsafeNormalized).includes('evil.example'), `network-path image URL should be rejected before upstream-origin resolution: ${JSON.stringify(unsafeRelativeUrl)}`);
+}
 ok(
   hooks.collectImageCandidates({ type: 'image.generation.chunk', data: { progress_text: '正在生成，请稍候' } }).length === 0,
   'progress text in generic data containers must not be treated as an image candidate'
@@ -1098,7 +1337,7 @@ ok(nestedReturned.moderation === 'strict', 'nested returned moderation should be
 ok(nestedReturned.count === 2, 'returned count should still prefer actual persisted images over response count');
 
 if (typeof hooks.renderDetailModal === 'function') {
-  hooks.setTestTasks([{
+  const detailTaskSnapshot = {
     id: 'detail-diff-task',
     status: 'success',
     prompt: 'detail diff prompt',
@@ -1147,7 +1386,8 @@ if (typeof hooks.renderDetailModal === 'function') {
     createdAt: Date.now(),
     startedAt: Date.now() - 1000,
     finishedAt: Date.now()
-  }]);
+  };
+  hooks.setTestTasks([detailTaskSnapshot]);
   const detailHtml = hooks.renderDetailModal('detail-diff-task');
   const actualCount = (detailHtml.match(/actual-value/g) || []).length;
   ok(actualCount >= 6, 'detail modal should highlight returned differences for ratio, quality, format/transparent, moderation, and count');
@@ -1161,6 +1401,27 @@ if (typeof hooks.renderDetailModal === 'function') {
   ok(detailHtml.includes('sse-sniffed') && detailHtml.includes('completed-event'), 'detail modal should show response mode and completion reason');
   ok(detailHtml.includes('b64_json 开') && detailHtml.includes('流式 关') && detailHtml.includes('partial_images 0') && detailHtml.includes('请求超时 6000s'), 'detail modal should show the effective advanced transport snapshot');
   ok(detailHtml.includes('Trace ID trace-detail-1') && detailHtml.includes('流事件 7') && detailHtml.includes('最后事件 error'), 'detail modal should show bounded trace and stream event diagnostics');
+  hooks.setTestTasks([{
+    id: 'google-detail-moderation-task',
+    status: 'success',
+    prompt: 'google detail',
+    requestedParams: { provider: 'google', model: 'gemini-3.1-flash-image', format: 'png' },
+    returnedParams: { safety: 'strict', safety_filter: 'strict' },
+    images: []
+  }]);
+  const googleDetailHtml = hooks.renderDetailModal('google-detail-moderation-task');
+  ok(!googleDetailHtml.includes('param-label">审核'), 'Google detail metadata must not render a moderation card from safety aliases');
+  hooks.setTestTasks([{
+    id: 'openai-detail-moderation-task',
+    status: 'success',
+    prompt: 'openai detail',
+    requestedParams: { provider: 'openai', model: 'gpt-image-2', format: 'png' },
+    returnedParams: { moderation: 'low' },
+    images: []
+  }]);
+  const openAiDetailHtml = hooks.renderDetailModal('openai-detail-moderation-task');
+  ok(openAiDetailHtml.includes('param-label">审核') && openAiDetailHtml.includes('low'), 'OpenAI detail metadata should render a moderation card when the response has an explicit moderation field');
+  hooks.setTestTasks([detailTaskSnapshot]);
   const viewerHtml = typeof hooks.renderViewer === 'function' ? hooks.renderViewer({ taskId: 'detail-diff-task', index: 0 }) : '';
   ok(viewerHtml.includes('viewer-nav') && viewerHtml.includes('data-action="viewer-next"'), 'multi-image viewer should render next navigation');
   ok(viewerHtml.includes('1 / 2'), 'multi-image viewer should show the current image index');
@@ -1442,7 +1703,7 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(runtimeState.preferences.allowPromptRewrite === false, 'runtime habit allowPromptRewrite=false should be preserved');
   ok(runtimeState.preferences.enterSubmit === true, 'runtime habit enterSubmit should apply');
   ok(runtimeState.preferences.referenceImageEditAction === 'add-mask', 'runtime reference edit action should apply');
-  ok(runtimeState.preferences.zipDownloadRoutes.length === 1 && runtimeState.preferences.zipDownloadRoutes[0] === 'task-detail-all', 'runtime zip routes should apply');
+  ok(runtimeState.preferences.zipDownloadRoutes.length === 1 && runtimeState.preferences.zipDownloadRoutes[0] === 'task-selection', 'runtime zip routes should normalize to the one implemented task-selection entry');
   ok(runtimeState.settings.output_format === 'png' && runtimeState.settings.transparent_output === true && runtimeState.settings.n === 3, 'runtime toolbar generation settings should override stale local defaults');
   ok(runtimeState.activeProfileId === 'name:gpt-image2原生' && runtimeState.activeImageProfileId === 'name:gpt-image2原生', 'runtime duplicate image profile selection should retain the explicit native profile key');
   ok(hooks.imageProfile().name === 'gpt-image2原生', 'runtime duplicate image profile selection must resolve to the native profile rather than the first reused id');
@@ -1520,11 +1781,26 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(bufferedVirtualWindow.shouldVirtualize === true && bufferedVirtualWindow.endIndex - bufferedVirtualWindow.startIndex < 50, 'virtual gallery histories should keep a bounded buffered window');
   const largeVirtualWindow = hooks.galleryVirtualWindow(120);
   ok(largeVirtualWindow.shouldVirtualize === true && largeVirtualWindow.endIndex - largeVirtualWindow.startIndex < 90, 'very large gallery histories should keep offscreen paint bounded by the virtual window');
+  const originalViewportWidth = sandbox.window.innerWidth;
+  sandbox.window.innerWidth = 1740;
   const wideGalleryMetrics = hooks.measureGalleryMetrics({ clientWidth: 1740 });
-  ok(wideGalleryMetrics.columns === 3, 'wide gallery should keep three columns');
+  ok(wideGalleryMetrics.columns === 4, 'wide gallery should use four columns at the desktop breakpoint');
   ok(wideGalleryMetrics.cardHeight > 306, 'wide virtual gallery cards should grow beyond the legacy 306px height');
+  const wideGalleryCssStart = homeCss.indexOf('@media (min-width: 1440px)');
+  const wideGalleryCssEnd = homeCss.indexOf('.asset-prompt', wideGalleryCssStart);
+  const wideGalleryCss = wideGalleryCssStart >= 0 && wideGalleryCssEnd > wideGalleryCssStart
+    ? homeCss.slice(wideGalleryCssStart, wideGalleryCssEnd)
+    : '';
+  ok(wideGalleryCss.includes('.gallery-grid:not(.is-virtual) .asset-media')
+    && wideGalleryCss.includes('.gallery-grid.is-virtual .asset-media')
+    && wideGalleryCss.includes('.gallery-grid.is-virtual .asset-body')
+    && wideGalleryCss.includes('overflow: visible')
+    && wideGalleryCss.includes('.gallery-grid.is-virtual .asset-actions')
+    && wideGalleryCss.includes('flex-shrink: 0')
+    && (wideGalleryCss.match(/aspect-ratio:\s*1\s*\/\s*1/g) || []).length >= 1,
+  'wide four-column gallery cards should use square media in both native and virtual grids without clipping virtual card actions');
   ok(
-    wideGalleryMetrics.cardHeight === hooks.estimateGalleryCardHeight(1740, 3, 8),
+    wideGalleryMetrics.cardHeight === hooks.estimateGalleryCardHeight(1740, 4, 8),
     'measured gallery metrics should use the shared card-height estimator'
   );
   hooks.setTestState({ galleryVirtual: { viewportWidth: 1740, scrollTop: 0, viewportHeight: 700 } });
@@ -1533,7 +1809,6 @@ if (typeof hooks.openAiSizePayload === 'function') {
     measuredVirtualWindow.cardHeight === wideGalleryMetrics.cardHeight,
     'virtual gallery spacers should use the measured card height'
   );
-  const originalViewportWidth = sandbox.window.innerWidth;
   sandbox.window.innerWidth = 1150;
   ok(hooks.galleryVirtualWindow(300).columns === 2, 'gallery virtualization must match the CSS two-column breakpoint through 1180px');
   sandbox.window.innerWidth = originalViewportWidth;
@@ -1561,8 +1836,58 @@ if (typeof hooks.openAiSizePayload === 'function') {
   const emptyCanvas = { width: 1, height: 1, getContext: () => ({ getImageData: () => ({ data: new Uint8ClampedArray([0, 0, 0, 0]) }) }) };
   ok(hooks.maskCanvasHasPaint(paintedCanvas) === true, 'mask canvas paint detector should detect painted alpha');
   ok(hooks.maskCanvasHasPaint(emptyCanvas) === false, 'mask canvas paint detector should treat fully transparent mask as empty');
+  const overlayPixels = new Uint8ClampedArray([
+    250, 204, 21, 255,
+    239, 68, 68, 0,
+    34, 197, 94, 96,
+    59, 130, 246, 0
+  ]);
+  const openAiMaskPixels = hooks.openAiMaskPixelsFromOverlay(overlayPixels, 2, 2);
+  ok(openAiMaskPixels[3] === 0 && openAiMaskPixels[7] === 255 && openAiMaskPixels[11] === 0 && openAiMaskPixels[15] === 255,
+    'OpenAI mask encoding should make painted overlay pixels transparent and unpainted pixels opaque');
+  ok(openAiMaskPixels[0] === 255 && openAiMaskPixels[1] === 255 && openAiMaskPixels[2] === 255,
+    'OpenAI mask encoding should use an opaque white RGB payload independent of brush color');
+  const restoredOverlayPixels = hooks.overlayPixelsFromOpenAiMask(openAiMaskPixels, 2, 2);
+  ok(restoredOverlayPixels[3] > 0 && restoredOverlayPixels[7] === 0 && restoredOverlayPixels[11] > 0 && restoredOverlayPixels[15] === 0,
+    'OpenAI mask preview decoding should restore selected transparent regions to the colored overlay');
   const clonedRefs = await hooks.cloneReferenceSnapshots([{ id: 'r1', blobId: 'ref-blob', originalBlobId: 'ref-blob', name: 'ref.png', width: 10, height: 10 }]);
   ok(clonedRefs.length === 1 && clonedRefs[0].blobId !== 'ref-blob' && clonedRefs[0].originalBlobId === clonedRefs[0].blobId, 'task reference snapshots should clone blobs instead of sharing live composer references');
+
+  const previousQuerySelector = sandbox.document.querySelector;
+  const previousClearReferences = hooks.getTestState().references;
+  const clearMaskId = 'clear-after-mask';
+  const clearCompositeId = 'clear-after-composite';
+  const clearOriginalId = 'clear-after-original';
+  const clearPngBytes = Buffer.from('clear-png-bytes');
+  fakeIndexedDbStore.set(clearMaskId, new Blob([clearPngBytes], { type: 'image/png' }));
+  fakeIndexedDbStore.set(clearCompositeId, new Blob([clearPngBytes], { type: 'image/png' }));
+  fakeIndexedDbStore.set(clearOriginalId, new Blob([clearPngBytes], { type: 'image/png' }));
+  const clearCanvasContext = {
+    clearRect: () => {},
+    getImageData: () => ({ data: new Uint8ClampedArray([0, 0, 0, 255]) })
+  };
+  const clearCanvas = {
+    width: 1,
+    height: 1,
+    getContext: () => clearCanvasContext,
+    toDataURL: () => 'data:image/png;base64,AA=='
+  };
+  sandbox.document.querySelector = (selector) => selector === '#maskCanvas' ? clearCanvas : previousQuerySelector(selector);
+  hooks.setTestState({
+    mode: 'gallery',
+    references: [{ id: 'clear-after-ref', blobId: clearCompositeId, compositedBlobId: clearCompositeId, originalBlobId: clearOriginalId, maskBlobId: clearMaskId, maskFormat: hooks.OPENAI_MASK_FORMAT, name: 'clear.png' }]
+  });
+  hooks.openMaskEditor('clear-after-ref');
+  const clearResult = await hooks.maskClear();
+  const clearedReference = hooks.getTestState().references[0];
+  ok(clearResult === true && clearedReference.blobId === clearCompositeId
+    && clearedReference.compositedBlobId === clearCompositeId
+    && clearedReference.maskBlobId === clearMaskId,
+  'clearing the canvas should defer reference metadata and Blob cleanup until the transactional save');
+  ok(fakeIndexedDbStore.has(clearMaskId) && fakeIndexedDbStore.has(clearCompositeId),
+    'mask clear should retain old Blobs until a committed save can prove they are unreferenced');
+  hooks.setTestState({ references: previousClearReferences });
+  sandbox.document.querySelector = previousQuerySelector;
 
   let capturedRequest = null;
   sandbox.fetch = async (url, options) => {
@@ -1601,7 +1926,7 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(googleBody.negative_prompt === '不要文字，不要水印' && googleBody.negativePrompt === undefined, 'JSON generation request should send one canonical negative prompt field');
   ok(googleBody.transparent_background === false, 'Google png request body should explicitly include selected transparent background false value');
   ok(googleBody.background === 'auto', 'Google opaque png request body should include background=auto for gateway compatibility');
-  ok(googleBody.moderation === 'auto', 'Google generation request body should include selected moderation');
+  ok(googleBody.moderation === undefined, 'Google generation request body must not include the OpenAI moderation field');
   ok(Number(googleBody.n) === 1, 'Google generation request body should force n=1 so Gemini-compatible providers can be split and aggregated');
 
   await hooks.sendGenerationRequest('google transparent png generation', {
@@ -1684,8 +2009,49 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(googleForm.get('quality') === 'medium', 'Google reference FormData should include selected quality');
   ok(googleForm.get('output_format') === 'webp', 'Google reference FormData should include selected output format');
   ok(String(googleForm.get('output_compression')) === '28', 'Google reference FormData should convert selected output quality to API compression');
-  ok(googleForm.get('moderation') === 'low', 'Google reference FormData should include selected moderation');
+  ok(googleForm.get('moderation') === null, 'Google reference FormData must not include the OpenAI moderation field');
   ok(String(googleForm.get('n')) === '1', 'Google reference FormData should force n=1');
+
+  fakeIndexedDbStore.set('google-mask-display', new Blob(['display-overlay'], { type: 'image/png' }));
+  fakeIndexedDbStore.set('google-mask-original', new Blob(['google-original'], { type: 'image/png' }));
+  fakeIndexedDbStore.set('google-mask-source', new Blob(['mask'], { type: 'image/png' }));
+  fakeIndexedDbStore.set('google-mask-composited', new Blob(['google-composited-annotation'], { type: 'image/png' }));
+  fakeIndexedDbStore.set('google-mask-annotation', new Blob(['annotation'], { type: 'image/png' }));
+  await hooks.sendGenerationRequest('google masked reference', { format: 'png' }, {
+    profile: { id: 'google-image', name: 'Nano Banana2', provider: 'google', model: 'gemini-3.1-flash-image' },
+    references: [{ blobId: 'google-mask-display', originalBlobId: 'google-mask-original', compositedBlobId: 'google-mask-composited', maskBlobId: 'google-mask-source', annotationBlobId: 'google-mask-annotation', name: 'masked.png' }]
+  });
+  const googleMaskedForm = capturedRequest?.options?.body;
+  ok(await googleMaskedForm.getAll('image[]')[0].text() === 'google-composited-annotation', 'Google masked references must upload the composited annotated image');
+  ok(googleMaskSupportLabel.includes('黄色半透明标注合成图')
+    && googleMaskedForm.get('mask') === null
+    && String(googleMaskedForm.get('prompt') || '').includes('黄色标注区域'), 'Google mask label must match the composited image, no-mask field, and marked-region prompt behavior');
+
+  fakeIndexedDbStore.set('xai-mask-display', new Blob(['display-overlay'], { type: 'image/png' }));
+  fakeIndexedDbStore.set('xai-mask-original', new Blob(['xai-original'], { type: 'image/png' }));
+  fakeIndexedDbStore.set('xai-mask-source', new Blob(['mask'], { type: 'image/png' }));
+  fakeIndexedDbStore.set('xai-mask-composited', new Blob(['xai-composited-annotation'], { type: 'image/png' }));
+  fakeIndexedDbStore.set('xai-mask-annotation', new Blob(['annotation'], { type: 'image/png' }));
+  await hooks.sendGenerationRequest('xai masked reference', { format: 'png' }, {
+    profile: { id: 'xai-image', name: 'Grok Imagine', provider: 'xai', model: 'grok-imagine-image' },
+    references: [{ blobId: 'xai-mask-display', originalBlobId: 'xai-mask-original', compositedBlobId: 'xai-mask-composited', maskBlobId: 'xai-mask-source', annotationBlobId: 'xai-mask-annotation', name: 'masked.png' }]
+  });
+  const xaiMaskedForm = capturedRequest?.options?.body;
+  ok(await xaiMaskedForm.getAll('image[]')[0].text() === 'xai-composited-annotation', 'xAI masked references must upload the composited annotated image');
+  ok(xaiMaskSupportLabel.includes('黄色半透明标注合成图')
+    && xaiMaskedForm.get('mask') === null
+    && String(xaiMaskedForm.get('prompt') || '').includes('黄色标注区域'), 'xAI mask label must match the composited image, no-mask field, and marked-region prompt behavior');
+
+  let missingMaskedCompositeError = null;
+  try {
+    await hooks.sendGenerationRequest('missing masked composite', { format: 'png' }, {
+      profile: { id: 'google-image', name: 'Nano Banana2', provider: 'google', model: 'gemini-3.1-flash-image' },
+      references: [{ blobId: 'google-mask-display', originalBlobId: 'google-mask-original', compositedBlobId: 'missing-google-composite', maskBlobId: 'google-mask-source', name: 'masked.png' }]
+    });
+  } catch (error) {
+    missingMaskedCompositeError = error;
+  }
+  ok(missingMaskedCompositeError?.code === 'IMAGE_EDIT_MASK_COMPOSITE_MISSING', 'Google/xAI masked requests must fail locally with a stable code when the composited annotated image is missing');
 
   await hooks.sendGenerationRequest('google reference transparent png', {
     resolution: '2K',
@@ -2057,6 +2423,69 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(remotePersisted.length === 2, 'persistResponseImages should persist both remote URL images');
   ok(maxActiveFetches > 1, 'persistResponseImages should download multiple remote images concurrently');
 
+  const proxyFallbackSources = [];
+  sandbox.fetch = async (url) => {
+    proxyFallbackSources.push(String(url));
+    if (/^https:\/\//i.test(String(url))) throw new Error('direct request blocked by browser CORS');
+    return imageResponse(Buffer.from(commonPrefix, 'base64'));
+  };
+  const proxyFallbackPersisted = await hooks.persistResponseImages({ data: [{ url: 'https://example.com/proxy-fallback.png' }] });
+  ok(proxyFallbackPersisted.length === 1 && proxyFallbackSources.length === 2 && proxyFallbackSources[1].startsWith('/api-proxy/image-download?url='), 'a legal HTTPS URL should continue through the site proxy after a direct browser fetch failure');
+
+  let relativeFetchUrl = '';
+  sandbox.fetch = async (url) => {
+    relativeFetchUrl = String(url);
+    return imageResponse(Buffer.from(commonPrefix, 'base64'));
+  };
+  const relativePersisted = await hooks.persistResponseImages({ data: [{ url: "'/assets/relative.png'" }] }, { upstreamOrigin: 'https://images.example/v1' });
+  ok(relativePersisted.length === 1 && relativeFetchUrl === 'https://images.example/assets/relative.png', 'persistResponseImages should resolve a quoted relative image URL against the supplied safe origin');
+
+  let relativeNoOriginError;
+  try {
+    await hooks.persistResponseImages({ data: [{ url: '/assets/no-origin.png' }] });
+  } catch (error) {
+    relativeNoOriginError = error;
+  }
+  ok(relativeNoOriginError?.code === 'IMAGE_RESPONSE_REMOTE_FETCH_FAILED'
+    && relativeNoOriginError?.remoteImageAttempts?.[0]?.category === 'RELATIVE_ORIGIN_MISSING'
+    && !relativeNoOriginError.remoteImageAttempts[0].host,
+  'relative image URLs without an upstream origin should fail before network access with bounded diagnostics');
+
+  const diagnosticAttempts = [];
+  sandbox.fetch = async () => { throw new Error('network failure with secret query'); };
+  await hooks.fetchRemoteImageBlob('https://images.example/assets/result.png?signature=secret-query', {
+    useProxy: false,
+    diagnostics: diagnosticAttempts,
+    sourceField: 'image_url'
+  });
+  const diagnosticKeys = new Set(['sourceField', 'category', 'protocol', 'hostPresent', 'lengthRange', 'status', 'contentType']);
+  ok(diagnosticAttempts.length === 1
+    && [...Object.keys(diagnosticAttempts[0])].every((key) => diagnosticKeys.has(key))
+    && !JSON.stringify(diagnosticAttempts).includes('secret-query')
+    && diagnosticAttempts[0].sourceField === 'image_url'
+    && diagnosticAttempts[0].protocol === 'https:'
+    && diagnosticAttempts[0].hostPresent === true,
+  'remote image diagnostics should be bounded and must not retain a complete URL or query signature');
+
+  const maliciousCodeAttempts = [];
+  sandbox.fetch = async () => ({
+    ok: false,
+    status: 502,
+    headers: { get: (name) => String(name).toLowerCase() === 'content-type' ? 'application/json' : null },
+    clone() { return this; },
+    text: async () => JSON.stringify({ error: { code: 'https://evil.example/a.png?sig=secret' } })
+  });
+  await hooks.fetchRemoteImageBlob('https://images.example/assets/rejected.png', {
+    useProxy: false,
+    diagnostics: maliciousCodeAttempts,
+    sourceField: 'image_url'
+  });
+  ok(maliciousCodeAttempts.length === 1
+    && maliciousCodeAttempts[0].category === 'HTTP_502'
+    && !JSON.stringify(maliciousCodeAttempts).includes('evil.example')
+    && !JSON.stringify(maliciousCodeAttempts).includes('secret'),
+  'untrusted upstream error codes should be reduced to safe diagnostic categories');
+
   sandbox.fetch = async () => imageResponse('not found', 'image/png', false);
   ok(await hooks.fetchRemoteImageBlob('https://example.com/not-found.png') === null, 'remote image persistence should reject non-ok responses');
   sandbox.fetch = async () => imageResponse('<html>not an image</html>', 'text/html', true);
@@ -2124,7 +2553,7 @@ if (typeof hooks.openAiSizePayload === 'function') {
     count: 1
   }, {
     profile: { id: 'openai-mask-image', name: 'OpenAI Mask', provider: 'openai', model: 'gpt-image-2' },
-    references: [{ blobId: 'mask-display', originalBlobId: 'mask-original', maskBlobId: 'mask-source', name: 'source.png' }]
+    references: [{ blobId: 'mask-display', originalBlobId: 'mask-original', maskBlobId: 'mask-source', maskFormat: hooks.OPENAI_MASK_FORMAT, name: 'source.png' }]
   });
   const maskForm = capturedRequest?.options?.body;
   ok(maskForm?.getAll?.('image[]').length === 1 && maskForm?.get?.('mask') instanceof Blob, 'masked OpenAI edits should send the original main image and a separate mask field');

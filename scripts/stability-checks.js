@@ -133,7 +133,32 @@ ok(homeJs.includes('captureFocusState') && homeJs.includes('restoreFocusState') 
 ok(homeJs.includes('captureGalleryScrollState') && homeJs.includes('restoreGalleryScrollState') && (homeJs.includes('const galleryScrollState = captureGalleryScrollState(document, { positionOnly: galleryWasScrolling })') || homeJs.includes('const galleryScrollState = captureGalleryScrollState()')), 'gallery rerenders must preserve the inner gallery scroll position');
 ok(homeJs.includes('galleryVirtualWindow') && homeJs.includes('GALLERY_VIRTUAL_THRESHOLD') && homeCss.includes('.gallery-grid.is-virtual'), 'gallery must use virtualized card rendering for large histories');
 ok(homeJs.includes('referenceSnapshots') && homeJs.includes('open-task-reference-viewer') && homeJs.includes('taskReferenceOriginalBlobId') && homeCss.includes('.task-reference-badge') && homeCss.includes('.detail-reference-strip'), 'image-to-image tasks must persist and render reference thumbnails that open the original image');
-ok(homeJs.includes('maskBaseCanvas') && homeJs.includes('maskCanvasHasPaint') && homeJs.includes('composeReferenceWithMask') && homeCss.includes('.mask-cursor'), 'mask editor must use separate base/mask canvases with brush cursor and compositing');
+ok(homeJs.includes('maskBaseCanvas') && homeJs.includes('maskCanvas') && homeJs.includes('maskAnnotationCanvas')
+  && homeJs.includes('maskCanvasHasPaint') && homeCss.includes('.mask-cursor'), 'mask editor must use separate base/mask/annotation canvases with brush cursor and compositing');
+const maskComposeStart = homeJs.indexOf('async function composeReferenceWithMask(');
+const maskSaveStart = homeJs.indexOf('async function saveMaskEditor(');
+const maskSaveEnd = homeJs.indexOf('function applyPromptFromUrl(', maskSaveStart);
+const maskSaveSource = maskSaveStart >= 0 && maskSaveEnd > maskSaveStart ? homeJs.slice(maskSaveStart, maskSaveEnd) : '';
+ok(maskComposeStart >= 0 && maskComposeStart < maskSaveStart
+  && homeJs.slice(maskComposeStart, maskSaveStart).includes('return buildMaskSaveBundle(ref, draft);')
+  && maskSaveSource.includes('composeReferenceWithMask(ref, draft)'), 'mask save must use the real composeReferenceWithMask bundle path');
+ok(maskSaveSource.includes('const putTrackedBlob = async (blob)')
+  && maskSaveSource.includes('const nextMaskBlobId = await putTrackedBlob(bundle.maskBlob)')
+  && maskSaveSource.includes('const nextAnnotationBlobId = await putTrackedBlob(bundle.annotationBlob)')
+  && maskSaveSource.includes('deleteUnreferencedBlobIds(createdBlobIds)'), 'mask save must immediately track mask, annotation, and composite Blobs and clean them on failure');
+ok(!/\b(alert|confirm|prompt)\s*\(/.test(homeJs)
+  && homeJs.includes('pendingText') && homeJs.includes('mask-text-input')
+  && homeJs.includes('confirm-mask-text') && homeJs.includes('cancel-mask-text'), 'mask text annotations must use an in-editor accessible input instead of native dialogs');
+ok(homeJs.includes('item.maskBlobId || item.annotationBlobId')
+  && homeJs.includes("class=\"agent-image-attachment-thumb ${(item.maskBlobId || item.annotationBlobId) ? 'has-mask' : ''}\"")
+  && homeJs.includes('agent-image-attachment-mask'), 'Agent attachment tray must mark annotation-only images as annotated and retain the editor status UI');
+ok(homeJs.includes('function schedulePromptRepoPrefetch(options = {})')
+  && homeJs.includes('page: nextPage') && homeJs.includes('prefetch: true')
+  && homeJs.includes('function promptRepoRequestIsCurrent(requestSeq)'), 'prompt repository must prefetch page 2 only through the current request generation');
+const promptLoadSource = homeJs.slice(homeJs.indexOf('async function loadPromptPage('), homeJs.indexOf('async function fullPromptItem('));
+ok(promptLoadSource.includes('const hadItems = state.promptRepo.items.length > 0;')
+  && promptLoadSource.includes('if (!hadItems) {')
+  && promptLoadSource.includes("toast('提示词仓库加载失败')"), 'prompt repository page failures must preserve already loaded items');
 ok(homeJs.includes('agent-chat') && homeJs.includes('sendAgentChat'), 'Agent projects must support normal conversation separate from workflow generation');
 ok(homeJs.includes('agent-workflow') && homeJs.includes('generateWorkflowFromAgent'), 'Agent workflow generation must remain a separate action');
 ok(homeJs.includes('state.mode === \'workflow\'') && homeJs.includes('renderWorkflowWorkspace(activeProject(), currentProjectWorkflowRuns())'), 'workflow must be a top-level homepage mode separate from Agent chat');

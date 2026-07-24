@@ -1,5 +1,5 @@
 import { currentUser, json } from '../../_lib/auth.js';
-import { maskSecrets, preserveSecretPlaceholders } from '../../_lib/settings-secrets.js';
+import { isLegacyGeminiField, maskSecrets, preserveSecretPlaceholders, stripLegacyGeminiFields } from '../../_lib/settings-secrets.js';
 
 const MAX_SETTINGS_BODY_BYTES = 512 * 1024;
 const MAX_SETTINGS_KEYS = 64;
@@ -36,10 +36,11 @@ async function loadSettings(db, userId) {
     .all();
   const settings = {};
   for (const row of result.results || []) {
+    if (isLegacyGeminiField(row.key)) continue;
     try {
-      settings[row.key] = JSON.parse(row.value);
+      settings[row.key] = stripLegacyGeminiFields(JSON.parse(row.value));
     } catch (error) {
-      settings[row.key] = row.value;
+      settings[row.key] = stripLegacyGeminiFields(row.value);
     }
   }
   return settings;
@@ -78,8 +79,10 @@ export async function onRequestPost(ctx) {
 
     for (const item of items) {
       if (!item.key || item.value === undefined) continue;
+      if (isLegacyGeminiField(item.key)) continue;
+      const sanitized = stripLegacyGeminiFields(item.value);
       const preserved = preserveSecretPlaceholders(
-        item.value,
+        sanitized,
         existingSettings[item.key],
         item.key
       );

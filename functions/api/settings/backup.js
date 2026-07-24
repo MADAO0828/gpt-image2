@@ -1,9 +1,11 @@
 import { currentUser, json } from '../../_lib/auth.js';
 import {
+  isLegacyGeminiField,
   isSecretKey,
   isSecretPlaceholder,
   maskSecrets,
-  preserveSecretPlaceholders
+  preserveSecretPlaceholders,
+  stripLegacyGeminiFields
 } from '../../_lib/settings-secrets.js';
 
 const MAX_BACKUP_BODY_BYTES = 512 * 1024;
@@ -37,7 +39,8 @@ async function loadSettings(db, userId) {
   const settings = {};
   const updatedAt = {};
   (result.results || []).forEach(row => {
-    try { settings[row.key] = JSON.parse(row.value); } catch (e) { settings[row.key] = row.value; }
+    if (isLegacyGeminiField(row.key)) return;
+    try { settings[row.key] = stripLegacyGeminiFields(JSON.parse(row.value)); } catch (e) { settings[row.key] = stripLegacyGeminiFields(row.value); }
     if (row.updated_at) updatedAt[row.key] = row.updated_at;
   });
   return { settings, updatedAt };
@@ -55,10 +58,12 @@ function normalizeImportItems(body, existingSettings) {
   if (!source || typeof source !== 'object' || Array.isArray(source)) return [];
   const items = [];
   Object.keys(source).forEach(key => {
+    if (isLegacyGeminiField(key)) return;
     if (isSecretKey(key) && isSecretPlaceholder(source[key])) return;
+    const sanitized = stripLegacyGeminiFields(source[key]);
     items.push({
       key,
-      value: preserveSecretPlaceholders(source[key], existingSettings[key], key)
+      value: preserveSecretPlaceholders(sanitized, existingSettings[key], key)
     });
   });
   return items;

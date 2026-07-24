@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 const source = await readFile(new URL('../scripts/local-preview-server.mjs', import.meta.url), 'utf8');
+const { stripLegacyGeminiFields } = await import('../functions/_lib/settings-secrets.js');
 
 function extractFunction(name) {
   const start = source.indexOf(`function ${name}(`);
@@ -33,14 +34,15 @@ const incoming = existing.map(({ id, name }) => ({
   id,
   name,
   apiKey: '***MASKED***',
-  nativeApiKey: '***MASKED***'
+  nativeApiKey: '***MASKED***',
+  googleNativeApiKey: 'cloudflare-proxy'
 }));
 
-const preserved = preserveProfileSecrets(incoming, existing);
+const preserved = stripLegacyGeminiFields(preserveProfileSecrets(incoming, existing));
 assert.equal(preserved[0].apiKey, 'super-resolution-key');
-assert.equal(preserved[0].nativeApiKey, 'super-native');
 assert.equal(preserved[1].apiKey, 'native-key');
-assert.equal(preserved[1].nativeApiKey, 'native-native');
+assert.equal(Object.prototype.hasOwnProperty.call(preserved[0], 'nativeApiKey'), false);
+assert.equal(Object.prototype.hasOwnProperty.call(preserved[0], 'googleNativeApiKey'), false);
 
 const renamed = preserveProfileSecrets([
   { id: 'only-profile', name: 'renamed', apiKey: '***MASKED***' }

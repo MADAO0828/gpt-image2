@@ -1,6 +1,29 @@
 export const SECRET_PLACEHOLDER = '***MASKED***';
 
 const SECRET_KEY_PATTERN = /(?:api.?keys?|access.?keys?|private.?keys?|service.?account.?keys?|secret(?:s?|keys?|values?)|password(?:s?|hash|values?)|credentials?|authorizations?|cookies?|token(?:s?|values?|secrets?|hash))(?:encrypted|ciphertext)?$/i;
+const LEGACY_GEMINI_FIELDS = new Set([
+  'nativeBaseUrl',
+  'googleNativeBaseUrl',
+  'nativeApiKey',
+  'googleNativeApiKey'
+]);
+
+export function isLegacyGeminiField(key) {
+  return LEGACY_GEMINI_FIELDS.has(String(key || ''));
+}
+
+export function stripLegacyGeminiFields(value) {
+  if (Array.isArray(value)) return value.map(item => stripLegacyGeminiFields(item));
+  if (value && typeof value === 'object') {
+    const output = {};
+    for (const [childKey, childValue] of Object.entries(value)) {
+      if (isLegacyGeminiField(childKey)) continue;
+      output[childKey] = stripLegacyGeminiFields(childValue);
+    }
+    return output;
+  }
+  return value;
+}
 
 export function isSecretKey(key) {
   return SECRET_KEY_PATTERN.test(String(key || '').replace(/[^a-z0-9]/gi, ''));

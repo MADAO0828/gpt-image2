@@ -146,7 +146,7 @@ async function readResponseText(body, onChunk = null) {
   const bytes = await readResponseBytes(body, IMAGE_RESPONSE_LIMIT, onChunk);
   return new TextDecoder().decode(bytes);
 }
-function selectedProfile(settings, explicitProfileId = '') { const profiles = Array.isArray(settings.profiles) ? settings.profiles : []; const find = id => findProfileBySelectionKey(profiles, id); let base = null; let preferredId = ''; if (explicitProfileId) { preferredId = explicitProfileId; base = find(explicitProfileId); if (!base || (base.apiMode || 'images') !== 'images') throw new Error('Selected render profile is missing or does not support Images API'); } else if (settings.activeImageProfileId) { preferredId = settings.activeImageProfileId; base = find(preferredId); if (!base || (base.apiMode || 'images') !== 'images') throw new Error('Active image profile is missing or does not support Images API'); } else { preferredId = settings.activeProfileId || (profiles[0] && profiles[0].id) || 'default-openai'; const active = find(preferredId); base = active && (active.apiMode || 'images') === 'images' ? active : profiles.find(p => p && (p.apiMode || 'images') === 'images') || null; } base = base || {}; return { id: base.id || preferredId, name: base.name || '云端配置', provider: base.provider || 'openai', baseUrl: firstString(base.baseUrl, settings.baseUrl), nativeBaseUrl: firstString(base.nativeBaseUrl, base.googleNativeBaseUrl, settings.nativeBaseUrl, settings.googleNativeBaseUrl), apiKey: firstString(base.apiKey, settings.apiKey), nativeApiKey: firstString(base.nativeApiKey, base.googleNativeApiKey, settings.nativeApiKey, settings.googleNativeApiKey), model: firstString(base.model, settings.model) || 'gpt-image-2', codexCli: asBool(base.codexCli, asBool(settings.codexCli, false)), timeout: asNum(base.timeout, asNum(settings.timeout, 600)), responseFormatB64Json: asBool(base.responseFormatB64Json, asBool(settings.responseFormatB64Json, false)), streamImages: asBool(base.streamImages, asBool(settings.streamImages, false)), streamPartialImages: asNum(base.streamPartialImages, asNum(settings.streamPartialImages, 1)) }; }
+function selectedProfile(settings, explicitProfileId = '') { const profiles = Array.isArray(settings.profiles) ? settings.profiles : []; const find = id => findProfileBySelectionKey(profiles, id); let base = null; let preferredId = ''; if (explicitProfileId) { preferredId = explicitProfileId; base = find(explicitProfileId); if (!base || (base.apiMode || 'images') !== 'images') throw new Error('Selected render profile is missing or does not support Images API'); } else if (settings.activeImageProfileId) { preferredId = settings.activeImageProfileId; base = find(preferredId); if (!base || (base.apiMode || 'images') !== 'images') throw new Error('Active image profile is missing or does not support Images API'); } else { preferredId = settings.activeProfileId || (profiles[0] && profiles[0].id) || 'default-openai'; const active = find(preferredId); base = active && (active.apiMode || 'images') === 'images' ? active : profiles.find(p => p && (p.apiMode || 'images') === 'images') || null; } base = base || {}; return { id: base.id || preferredId, name: base.name || '云端配置', provider: base.provider || 'openai', baseUrl: firstString(base.baseUrl, settings.baseUrl), apiKey: firstString(base.apiKey, settings.apiKey), model: firstString(base.model, settings.model) || 'gpt-image-2', codexCli: asBool(base.codexCli, asBool(settings.codexCli, false)), timeout: asNum(base.timeout, asNum(settings.timeout, 600)), responseFormatB64Json: asBool(base.responseFormatB64Json, asBool(settings.responseFormatB64Json, false)), streamImages: asBool(base.streamImages, asBool(settings.streamImages, false)), streamPartialImages: asNum(base.streamPartialImages, asNum(settings.streamPartialImages, 1)) }; }
 function providerKey(profile) { const raw = String(profile.provider || '').toLowerCase(); if (raw.includes('google') || /gemini|banana/i.test(profile.model || '')) return 'google'; if (raw.includes('xai') || raw.includes('grok') || /grok/i.test(profile.model || '')) return 'xai'; return 'openai'; }
 function formBool(form, key, fallback) { const value = form.get(key); if (value === null || value === undefined || value === '') return fallback; return /^(1|true|yes|on|b64_json)$/i.test(String(value)); }
 function formNum(form, key, fallback) { const n = Number(form.get(key)); return Number.isFinite(n) ? n : fallback; }
@@ -621,6 +621,12 @@ export async function onRequestPost(ctx) {
     return json({ error: error.message, code: error.code }, error.status || 413);
   }
   const provider = providerKey(profile);
+  if (maskFile && provider !== 'openai') {
+    return json({
+      error: '当前供应商不支持专业工作台像素遮罩，请移除遮罩后重试',
+      code: 'PRO_WORKBENCH_MASK_PROVIDER_UNSUPPORTED'
+    }, 400);
+  }
   const upstreamPath = files.length ? 'images/edits' : 'images/generations';
   const renderPrompt = [
     `${modeLabel(mode)}专业渲染任务`,
@@ -642,7 +648,7 @@ export async function onRequestPost(ctx) {
   if (!profile.codexCli) fd.append('quality', normalizeImageQuality(params.quality || settings.quality));
   fd.append('n', String(provider === 'google' ? 1 : asNum(params.count || params.n || settings.n, 1)));
   fd.append('output_format', outputFormat);
-  fd.append('moderation', String(params.moderation || settings.moderation || 'auto'));
+  if (provider === 'openai') fd.append('moderation', String(params.moderation || settings.moderation || 'auto'));
   const outputCompression = params.output_compression ?? params.compression ?? settings.output_compression;
   if (outputFormat === 'png') {
     const transparentValue = params.transparent_background ?? params.transparent ?? settings.transparent_output ?? false;
@@ -664,9 +670,9 @@ export async function onRequestPost(ctx) {
       model: profile.model || 'gpt-image-2',
       prompt: renderPrompt,
       ...providerPayload(provider, params, profile.model),
-      output_format: outputFormat,
-      moderation: String(params.moderation || settings.moderation || 'auto')
+      output_format: outputFormat
     };
+    if (provider === 'openai') body.moderation = String(params.moderation || settings.moderation || 'auto');
     if (!profile.codexCli) body.quality = normalizeImageQuality(params.quality || settings.quality);
     if (provider !== 'google' && count > 1) body.n = count;
     if (outputFormat === 'png') {
@@ -761,20 +767,21 @@ export async function onRequestPost(ctx) {
     data = await readImageResponsePayload(upstream, { onChunk: resetStreamIdle });
     streamReadMs = Date.now() - streamStartedAt;
     clearTimeoutState();
+    const returnedParams = {
+      source: `${profile.name} · ${profile.model}`,
+      size: data.size || params.size || params.resolution || 'auto',
+      aspectRatio: data.aspect_ratio || data.aspectRatio || params.aspectRatio || params.aspect_ratio || 'auto',
+      quality: normalizeImageQuality(params.quality || settings.quality),
+      format: outputFormat,
+      compression: outputCompression ?? 90,
+      transparent: !!(params.transparent_background ?? params.transparent ?? settings.transparent_output),
+      count: Array.isArray(data.data) ? data.data.length : asNum(params.count || params.n || settings.n, 1)
+    };
+    if (provider === 'openai') returnedParams.moderation = params.moderation || settings.moderation || 'auto';
     return json({
       ...data,
       returnedPrompt: data.revised_prompt || data.revisedPrompt || prompt,
-      returnedParams: {
-        source: `${profile.name} · ${profile.model}`,
-        size: data.size || params.size || params.resolution || 'auto',
-        aspectRatio: data.aspect_ratio || data.aspectRatio || params.aspectRatio || params.aspect_ratio || 'auto',
-        quality: normalizeImageQuality(params.quality || settings.quality),
-        format: outputFormat,
-        compression: outputCompression ?? 90,
-        transparent: !!(params.transparent_background ?? params.transparent ?? settings.transparent_output),
-        moderation: params.moderation || settings.moderation || 'auto',
-        count: Array.isArray(data.data) ? data.data.length : asNum(params.count || params.n || settings.n, 1)
-      },
+      returnedParams,
       workflowName: '专业工作台',
       workflowNodeId: mode,
       batchLabel: modeLabel(mode),

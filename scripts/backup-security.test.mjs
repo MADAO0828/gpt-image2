@@ -254,6 +254,7 @@ test('backup export masks current user API secrets and includes no plaintext key
     users: [{ id: 7, username: 'alice', role: 'user', session_version: 1 }],
     settings: { 7: [
       { key: 'apiKey', value: JSON.stringify('sk-real-secret'), updated_at: '2026-06-23 01:00:00' },
+      { key: 'nativeBaseUrl', value: JSON.stringify('https://legacy.example'), updated_at: '2026-06-23 01:00:00' },
       { key: 'profiles', value: JSON.stringify([{ id: 'p1', apiKey: 'sk-profile-secret', nativeApiKey: 'gemini-profile-secret', baseUrl: 'https://api.example/v1' }]), updated_at: '2026-06-23 01:00:00' }
     ] }
   });
@@ -263,6 +264,9 @@ test('backup export masks current user API secrets and includes no plaintext key
   const text = await res.text();
   assert.match(text, /\*\*\*MASKED\*\*\*/);
   assert.doesNotMatch(text, /sk-real-secret|sk-profile-secret|gemini-profile-secret/);
+  const exported = JSON.parse(text);
+  assert.equal(Object.prototype.hasOwnProperty.call(exported.settings, 'nativeBaseUrl'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(exported.settings.profiles[0], 'nativeApiKey'), false);
 });
 
 test('admin backup export can include user summary but no password hashes or API keys', async () => {
@@ -288,6 +292,29 @@ test('backup import rejects masked API keys instead of storing placeholders as s
   assert.equal(db.writes.some(w => w.bound.includes('apiKey')), false);
 });
 
+test('backup import drops legacy Gemini profile fields while preserving current profile keys', async () => {
+  const mod = await importWorkerModule('functions/api/settings/backup.js', ['onRequestPost']);
+  const db = makeDb({
+    users: [{ id: 8, username: 'import-user', role: 'user', session_version: 1 }],
+    settings: { 8: [{ key: 'profiles', value: JSON.stringify([{ id: 'main', apiKey: 'sk-existing', nativeApiKey: 'old-native' }]), updated_at: 'x' }] }
+  });
+  const token = await signToken({ userId: 8, sessionVersion: 1, exp: Math.floor(Date.now() / 1000) + 60 });
+  const res = await mod.onRequestPost({
+    request: new Request('https://local/api/settings/backup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-GPT-Image-Session': token },
+      body: JSON.stringify({ settings: { profiles: [{ id: 'main', apiKey: '***MASKED***', baseUrl: 'https://api.example/v1', nativeBaseUrl: 'https://legacy.example', googleNativeApiKey: 'legacy-secret' }] } })
+    }),
+    env: { gpt_image2_db: db, JWT_SECRET: 'gpt-image2-jwt-secret-key-2026-secure', ALLOW_SESSION_HEADER_AUTH: 'true' }
+  });
+  assert.equal(res.status, 200);
+  const saved = JSON.parse(db.writes.find(write => write.bound[1] === 'profiles').bound[2]);
+  assert.equal(saved[0].apiKey, 'sk-existing');
+  assert.equal(saved[0].baseUrl, 'https://api.example/v1');
+  assert.equal(Object.prototype.hasOwnProperty.call(saved[0], 'nativeBaseUrl'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(saved[0], 'googleNativeApiKey'), false);
+});
+
 test('settings save preserves existing secrets when placeholder strings are posted', async () => {
   const mod = await importWorkerModule('functions/api/settings/save.js', ['onRequestPost']);
   const db = makeDb({
@@ -302,9 +329,10 @@ test('settings save preserves existing secrets when placeholder strings are post
   const apiWrite = db.writes.find(w => w.bound[1] === 'apiKey');
   const profilesWrite = db.writes.find(w => w.bound[1] === 'profiles');
   assert.equal(apiWrite.bound[2], 'sk-existing');
-  assert.equal(JSON.parse(profilesWrite.bound[2])[0].apiKey, 'sk-profile-existing');
-  assert.equal(JSON.parse(profilesWrite.bound[2])[0].nativeApiKey, 'gemini-existing');
-  assert.equal(JSON.parse(profilesWrite.bound[2])[0].googleNativeApiKey, 'google-native-existing');
+  const saved = JSON.parse(profilesWrite.bound[2]);
+  assert.equal(saved[0].apiKey, 'sk-profile-existing');
+  assert.equal(Object.prototype.hasOwnProperty.call(saved[0], 'nativeApiKey'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(saved[0], 'googleNativeApiKey'), false);
 });
 
 test('settings save keeps masked duplicate profile secrets matched by id and name', async () => {
@@ -340,10 +368,12 @@ test('settings save keeps masked duplicate profile secrets matched by id and nam
   const saved = JSON.parse(profilesWrite.bound[2]);
   const byName = new Map(saved.map(profile => [profile.name || profile.id, profile]));
   assert.equal(byName.get('gpt-image2原生').apiKey, 'stored-b');
-  assert.equal(byName.get('gpt-image2原生').nativeApiKey, 'stored-native-b');
   assert.equal(byName.get('gpt-image2-4k超分').apiKey, 'stored-a');
-  assert.equal(byName.get('gpt-image2-4k超分').nativeApiKey, 'stored-native-a');
   assert.equal(byName.get('legacy-only').apiKey, 'stored-legacy');
+  for (const profile of saved) {
+    assert.equal(Object.prototype.hasOwnProperty.call(profile, 'nativeApiKey'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(profile, 'googleNativeApiKey'), false);
+  }
 });
 
 test('public registration can be disabled explicitly', async () => {

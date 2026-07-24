@@ -194,6 +194,27 @@ for (const marker of [
 ]) {
   assertContains(homepage, marker, `Homepage v3 is missing required behavior marker: ${marker}`);
 }
+const maskComposeStart = homepage.indexOf('async function composeReferenceWithMask(');
+const maskSaveStart = homepage.indexOf('async function saveMaskEditor(');
+const maskSaveEnd = homepage.indexOf('function applyPromptFromUrl(', maskSaveStart);
+const maskComposeSource = maskComposeStart >= 0 && maskSaveStart > maskComposeStart
+  ? homepage.slice(maskComposeStart, maskSaveStart)
+  : '';
+const maskSaveSource = maskSaveStart >= 0 && maskSaveEnd > maskSaveStart
+  ? homepage.slice(maskSaveStart, maskSaveEnd)
+  : '';
+assertContains(maskComposeSource, 'return buildMaskSaveBundle(ref, draft);', 'Mask composition must return a real save bundle through composeReferenceWithMask.');
+assertContains(maskSaveSource, 'composeReferenceWithMask(ref, draft)', 'Mask save must call composeReferenceWithMask.');
+assertContains(maskSaveSource, 'const putTrackedBlob = async (blob)', 'Mask save must track each Blob write immediately.');
+assertContains(maskSaveSource, 'deleteUnreferencedBlobIds(createdBlobIds)', 'Mask save must clean created Blobs after a failed write.');
+assertContains(homepage, 'maskAnnotationCanvas', 'Mask editor must retain a dedicated annotation canvas.');
+assertContains(homepage, 'pendingText', 'Mask text input must be represented in editor state.');
+assertContains(homepage, 'mask-text-input', 'Mask text input must be rendered as an accessible editor control.');
+assertContains(homepage, 'item.maskBlobId || item.annotationBlobId', 'Agent attachment status must include annotation-only images.');
+assertMatch(homepage, /promptRepoRequestIsCurrent\(requestSeq\)/, 'Prompt repository requests must be guarded by the active generation.');
+assertContains(homepage, 'page: nextPage', 'Prompt repository must prefetch the next page after page 1.');
+assertContains(homepage, "toast('提示词仓库加载失败')", 'Prompt repository must retain loaded items when a later page fails.');
+if (/\b(alert|confirm|prompt)\s*\(/.test(homepage)) fail('Homepage must not use browser-native dialogs.');
 for (const marker of [
   'function consumeImageStream',
   'IMAGE_STREAM_TRANSPORT_INTERRUPTED',

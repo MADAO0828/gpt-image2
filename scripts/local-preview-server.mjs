@@ -26,7 +26,7 @@ import {
   rateLimitHeaders,
   recordLoginFailure
 } from '../functions/_lib/rate-limit.js';
-import { maskSecrets, preserveSecretPlaceholders } from '../functions/_lib/settings-secrets.js';
+import { isLegacyGeminiField, maskSecrets, preserveSecretPlaceholders, stripLegacyGeminiFields } from '../functions/_lib/settings-secrets.js';
 import { findProfileBySelectionKey, profileSelectionKey } from '../functions/_lib/profile-header.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -233,10 +233,11 @@ function loadSettingsForUser(userId) {
   const rows = db.prepare('SELECT key, value FROM user_settings WHERE user_id = ? ORDER BY key ASC').all(Number(userId));
   const settings = {};
   for (const row of rows) {
+    if (isLegacyGeminiField(row.key)) continue;
     try {
-      settings[row.key] = JSON.parse(row.value);
+      settings[row.key] = stripLegacyGeminiFields(JSON.parse(row.value));
     } catch {
-      settings[row.key] = row.value;
+      settings[row.key] = stripLegacyGeminiFields(row.value);
     }
   }
   return settings;
@@ -283,8 +284,6 @@ function preserveProfileSecrets(incomingProfiles, existingProfiles) {
     const next = { ...profile };
     const old = existingProfileForSecrets(profile, existingProfiles, index);
     if (isProxyPlaceholder(next.apiKey)) next.apiKey = old && !isProxyPlaceholder(old.apiKey) ? (old.apiKey || '') : '';
-    if (isProxyPlaceholder(next.nativeApiKey)) next.nativeApiKey = old && !isProxyPlaceholder(old.nativeApiKey) ? (old.nativeApiKey || '') : '';
-    if (isProxyPlaceholder(next.googleNativeApiKey)) next.googleNativeApiKey = old && !isProxyPlaceholder(old.googleNativeApiKey) ? (old.googleNativeApiKey || '') : '';
     return next;
   });
 }
@@ -302,10 +301,10 @@ function normalizeImageQuality(value, fallback = 'high') {
   return ['auto', 'low', 'medium', 'high'].includes(fallback) ? fallback : 'high';
 }
 function sanitizeIncomingSetting(item, existingSettings) {
-  if (!item || !item.key) return item;
+  if (!item || !item.key || isLegacyGeminiField(item.key)) return null;
   return {
     ...item,
-    value: preserveSecretPlaceholders(item.value, existingSettings[item.key], item.key)
+    value: stripLegacyGeminiFields(preserveSecretPlaceholders(item.value, existingSettings[item.key], item.key))
   };
 }
 function activeLocalProfile(settings) {
@@ -791,7 +790,7 @@ async function handleApi(req, res, url) {
         if (!rawItems.length) return json(res, 400, { error: 'No settings provided' });
         validateSettingsItems(rawItems);
         const existing = loadSettingsForUser(user.id);
-        const items = rawItems.map((item) => sanitizeIncomingSetting(item, existing));
+        const items = rawItems.map((item) => sanitizeIncomingSetting(item, existing)).filter(Boolean);
         for (const item of items) {
           if (item.value === undefined) continue;
           writeSetting(user.id, item.key, item.value);
