@@ -21,6 +21,7 @@ const PROMPT_PAGE_SIZE = 36;
 const PROMPT_VIRTUAL_THRESHOLD = 108;
 const PROMPT_VIRTUAL_BUFFER_ROWS = 5;
 const PROMPT_REPO_CACHE_LIMIT = 24;
+const HOMEPAGE_ASSET_VERSION = 'home-v3-20260724-mask-editor-r198';
 const PROMPT_FAST_VERSION = 'home-v3-20260721-profile-header-r197';
 const PROMPT_FAST_BOOTSTRAP_URL = `/prompts_fast/bootstrap.json?v=${PROMPT_FAST_VERSION}`;
 const PROMPT_FAST_PREVIEWS_URL = `/prompts_fast/category_previews.json?v=${PROMPT_FAST_VERSION}`;

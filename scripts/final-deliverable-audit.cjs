@@ -151,6 +151,12 @@ assertContains(deploy, "'playwright', 'install', 'chromium', 'firefox'", 'Deploy
 const homepage = read('assets/homepage-v3.js');
 const imageStreamRuntime = read('assets/image-stream-runtime.js');
 const profileHeaderCodec = read('functions/_lib/profile-header.js');
+const homepageAssetVersionMatch = index.match(/\/assets\/homepage-v3\.js\?v=([^"'&\s]+)/);
+if (!homepageAssetVersionMatch) {
+  fail('Index must declare a cache-busted homepage v3 JS asset version.');
+} else {
+  assertContains(homepage, homepageAssetVersionMatch[1], 'Homepage v3 JS must declare the asset version loaded by index.html.');
+}
 assertContains(profileHeaderCodec, 'export function encodeProfileHeaderValue', 'Profile header codec must expose the ASCII-safe encoder.');
 assertContains(profileHeaderCodec, 'export function decodeProfileHeaderValue', 'Profile header codec must expose the proxy decoder.');
 assertContains(profileHeaderCodec, 'gpt-image-profile-utf8-v1:', 'Profile header codec must use the versioned UTF-8 marker.');
