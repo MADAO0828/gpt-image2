@@ -89,7 +89,8 @@ const requiredFiles = [
   'scripts/local-upstream-fetch.test.mjs',
   'tests/homepage-task-regression.js',
   'tests/provider-size-branching.js',
-  'tests/e2e-quality.js'
+  'tests/e2e-quality.js',
+  'tests/mask-editor-browser-smoke.cjs'
 ];
 for (const rel of requiredFiles) {
   if (!exists(rel)) fail(`Required deliverable file missing: ${rel}`);
@@ -115,9 +116,9 @@ for (const name of allowedAssets) {
 }
 
 const index = read('index.html');
-assertContains(index, '/assets/homepage-v3.css?v=home-v3-20260721-profile-header-r197', 'Index must load cache-busted homepage v3 CSS r197.');
-assertContains(index, '/assets/image-stream-runtime.js?v=home-v3-20260721-profile-header-r197', 'Index must load cache-busted stream runtime r197.');
-assertContains(index, '/assets/homepage-v3.js?v=home-v3-20260721-profile-header-r197', 'Index must load cache-busted homepage v3 JS r197.');
+assertContains(index, '/assets/homepage-v3.css?v=home-v3-20260724-mask-editor-r198', 'Index must load cache-busted homepage v3 CSS r198.');
+assertContains(index, '/assets/image-stream-runtime.js?v=home-v3-20260724-mask-editor-r198', 'Index must load cache-busted stream runtime r198.');
+assertContains(index, '/assets/homepage-v3.js?v=home-v3-20260724-mask-editor-r198', 'Index must load cache-busted homepage v3 JS r198.');
 for (const old of ['homepage-v2', 'index-CZHhOunP', 'index-BR6pbS6i', 'fast-workbench-skeleton', 'home-v3-20260703', 'home-v3-20260704-cache-recovery-agent-viewer-r8', 'home-v3-20260704-cache-recovery-agent-viewer-r9', 'home-v3-20260704-cache-recovery-agent-viewer-r10', 'home-v3-20260704-cache-recovery-agent-viewer-r11', 'home-v3-20260704-cache-recovery-agent-viewer-r12', 'home-v3-20260704-cache-recovery-agent-viewer-r13', 'home-v3-20260704-cache-recovery-agent-viewer-r14', 'home-v3-20260704-cache-recovery-agent-viewer-r15', 'home-v3-20260704-cache-recovery-agent-viewer-r16', 'home-v3-20260704-cache-recovery-agent-viewer-r17', 'home-v3-20260704-cache-recovery-agent-viewer-r18', 'home-v3-20260704-cache-recovery-agent-viewer-r19', 'home-v3-20260704-cache-recovery-agent-viewer-r20', 'home-v3-20260704-cache-recovery-agent-viewer-r21', 'home-v3-20260704-cache-recovery-agent-viewer-r22', 'home-v3-20260704-cache-recovery-agent-viewer-r23', 'home-v3-20260704-cache-recovery-agent-viewer-r24']) {
   assertNotContains(index, old, `Index still references obsolete shell marker: ${old}`);
 }
@@ -143,6 +144,9 @@ for (const marker of ["'.codegraph'", "'.agents'", "'.codex'", "'.wrangler'", "'
   assertContains(deploy, marker, `Deploy staging must exclude ${marker}`);
 }
 assertContains(deploy, "'.git'", 'Deploy staging must exclude worktree .git file as well as .git directories.');
+assertContains(deploy, "Invoke-LoggedCommand -FilePath 'node' -Arguments @('--check', 'tests/mask-editor-browser-smoke.cjs')", 'Deployment quality gate must syntax-check the Firefox mask editor smoke.');
+assertContains(deploy, "Invoke-LoggedCommand -FilePath 'node' -Arguments @('tests/mask-editor-browser-smoke.cjs')", 'Deployment quality gate must run the Firefox mask editor smoke.');
+assertContains(deploy, "'playwright', 'install', 'chromium', 'firefox'", 'Deployment browser install must include Chromium and Firefox.');
 
 const homepage = read('assets/homepage-v3.js');
 const imageStreamRuntime = read('assets/image-stream-runtime.js');

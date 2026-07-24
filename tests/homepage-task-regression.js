@@ -212,6 +212,12 @@ ok(typeof hooks.appendAdvancedToFormData === 'function', 'appendAdvancedToFormDa
 ok(typeof hooks.scheduleTaskRemovalPersistence === 'function', 'scheduleTaskRemovalPersistence hook missing');
 ok(typeof hooks.resolveComposerPromptForRequest === 'function', 'resolveComposerPromptForRequest hook missing');
 ok(typeof hooks.insertReferenceMention === 'function' && typeof hooks.remapReferenceMentionTokens === 'function', 'reference mention hooks missing');
+ok(typeof hooks.normalizeEditInstruction === 'function'
+  && typeof hooks.selectedReferencesForImageGeneration === 'function'
+  && typeof hooks.appendReferenceEditInstructions === 'function'
+  && typeof hooks.appendReferenceRequestInstructions === 'function'
+  && typeof hooks.prepareEditReferenceFiles === 'function'
+  && typeof hooks.mergeOpenAiMaskBlobs === 'function', 'mask edit instruction and OpenAI mask preparation hooks missing');
 for (const entry of ['gallery', 'agent', 'workflow', 'pro']) {
   let advancedHtml = '';
   try {
@@ -247,13 +253,205 @@ ok(typeof hooks.renderAgentTaskCard === 'function', 'Agent task card renderer ho
 ok(typeof hooks.renderAgentAttachmentTray === 'function', 'Agent attachment tray renderer hook missing');
 ok(typeof hooks.renderMaskEditor === 'function', 'mask editor renderer hook missing');
 ok(typeof hooks.imageMaskSupportLabel === 'function', 'image mask support label hook missing');
+const maskUiBaseline = hooks.getTestState();
+hooks.setTestState({
+  mode: 'gallery',
+  profiles: [{ id: 'mask-ui-openai', name: 'OpenAI Mask UI', provider: 'openai', apiMode: 'images', model: 'gpt-image-2' }],
+  activeProfileId: 'mask-ui-openai',
+  activeImageProfileId: 'mask-ui-openai',
+  references: [{ id: 'mask-ui-single', name: 'single.png', blobId: 'ref-blob', originalBlobId: 'ref-blob' }]
+});
+hooks.openMaskEditor('mask-ui-single');
+hooks.setTestState({ maskEditorReady: true });
+const singleMaskEditorHtml = hooks.renderMaskEditor();
+const singleMaskToolValues = [...singleMaskEditorHtml.matchAll(/data-action="mask-tool"[^>]*data-tool="([^"]+)"/g)].map((match) => match[1]);
+ok(!singleMaskEditorHtml.includes('mask-topbar'), 'mask editor should use the full-screen layout without the removed topbar');
+ok(singleMaskToolValues.join(',') === 'move,rect,ellipse,line,arrow,brush,polygon,text,fill,crop,eraser', 'mask editor tools should keep the Center/Move/Rect/Ellipse/Line/Arrow/Brush/Polygon/Text/Fill/Crop/Eraser order');
+ok(singleMaskEditorHtml.includes('mask-draw-options')
+  && /class="mask-size-slider" type="range" min="1" max="100" step="1"/.test(singleMaskEditorHtml)
+  && singleMaskEditorHtml.includes('--mask-cursor-color:#ef4444'), 'brush mode should expose the red default and a 1-100 size range');
+ok(!singleMaskEditorHtml.includes('class="mask-refs"'), 'single-reference mask editing should omit the thumbnail rail');
+hooks.openMaskEditor('missing-mask-ui-ref');
+ok(vm.runInContext("state.maskEditor?.activeRefId === 'mask-ui-single'", sandbox), 'opening the mask editor with an invalid reference ID should use the first real reference');
+hooks.setTestState({ maskEditorReady: true });
+hooks.setMaskTool('rect');
+const nonBrushMaskEditorHtml = hooks.renderMaskEditor();
+ok(!nonBrushMaskEditorHtml.includes('mask-draw-options') && !nonBrushMaskEditorHtml.includes('mask-size-slider'), 'brush controls should only render while the brush tool is active');
+hooks.setTestState({
+  references: [
+    { id: 'mask-ui-single', name: 'single.png', blobId: 'ref-blob', originalBlobId: 'ref-blob' },
+    { id: 'mask-ui-second', name: 'second.png', blobId: 'ref-blob', originalBlobId: 'ref-blob' }
+  ]
+});
+hooks.openMaskEditor('mask-ui-single');
+hooks.setTestState({ maskEditorReady: true });
+const multiMaskEditorHtml = hooks.renderMaskEditor();
+const multiMaskRefLabels = [...multiMaskEditorHtml.matchAll(/class="mask-ref-number">([^<]+)<\/span>/g)].map((match) => match[1]);
+ok(multiMaskEditorHtml.includes('class="mask-refs"')
+  && (multiMaskEditorHtml.match(/data-action="switch-mask-ref"/g) || []).length === 2
+  && multiMaskRefLabels.join(',') === '图1,图2'
+  && multiMaskEditorHtml.includes('title="图1 · single.png · 点击切换编辑对象"')
+  && multiMaskEditorHtml.includes('aria-label="图2 · second.png · 点击切换编辑对象"')
+  && multiMaskEditorHtml.includes('aria-pressed="true"')
+  && multiMaskEditorHtml.includes('aria-pressed="false"'), 'multi-reference mask editing should render ordered 图N labels and accessible switch controls');
+async function runMaskEditorLoadGuardRegression() {
+const previousMaskDomQuerySelector = sandbox.document.querySelector;
+const previousMaskDomQuerySelectorAll = sandbox.document.querySelectorAll;
+const previousMaskCreateElement = sandbox.document.createElement;
+const previousMaskImage = sandbox.Image;
+const previousWindowAddEventListener = sandbox.window.addEventListener;
+const maskLoadPendingImages = [];
+const makeMaskLoadCanvas = (name) => {
+  let width = 0;
+  let height = 0;
+  let pixels = new Uint8ClampedArray(0);
+  const context = {
+    clearRect: () => { pixels = new Uint8ClampedArray(Math.max(1, width * height * 4)); },
+    fillRect: () => { pixels = new Uint8ClampedArray(Math.max(1, width * height * 4)); for (let index = 3; index < pixels.length; index += 4) pixels[index] = 255; },
+    drawImage: (image) => {
+      name.lastDrawLabel = image?.maskLoadLabel || image?.lastDrawLabel || 'drawn';
+      pixels = new Uint8ClampedArray(Math.max(1, width * height * 4));
+      for (let index = 3; index < pixels.length; index += 4) pixels[index] = 255;
+    },
+    getImageData: () => ({ data: new Uint8ClampedArray(pixels) }),
+    createImageData: (nextWidth, nextHeight) => ({ data: new Uint8ClampedArray(Math.max(1, nextWidth * nextHeight * 4)) }),
+    putImageData: (imageData) => { pixels = new Uint8ClampedArray(imageData?.data || []); }
+  };
+  return {
+    name,
+    style: {},
+    dataset: {},
+    get width() { return width; },
+    set width(value) { width = Number(value) || 0; pixels = new Uint8ClampedArray(Math.max(1, width * height * 4)); },
+    get height() { return height; },
+    set height(value) { height = Number(value) || 0; pixels = new Uint8ClampedArray(Math.max(1, width * height * 4)); },
+    getContext: () => context,
+    toDataURL: () => `data:image/png;base64,${name.lastDrawLabel || 'empty'}`,
+    addEventListener: () => {},
+    setPointerCapture: () => {},
+    releasePointerCapture: () => {},
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: Math.max(1, width), height: Math.max(1, height), right: Math.max(1, width), bottom: Math.max(1, height) })
+  };
+};
+const maskLoadNodes = {
+  layer: { dataset: {}, querySelectorAll: () => [] },
+  shell: { dataset: {}, style: {}, getBoundingClientRect: () => ({ left: 0, top: 0, width: 400, height: 400, right: 400, bottom: 400 }), clientWidth: 400 },
+  status: { dataset: {}, textContent: '' },
+  cursor: { style: {}, classList: { add: () => {}, remove: () => {} } },
+  base: null,
+  canvas: null,
+  annotation: null
+};
+maskLoadNodes.base = makeMaskLoadCanvas({ name: 'mask-load-base' });
+maskLoadNodes.canvas = makeMaskLoadCanvas({ name: 'mask-load-mask' });
+maskLoadNodes.annotation = makeMaskLoadCanvas({ name: 'mask-load-annotation' });
+maskLoadNodes.layer.querySelector = (selector) => ({
+  '.mask-canvas-shell': maskLoadNodes.shell,
+  '[data-mask-load-status]': maskLoadNodes.status
+}[selector] || null);
+const maskLoadOriginalOld = new Blob(['mask-load-old-original'], { type: 'image/png' });
+const maskLoadSavedOld = new Blob(['mask-load-old-mask'], { type: 'image/png' });
+const maskLoadOriginalNext = new Blob(['mask-load-next-original'], { type: 'image/png' });
+fakeIndexedDbStore.set('mask-load-old-original', maskLoadOriginalOld);
+fakeIndexedDbStore.set('mask-load-old-mask', maskLoadSavedOld);
+fakeIndexedDbStore.set('mask-load-next-original', maskLoadOriginalNext);
+sandbox.window.addEventListener = () => {};
+sandbox.document.querySelector = (selector) => ({
+  '#maskBaseCanvas': maskLoadNodes.base,
+  '#maskCanvas': maskLoadNodes.canvas,
+  '#maskAnnotationCanvas': maskLoadNodes.annotation,
+  '.mask-layer': maskLoadNodes.layer,
+  '.mask-canvas-shell': maskLoadNodes.shell,
+  '[data-mask-load-status]': maskLoadNodes.status,
+  '#maskCursor': maskLoadNodes.cursor
+}[selector] || null);
+sandbox.document.querySelectorAll = () => [];
+sandbox.document.createElement = (tag) => tag === 'canvas' ? makeMaskLoadCanvas({ name: 'mask-load-offscreen' }) : previousMaskCreateElement(tag);
+sandbox.Image = class {
+  set src(url) {
+    const blob = createdObjectUrlBlobs.get(url);
+    this.maskLoadLabel = blob === maskLoadOriginalOld || blob === maskLoadSavedOld ? 'old' : 'next';
+    if (this.maskLoadLabel === 'old') {
+      maskLoadPendingImages.push(() => {
+        this.naturalWidth = 64;
+        this.naturalHeight = 48;
+        if (this.onload) this.onload();
+      });
+      return;
+    }
+    setTimeout(() => {
+      this.naturalWidth = 96;
+      this.naturalHeight = 64;
+      if (this.onload) this.onload();
+    }, 0);
+  }
+};
+const waitForMaskLoadQueue = async () => {
+  for (let attempt = 0; attempt < 30 && !maskLoadPendingImages.length; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 2));
+  return maskLoadPendingImages.length > 0;
+};
+hooks.setTestState({
+  mode: 'gallery',
+  references: [
+    { id: 'mask-load-old', name: 'old.png', blobId: 'mask-load-old-original', originalBlobId: 'mask-load-old-original', maskBlobId: 'mask-load-old-mask', maskFormat: hooks.OPENAI_MASK_FORMAT },
+    { id: 'mask-load-next', name: 'next.png', blobId: 'mask-load-next-original', originalBlobId: 'mask-load-next-original' }
+  ]
+});
+hooks.openMaskEditor('mask-load-old');
+const cancelLoadPromise = hooks.setupMaskCanvas();
+ok(await waitForMaskLoadQueue(), 'mask loading regression should reach a delayed image before cancellation');
+const loadingMaskEditorHtml = hooks.renderMaskEditor();
+ok(loadingMaskEditorHtml.includes('data-mask-ready="0"')
+  && /data-action="switch-mask-ref"[^>]*disabled/.test(loadingMaskEditorHtml)
+  && /data-action="save-mask-editor"[^>]*disabled/.test(loadingMaskEditorHtml), 'mask editor should expose a loading marker and disable rail/save controls before the canvas is ready');
+const loadingToolResult = hooks.setMaskTool('rect');
+const loadingSwitchResult = await hooks.switchMaskRef('mask-load-next');
+const loadingSaveResult = await hooks.saveMaskEditor();
+ok(loadingToolResult === undefined && loadingSwitchResult === undefined && loadingSaveResult === false,
+  'mask editor actions should remain blocked while asynchronous canvas setup is loading');
+const loadingDraftCount = vm.runInContext('Object.keys(state.maskEditor?.drafts || {}).length', sandbox);
+ok(loadingDraftCount === 0, 'loading mask actions must not create an empty draft from the default canvas');
+vm.runInContext('cancelMaskEditor()', sandbox);
+while (maskLoadPendingImages.length) maskLoadPendingImages.shift()();
+await cancelLoadPromise;
+ok(vm.runInContext('state.maskEditor === null', sandbox), 'cancelled mask setup must not restore a closed editor');
+
+hooks.openMaskEditor('mask-load-old');
+const staleOldLoadPromise = hooks.setupMaskCanvas();
+ok(await waitForMaskLoadQueue(), 'stale mask loading regression should reach the delayed old reference image');
+vm.runInContext("state.maskEditor.activeRefId = 'mask-load-next'; state.maskEditor.loadStatus = 'loading'; state.maskEditor.loadRefId = ''; state.maskEditor.canvasReady = false;", sandbox);
+const staleNextLoadPromise = hooks.setupMaskCanvas();
+await staleNextLoadPromise;
+ok(vm.runInContext("state.maskEditor?.loadStatus === 'ready' && state.maskEditor?.loadRefId === 'mask-load-next'", sandbox), 'new active reference should become ready after its own async setup');
+const nextCanvasLabelBeforeStaleCompletion = maskLoadNodes.base.lastDrawLabel;
+while (maskLoadPendingImages.length) maskLoadPendingImages.shift()();
+await staleOldLoadPromise;
+ok(maskLoadNodes.base.lastDrawLabel === nextCanvasLabelBeforeStaleCompletion
+  && vm.runInContext("state.maskEditor?.activeRefId === 'mask-load-next'", sandbox), 'stale old-reference completion must not overwrite the current reference canvas or editor state');
+maskLoadNodes.canvas.getContext('2d').fillRect(0, 0, 12, 12);
+ok(await hooks.persistCanvasToRefDraft() === true
+  && vm.runInContext("state.maskEditor?.drafts?.['mask-load-next']?.width > 0", sandbox), 'ready mask canvas should still capture a normal editable draft');
+sandbox.document.querySelector = previousMaskDomQuerySelector;
+sandbox.document.querySelectorAll = previousMaskDomQuerySelectorAll;
+sandbox.document.createElement = previousMaskCreateElement;
+sandbox.Image = previousMaskImage;
+sandbox.window.addEventListener = previousWindowAddEventListener;
+vm.runInContext('cancelMaskEditor()', sandbox);
+}
+hooks.setTestState({
+  mode: maskUiBaseline.mode,
+  profiles: maskUiBaseline.profiles,
+  activeProfileId: maskUiBaseline.activeProfileId,
+  activeImageProfileId: maskUiBaseline.activeImageProfileId,
+  references: maskUiBaseline.references
+});
 ok(typeof hooks.agentAttachmentSummary === 'function', 'Agent attachment summary hook missing');
 const openAiMaskSupportLabel = hooks.imageMaskSupportLabel({ provider: 'openai', apiMode: 'images', model: 'gpt-image-2' });
 const googleMaskSupportLabel = hooks.imageMaskSupportLabel({ provider: 'google', apiMode: 'images', model: 'gemini-3.1-flash-image' });
 const xaiMaskSupportLabel = hooks.imageMaskSupportLabel({ provider: 'xai', apiMode: 'images', model: 'grok-imagine-image' });
 ok(openAiMaskSupportLabel.includes('像素遮罩') && !openAiMaskSupportLabel.includes('只发送原图'), 'OpenAI mask label should keep the pixel-mask contract');
-ok([googleMaskSupportLabel, xaiMaskSupportLabel].every((label) => label.includes('黄色半透明标注合成图')
-  && label.includes('提示词中说明标注区域')
+ok([googleMaskSupportLabel, xaiMaskSupportLabel].every((label) => label.includes('彩色标注合成图')
+  && label.includes('提示词中说明彩色标注区域')
   && label.includes('不发送独立 mask')),
   'Google/xAI mask labels should describe composited annotation, region prompt guidance, and no independent mask');
 ok(typeof hooks.agentAttachmentBlobIds === 'function', 'Agent attachment Blob cleanup hook missing');
@@ -313,6 +511,20 @@ ok(saveMaskSource.includes('composeReferenceWithMask(ref, draft)')
 ok(saveMaskSource.includes('catch (error)')
   && saveMaskSource.includes('deleteUnreferencedBlobIds(createdBlobIds)'),
   'mask save must clean every already-created Blob when a later transaction step fails');
+ok(saveMaskSource.includes('previous.forEach(({ ref, snapshot }) => Object.assign(ref, snapshot));')
+  && saveMaskSource.includes('if (createdBlobIds.length) {')
+  && saveMaskSource.includes('await deleteUnreferencedBlobIds(createdBlobIds).catch((error) => console.warn')
+  && saveMaskSource.includes('committed = persistRender();')
+  && saveMaskSource.includes('catch (error) {\n    persistError = error;')
+  && saveMaskSource.includes('遮罩状态保存失败，请重试'),
+  'mask save must roll back metadata and newly-created Blobs when the committed state write fails');
+const cropConfirmSource = source.slice(source.indexOf('async function confirmMaskCrop('), source.indexOf('async function persistCanvasToRefDraft('));
+ok(cropConfirmSource.includes('cropCanvasRegion(base')
+  && cropConfirmSource.includes('cropCanvasRegion(canvas')
+  && cropConfirmSource.includes('cropCanvasRegion(annotation')
+  && cropConfirmSource.includes('[base, canvas, annotation].forEach((node) => { node.width = width; node.height = height; })')
+  && cropConfirmSource.includes('editor.cropSource = parentSource'),
+  'crop confirmation must crop all three canvas layers and carry the source coordinates into the saved draft');
 ok(prepareMaskSource.includes('first.ref.maskFormat !== OPENAI_MASK_FORMAT')
   && prepareMaskSource.includes('openAiMaskBlobFromLegacyOverlayBlob'),
   'legacy color overlay masks must be converted to OpenAI alpha semantics only at send time');
@@ -937,6 +1149,7 @@ const restoredWithoutAdvanced = hooks.normalizeRestoredTask({ id: 'legacy-withou
 ok(!restoredWithoutAdvanced.advanced, 'legacy tasks without advanced metadata should remain display-compatible');
 
 async function runHomepageV3Addendum() {
+await runMaskEditorLoadGuardRegression();
 const deliveryProfile = { id: 'delivery-openai', name: 'Delivery OpenAI', provider: 'openai', apiMode: 'images', model: 'gpt-image-2', streamImages: true };
 ok(hooks.normalizeResponseDelivery('provider-default') === 'provider_default'
   && hooks.normalizeResponseDelivery('base64') === 'b64_json'
@@ -978,6 +1191,54 @@ const removedMention = hooks.markReferenceMentionsRemoved(shiftedMention.value, 
 ok(removedMention.value.includes('@已移除图片') && !removedMention.value.includes('@图1'), 'removing a reference should preserve an explicit removed-image marker');
 const editedMentions = hooks.updateComposerMentionTokensForInput(shiftedMention.value, shiftedMention.value.replace('@图1', '@图X'), shiftedMention.tokens);
 ok(editedMentions.every((token) => token.refId !== 'mention-a'), 'editing through a protected mention should drop its stale token instead of replacing hand text');
+const generationRefs = [
+  { id: 'generation-ref-a', name: 'a.png', editInstruction: '  first instruction  ' },
+  { id: 'generation-ref-b', name: 'b.png', editInstruction: 'second instruction' }
+];
+const secondOnlyPrompt = '  修改 @图2';
+const secondOnlyTokens = [{ id: 'generation-mention-b', refId: 'generation-ref-b', start: 5, end: 8, text: '@图2', selected: true, removed: false }];
+const secondOnlyRefs = hooks.selectedReferencesForImageGeneration(generationRefs, secondOnlyTokens, { prompt: secondOnlyPrompt });
+ok(secondOnlyRefs.map((ref) => ref.id).join(',') === 'generation-ref-b'
+  && secondOnlyRefs[0]?.editInstruction === 'second instruction'
+  && hooks.resolveComposerPromptForRequest(secondOnlyPrompt, secondOnlyRefs, secondOnlyTokens) === '  修改 [image 1]',
+  'editing the second reference through @图2 should retain its instruction and remap that sole image to [image 1]');
+const orderedPrompt = '  @图2 @图1';
+const orderedTokens = [
+  { id: 'generation-mention-b', refId: 'generation-ref-b', start: 2, end: 5, text: '@图2', selected: true, removed: false },
+  { id: 'generation-mention-a', refId: 'generation-ref-a', start: 6, end: 9, text: '@图1', selected: true, removed: false }
+];
+const orderedRefs = hooks.selectedReferencesForImageGeneration(generationRefs, orderedTokens, { prompt: orderedPrompt });
+ok(orderedRefs.map((ref) => ref.id).join(',') === 'generation-ref-a,generation-ref-b'
+  && hooks.resolveComposerPromptForRequest(orderedPrompt, orderedRefs, orderedTokens) === '  [image 2] [image 1]',
+  'joint @图1/@图2 references should keep the original image-array order while preserving each mention\'s placeholder mapping');
+const invalidMentionPrompt = '  修改 @图9';
+const invalidMentionTokens = [{ id: 'generation-mention-invalid', refId: 'missing-reference', start: 5, end: 8, text: '@图9', selected: true, removed: false }];
+ok(hooks.selectedReferencesForImageGeneration(generationRefs, invalidMentionTokens, { prompt: invalidMentionPrompt }).length === 2
+  && hooks.selectedReferencesForImageGeneration(generationRefs, []).length === 2,
+  'invalid or absent mentions should fall back to submitting all references instead of filtering them out');
+const validAndStalePrompt = '@图1 @图9 @图2';
+const validAndStaleTokens = [
+  { id: 'generation-mention-a', refId: 'generation-ref-a', start: 0, end: 3, text: '@图1', selected: true, removed: false },
+  { id: 'generation-mention-invalid', refId: 'missing-reference', start: 4, end: 7, text: '@图9', selected: true, removed: false },
+  { id: 'generation-mention-removed', refId: 'generation-ref-b', start: 8, end: 11, text: '@图2', selected: true, removed: true }
+];
+const validAndStaleRefs = hooks.selectedReferencesForImageGeneration(generationRefs, validAndStaleTokens, { prompt: validAndStalePrompt });
+ok(validAndStaleRefs.map((ref) => ref.id).join(',') === 'generation-ref-a',
+  'a valid @图1 mention must remain the only submitted reference when deleted or invalid tokens are also present');
+const longEditInstruction = hooks.normalizeEditInstruction(`  ${'x'.repeat(1100)}  `);
+ok(longEditInstruction.length === 1000 && longEditInstruction[0] === 'x' && longEditInstruction.at(-1) === 'x', 'per-reference edit instructions should trim whitespace and cap at 1000 characters');
+const openAiReferenceInstructions = hooks.appendReferenceRequestInstructions('base prompt', [
+  { editInstruction: '  first edit  ' },
+  { editInstruction: 'second edit', annotationBlobId: 'annotation-2' }
+], 'openai');
+ok(openAiReferenceInstructions.includes('参考图1编辑说明：first edit')
+  && openAiReferenceInstructions.includes('参考图2编辑说明：second edit')
+  && openAiReferenceInstructions.includes('彩色标注区域'),
+  'request prompts should carry each reference edit instruction and describe color annotations on later OpenAI references');
+const unmaskedOpenAiReferenceInstructions = hooks.appendReferenceRequestInstructions('base prompt', [
+  { maskBlobId: 'mask-1' }
+], 'openai');
+ok(!unmaskedOpenAiReferenceInstructions.includes('彩色标注区域'), 'the first OpenAI mask should remain an independent mask instead of a color-region prompt hint');
 
 fakeIndexedDbStore.set('fallback-original', new Blob(['original'], { type: 'image/png' }));
 const fallbackReference = await hooks.getReferenceBlobWithFallback({ compositedBlobId: 'missing-composited', blobId: 'missing-display', originalBlobId: 'fallback-original' });
@@ -994,6 +1255,112 @@ try {
   strictUnreadableError = error;
 }
 ok(strictUnreadableError?.code === 'IMAGE_EDIT_INPUT_SNAPSHOT_UNREADABLE', 'strict reference snapshots should reject non-readable Blob records');
+
+const strictMarkedDisplayId = 'strict-marked-display';
+const strictMarkedOriginalId = 'strict-marked-original';
+const strictMarkedMaskId = 'strict-marked-mask';
+fakeIndexedDbStore.set(strictMarkedDisplayId, new Blob(['strict-marked-display'], { type: 'image/png' }));
+fakeIndexedDbStore.set(strictMarkedMaskId, new Blob(['strict-marked-mask'], { type: 'image/png' }));
+let strictMarkedOriginalError = null;
+try {
+  await hooks.cloneReferenceSnapshots([{
+    id: 'strict-marked-original-missing',
+    blobId: strictMarkedDisplayId,
+    originalBlobId: strictMarkedOriginalId,
+    maskBlobId: strictMarkedMaskId
+  }], { strict: true, provider: 'openai' });
+} catch (error) {
+  strictMarkedOriginalError = error;
+}
+ok(strictMarkedOriginalError?.code === 'IMAGE_EDIT_INPUT_SNAPSHOT_UNREADABLE', 'strict marked snapshots must reject an unreadable independent original layer');
+
+const strictMarkedCompositeDisplayId = 'strict-marked-composite-display';
+const strictMarkedCompositeOriginalId = 'strict-marked-composite-original';
+const strictMarkedCompositeMaskId = 'strict-marked-composite-mask';
+fakeIndexedDbStore.set(strictMarkedCompositeDisplayId, new Blob(['strict-marked-composite-display'], { type: 'image/png' }));
+fakeIndexedDbStore.set(strictMarkedCompositeOriginalId, new Blob(['strict-marked-composite-original'], { type: 'image/png' }));
+fakeIndexedDbStore.set(strictMarkedCompositeMaskId, new Blob(['strict-marked-composite-mask'], { type: 'image/png' }));
+let strictMarkedCompositeError = null;
+try {
+  await hooks.cloneReferenceSnapshots([{
+    id: 'strict-marked-composite-missing',
+    blobId: strictMarkedCompositeDisplayId,
+    originalBlobId: strictMarkedCompositeOriginalId,
+    compositedBlobId: 'missing-strict-marked-composite',
+    maskBlobId: strictMarkedCompositeMaskId
+  }], { strict: true, provider: 'google' });
+} catch (error) {
+  strictMarkedCompositeError = error;
+}
+ok(strictMarkedCompositeError?.code === 'IMAGE_EDIT_INPUT_SNAPSHOT_UNREADABLE', 'strict marked snapshots must reject an unreadable independent composite layer');
+
+let strictMarkedCompositeIdError = null;
+try {
+  await hooks.cloneReferenceSnapshots([{
+    id: 'strict-marked-composite-id-missing',
+    blobId: strictMarkedCompositeOriginalId,
+    originalBlobId: strictMarkedCompositeOriginalId,
+    maskBlobId: strictMarkedCompositeMaskId
+  }], { strict: true, provider: 'google' });
+} catch (error) {
+  strictMarkedCompositeIdError = error;
+}
+ok(strictMarkedCompositeIdError?.code === 'IMAGE_EDIT_MASK_COMPOSITE_MISSING', 'strict Google/xAI marked snapshots must reject a missing required composite layer');
+
+let strictMarkedSameLayerError = null;
+try {
+  await hooks.cloneReferenceSnapshots([{
+    id: 'strict-marked-composite-same-layer',
+    blobId: strictMarkedCompositeDisplayId,
+    originalBlobId: strictMarkedCompositeOriginalId,
+    compositedBlobId: strictMarkedCompositeOriginalId,
+    maskBlobId: strictMarkedCompositeMaskId
+  }], { strict: true, provider: 'google' });
+} catch (error) {
+  strictMarkedSameLayerError = error;
+}
+ok(strictMarkedSameLayerError?.code === 'IMAGE_EDIT_MASK_COMPOSITE_MISSING', 'strict marked snapshots must reject a composite ID that aliases the original layer');
+
+const strictMarkedValidDisplayId = 'strict-marked-valid-display';
+const strictMarkedValidOriginalId = 'strict-marked-valid-original';
+const strictMarkedValidCompositeId = 'strict-marked-valid-composite';
+const strictMarkedValidMaskId = 'strict-marked-valid-mask';
+const strictMarkedValidAnnotationId = 'strict-marked-valid-annotation';
+fakeIndexedDbStore.set(strictMarkedValidDisplayId, new Blob(['strict-marked-valid-display'], { type: 'image/png' }));
+fakeIndexedDbStore.set(strictMarkedValidOriginalId, new Blob(['strict-marked-valid-original'], { type: 'image/png' }));
+fakeIndexedDbStore.set(strictMarkedValidCompositeId, new Blob(['strict-marked-valid-composite'], { type: 'image/png' }));
+fakeIndexedDbStore.set(strictMarkedValidMaskId, new Blob(['strict-marked-valid-mask'], { type: 'image/png' }));
+fakeIndexedDbStore.set(strictMarkedValidAnnotationId, new Blob(['strict-marked-valid-annotation'], { type: 'image/png' }));
+const strictMarkedValidSnapshots = await hooks.cloneReferenceSnapshots([{
+  id: 'strict-marked-valid',
+  blobId: strictMarkedValidDisplayId,
+  originalBlobId: strictMarkedValidOriginalId,
+  compositedBlobId: strictMarkedValidCompositeId,
+  maskBlobId: strictMarkedValidMaskId,
+  annotationBlobId: strictMarkedValidAnnotationId
+}], { strict: true, provider: 'google' });
+const strictMarkedValid = strictMarkedValidSnapshots[0];
+ok(strictMarkedValid
+  && strictMarkedValid.blobId !== strictMarkedValidDisplayId
+  && strictMarkedValid.originalBlobId !== strictMarkedValidOriginalId
+  && strictMarkedValid.compositedBlobId !== strictMarkedValidCompositeId
+  && strictMarkedValid.maskBlobId !== strictMarkedValidMaskId
+  && strictMarkedValid.annotationBlobId !== strictMarkedValidAnnotationId
+  && await fakeIndexedDbStore.get(strictMarkedValid.originalBlobId)?.text?.() === 'strict-marked-valid-original'
+  && await fakeIndexedDbStore.get(strictMarkedValid.compositedBlobId)?.text?.() === 'strict-marked-valid-composite', 'strict marked snapshots should clone and preserve distinct original/composite/mask layers');
+const sanitizedMarkedMissingLayers = hooks.sanitizeReferenceSnapshots([{
+  id: 'sanitized-marked-missing-layers',
+  blobId: strictMarkedValidDisplayId,
+  maskBlobId: strictMarkedValidMaskId
+}])[0];
+ok(sanitizedMarkedMissingLayers?.originalBlobId === '' && sanitizedMarkedMissingLayers?.compositedBlobId === '', 'marked snapshot sanitization must preserve missing layer IDs instead of defaulting them to the display Blob');
+let sanitizedMarkedCloneError = null;
+try {
+  await hooks.cloneReferenceSnapshots([sanitizedMarkedMissingLayers], { strict: true, provider: 'openai' });
+} catch (error) {
+  sanitizedMarkedCloneError = error;
+}
+ok(sanitizedMarkedCloneError?.code === 'IMAGE_EDIT_MASK_ORIGINAL_MISSING', 'sanitized marked snapshots with an explicit empty original must fail before OpenAI request preparation');
 
 const timeoutPhantomId = 'timeout-phantom-task';
 const timeoutTaskStore = fakeIndexedDbStores.get('tasks') || new Map();
@@ -1878,6 +2245,7 @@ if (typeof hooks.openAiSizePayload === 'function') {
     references: [{ id: 'clear-after-ref', blobId: clearCompositeId, compositedBlobId: clearCompositeId, originalBlobId: clearOriginalId, maskBlobId: clearMaskId, maskFormat: hooks.OPENAI_MASK_FORMAT, name: 'clear.png' }]
   });
   hooks.openMaskEditor('clear-after-ref');
+  hooks.setTestState({ maskEditorReady: true });
   const clearResult = await hooks.maskClear();
   const clearedReference = hooks.getTestState().references[0];
   ok(clearResult === true && clearedReference.blobId === clearCompositeId
@@ -1888,6 +2256,51 @@ if (typeof hooks.openAiSizePayload === 'function') {
     'mask clear should retain old Blobs until a committed save can prove they are unreferenced');
   hooks.setTestState({ references: previousClearReferences });
   sandbox.document.querySelector = previousQuerySelector;
+
+  const previousCreateElement = sandbox.document.createElement;
+  const cropDrawCalls = [];
+  sandbox.document.createElement = (tag) => {
+    if (tag !== 'canvas') return previousCreateElement(tag);
+    let width = 0;
+    let height = 0;
+    const context = {
+      drawImage: (...args) => cropDrawCalls.push({ width, height, args }),
+      getImageData: () => ({ data: new Uint8ClampedArray(Math.max(1, width * height * 4)) }),
+      putImageData: () => {},
+      clearRect: () => {},
+      createImageData: (nextWidth, nextHeight) => ({ data: new Uint8ClampedArray(nextWidth * nextHeight * 4) })
+    };
+    return {
+      get width() { return width; },
+      set width(value) { width = Number(value) || 0; },
+      get height() { return height; },
+      set height(value) { height = Number(value) || 0; },
+      getContext: () => context,
+      toBlob: (callback) => callback(new Blob([`crop:${width}x${height}`], { type: 'image/png' }))
+    };
+  };
+  const croppedOriginalId = 'crop-real-original';
+  fakeIndexedDbStore.set(croppedOriginalId, new Blob(['not-a-real-image'], { type: 'image/png' }));
+  const croppedBundle = await hooks.composeReferenceWithMask(
+    { id: 'crop-real-ref', name: 'crop.png', originalBlobId: croppedOriginalId, width: 1024, height: 768 },
+    {
+      cropped: true,
+      cropSource: { x: 120, y: 48, width: 320, height: 240 },
+      width: 320,
+      height: 240,
+      maskDataUrl: '',
+      annotationDataUrl: ''
+    }
+  );
+  sandbox.document.createElement = previousCreateElement;
+  const cropBaseDraw = cropDrawCalls.find((call) => call.args.length === 9);
+  ok(croppedBundle.width === 320 && croppedBundle.height === 240
+    && croppedBundle.cropped === true
+    && croppedBundle.originalBlob instanceof Blob
+    && croppedBundle.compositedBlob instanceof Blob,
+  'cropped mask composition should return real cropped original and composited Blobs at the selected dimensions');
+  ok(cropBaseDraw?.args.slice(1).join(',') === '120,48,320,240,0,0,320,240',
+    'cropped mask composition should draw the selected source rectangle instead of retaining the full original image');
 
   let capturedRequest = null;
   sandbox.fetch = async (url, options) => {
@@ -2023,9 +2436,9 @@ if (typeof hooks.openAiSizePayload === 'function') {
   });
   const googleMaskedForm = capturedRequest?.options?.body;
   ok(await googleMaskedForm.getAll('image[]')[0].text() === 'google-composited-annotation', 'Google masked references must upload the composited annotated image');
-  ok(googleMaskSupportLabel.includes('黄色半透明标注合成图')
+  ok(googleMaskSupportLabel.includes('彩色标注合成图')
     && googleMaskedForm.get('mask') === null
-    && String(googleMaskedForm.get('prompt') || '').includes('黄色标注区域'), 'Google mask label must match the composited image, no-mask field, and marked-region prompt behavior');
+    && String(googleMaskedForm.get('prompt') || '').includes('彩色标注区域'), 'Google mask label must match the composited image, no-mask field, and marked-region prompt behavior');
 
   fakeIndexedDbStore.set('xai-mask-display', new Blob(['display-overlay'], { type: 'image/png' }));
   fakeIndexedDbStore.set('xai-mask-original', new Blob(['xai-original'], { type: 'image/png' }));
@@ -2038,9 +2451,54 @@ if (typeof hooks.openAiSizePayload === 'function') {
   });
   const xaiMaskedForm = capturedRequest?.options?.body;
   ok(await xaiMaskedForm.getAll('image[]')[0].text() === 'xai-composited-annotation', 'xAI masked references must upload the composited annotated image');
-  ok(xaiMaskSupportLabel.includes('黄色半透明标注合成图')
+  ok(xaiMaskSupportLabel.includes('彩色标注合成图')
     && xaiMaskedForm.get('mask') === null
-    && String(xaiMaskedForm.get('prompt') || '').includes('黄色标注区域'), 'xAI mask label must match the composited image, no-mask field, and marked-region prompt behavior');
+    && String(xaiMaskedForm.get('prompt') || '').includes('彩色标注区域'), 'xAI mask label must match the composited image, no-mask field, and marked-region prompt behavior');
+
+  const openAiOnePixelPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9s=', 'base64');
+  fakeIndexedDbStore.set('openai-first-original', new Blob([openAiOnePixelPng], { type: 'image/png' }));
+  fakeIndexedDbStore.set('openai-first-mask', new Blob([openAiOnePixelPng], { type: 'image/png' }));
+  fakeIndexedDbStore.set('openai-second-original', new Blob([openAiOnePixelPng], { type: 'image/png' }));
+  fakeIndexedDbStore.set('openai-second-composite', new Blob(['openai-second-composite'], { type: 'image/png' }));
+  const openAiFirstInfo = await hooks.imageInfoFromBlob(fakeIndexedDbStore.get('openai-first-original'));
+  ok(openAiFirstInfo.width === 1 && openAiFirstInfo.height === 1, 'OpenAI multi-reference fixture should expose readable source dimensions');
+  let openAiMultiError = null;
+  try {
+    await hooks.sendGenerationRequest('openai multi-reference mask', { format: 'png' }, {
+      profile: { id: 'openai-multi-mask', name: 'OpenAI Multi Mask', provider: 'openai', model: 'gpt-image-2' },
+      references: [
+        { id: 'openai-first', blobId: 'openai-first-original', originalBlobId: 'openai-first-original', maskBlobId: 'openai-first-mask', maskFormat: hooks.OPENAI_MASK_FORMAT, name: 'first.png' },
+        { id: 'openai-second', blobId: 'openai-second-original', originalBlobId: 'openai-second-original', compositedBlobId: 'openai-second-composite', maskBlobId: 'openai-second-mask', name: 'second.png' }
+      ]
+    });
+  } catch (error) {
+    openAiMultiError = error;
+  }
+  ok(!openAiMultiError, `OpenAI multi-reference mask request should prepare successfully (${openAiMultiError?.code || openAiMultiError?.message || 'unknown error'})`);
+  const openAiMultiForm = capturedRequest?.options?.body;
+  const openAiMultiImages = openAiMultiForm?.getAll?.('image[]') || [];
+  ok(openAiMultiImages.length === 2
+    && await openAiMultiImages[0]?.text?.() === await fakeIndexedDbStore.get('openai-first-original')?.text?.()
+    && await openAiMultiImages[1]?.text?.() === 'openai-second-composite'
+    && openAiMultiForm?.get?.('mask') instanceof Blob,
+  'OpenAI edits should send the first marked original plus the later marked composited image and one independent first mask');
+  ok(String(openAiMultiForm?.get?.('prompt') || '').includes('彩色标注区域'), 'later OpenAI annotated references should add the color-region instruction to the request prompt');
+
+  let openAiSecondOnlyError = null;
+  try {
+    await hooks.sendGenerationRequest('openai second-only reference', { format: 'png' }, {
+      profile: { id: 'openai-second-only', name: 'OpenAI Second Only', provider: 'openai', model: 'gpt-image-2' },
+      references: [{ id: 'openai-second', blobId: 'openai-second-original', originalBlobId: 'openai-second-original', maskBlobId: 'openai-first-mask', maskFormat: hooks.OPENAI_MASK_FORMAT, name: 'second.png' }]
+    });
+  } catch (error) {
+    openAiSecondOnlyError = error;
+  }
+  ok(!openAiSecondOnlyError, `OpenAI second-only mask request should prepare successfully (${openAiSecondOnlyError?.code || openAiSecondOnlyError?.message || 'unknown error'})`);
+  const openAiSecondOnlyForm = capturedRequest?.options?.body;
+  ok((openAiSecondOnlyForm?.getAll?.('image[]') || []).length === 1
+    && await openAiSecondOnlyForm.getAll('image[]')[0]?.text?.() === await fakeIndexedDbStore.get('openai-second-original')?.text?.()
+    && openAiSecondOnlyForm.get('mask') instanceof Blob,
+  'an @图2-only selection should become the OpenAI first image and receive the independent mask field');
 
   let missingMaskedCompositeError = null;
   try {
@@ -2535,7 +2993,7 @@ if (typeof hooks.openAiSizePayload === 'function') {
   ok(invalidBase64Error?.code === 'IMAGE_RESPONSE_IMAGE_DATA_INVALID', 'invalid Base64 image data should be rejected by image magic validation');
 
   const onePixelPng = Buffer.from(commonPrefix, 'base64');
-  fakeIndexedDbStore.set('mask-display', new Blob([onePixelPng], { type: 'image/png' }));
+  fakeIndexedDbStore.set('mask-display', new Blob(['display-overlay'], { type: 'image/png' }));
   fakeIndexedDbStore.set('mask-original', new Blob([onePixelPng], { type: 'image/png' }));
   fakeIndexedDbStore.set('mask-source', new Blob([onePixelPng], { type: 'image/png' }));
   capturedRequest = null;
@@ -2556,8 +3014,180 @@ if (typeof hooks.openAiSizePayload === 'function') {
     references: [{ blobId: 'mask-display', originalBlobId: 'mask-original', maskBlobId: 'mask-source', maskFormat: hooks.OPENAI_MASK_FORMAT, name: 'source.png' }]
   });
   const maskForm = capturedRequest?.options?.body;
-  ok(maskForm?.getAll?.('image[]').length === 1 && maskForm?.get?.('mask') instanceof Blob, 'masked OpenAI edits should send the original main image and a separate mask field');
+  const uploadedMask = maskForm?.get?.('mask');
+  const uploadedMainImage = maskForm?.getAll?.('image[]')?.[0];
+  ok(maskForm?.getAll?.('image[]').length === 1 && uploadedMask instanceof Blob, 'masked OpenAI edits should send the original main image and a separate mask field');
+  ok(await uploadedMainImage?.text?.() === await fakeIndexedDbStore.get('mask-original')?.text?.()
+    && uploadedMainImage?.size !== fakeIndexedDbStore.get('mask-display')?.size,
+  'OpenAI masked edits should upload the unannotated original image rather than the display/composited reference');
+  ok(uploadedMask?.name === 'mask.png' && uploadedMask?.type === 'image/png' && uploadedMask?.size > 0,
+    'OpenAI masked edits should send a non-empty transparent-capable PNG mask payload');
   ok(maskForm?.fields?.find((item) => item[0] === 'mask')?.[2] === 'mask.png', 'masked OpenAI edits should send the mask as mask.png');
+
+  const previousMaskCreateElement = sandbox.document.createElement;
+  sandbox.document.createElement = (tag) => {
+    if (tag !== 'canvas') return previousMaskCreateElement(tag);
+    let width = 0;
+    let height = 0;
+    let painted = false;
+    const context = {
+      drawImage: () => { painted = true; },
+      clearRect: () => { painted = false; },
+      getImageData: () => {
+        const data = new Uint8ClampedArray(Math.max(1, width * height * 4));
+        if (painted) for (let index = 3; index < data.length; index += 4) data[index] = 255;
+        return { data };
+      },
+      putImageData: () => { painted = true; },
+      createImageData: (nextWidth, nextHeight) => ({ data: new Uint8ClampedArray(nextWidth * nextHeight * 4) })
+    };
+    return {
+      get width() { return width; },
+      set width(value) { width = Number(value) || 0; },
+      get height() { return height; },
+      set height(value) { height = Number(value) || 0; },
+      getContext: () => context,
+      toBlob: (callback) => callback(new Blob([`prepared-mask:${width}x${height}`], { type: 'image/png' }))
+    };
+  };
+  const prepareOriginalId = 'prepare-openai-original';
+  const prepareMaskId = 'prepare-openai-mask';
+  const prepareAnnotationId = 'prepare-openai-annotation';
+  fakeIndexedDbStore.set(prepareOriginalId, new Blob([onePixelPng], { type: 'image/png' }));
+  fakeIndexedDbStore.set(prepareMaskId, new Blob([onePixelPng], { type: 'image/png' }));
+  fakeIndexedDbStore.set(prepareAnnotationId, new Blob([onePixelPng], { type: 'image/png' }));
+  let preparedMaskOnly = null;
+  let preparedMaskOnlyError = null;
+  let preparedAnnotationOnly = null;
+  let preparedAnnotationOnlyError = null;
+  let preparedMergedMask = null;
+  let preparedMergedMaskError = null;
+  try {
+    preparedMaskOnly = await hooks.prepareEditReferenceFiles([{
+      ref: { id: 'prepare-mask-only', originalBlobId: prepareOriginalId, blobId: 'prepare-display', maskBlobId: prepareMaskId, maskFormat: hooks.OPENAI_MASK_FORMAT },
+      blob: new Blob(['display'], { type: 'image/png' })
+    }]);
+  } catch (error) {
+    preparedMaskOnlyError = error;
+  }
+  try {
+    preparedAnnotationOnly = await hooks.prepareEditReferenceFiles([{
+      ref: { id: 'prepare-annotation-only', originalBlobId: prepareOriginalId, blobId: 'prepare-display', annotationBlobId: prepareAnnotationId },
+      blob: new Blob(['display'], { type: 'image/png' })
+    }]);
+  } catch (error) {
+    preparedAnnotationOnlyError = error;
+  }
+  try {
+    preparedMergedMask = await hooks.prepareEditReferenceFiles([{
+      ref: { id: 'prepare-merged-mask', originalBlobId: prepareOriginalId, blobId: 'prepare-display', maskBlobId: prepareMaskId, annotationBlobId: prepareAnnotationId, maskFormat: hooks.OPENAI_MASK_FORMAT },
+      blob: new Blob(['display'], { type: 'image/png' })
+    }]);
+  } catch (error) {
+    preparedMergedMaskError = error;
+  }
+  sandbox.document.createElement = previousMaskCreateElement;
+  ok(!preparedMaskOnlyError
+    && preparedMaskOnly?.refs?.[0]?.blob?.size === onePixelPng.length
+    && preparedMaskOnly?.mask instanceof Blob,
+  'OpenAI first-reference preparation should use the original image and independent pixel mask');
+  ok(!preparedAnnotationOnlyError && preparedAnnotationOnly?.mask instanceof Blob && preparedAnnotationOnly.mask.type === 'image/png',
+    'annotation-only first references should be converted into an OpenAI-compatible mask payload');
+  ok(!preparedMergedMaskError && preparedMergedMask?.mask instanceof Blob && preparedMergedMask.mask.type === 'image/png',
+    'OpenAI first-reference mask and annotation layers should merge into one mask payload');
+  const pixelMaskFixtures = new Map();
+  const pixelMaskOutputs = new Map();
+  const previousMaskImage = sandbox.Image;
+  const previousPixelCreateElement = sandbox.document.createElement;
+  sandbox.Image = class {
+    set src(url) {
+      this.sourceBlob = createdObjectUrlBlobs.get(url) || null;
+      setTimeout(() => {
+        this.naturalWidth = 2;
+        this.naturalHeight = 2;
+        if (this.onload) this.onload();
+      }, 0);
+    }
+  };
+  sandbox.document.createElement = (tag) => {
+    if (tag !== 'canvas') return previousPixelCreateElement(tag);
+    let width = 0;
+    let height = 0;
+    let pixels = new Uint8ClampedArray(0);
+    let lastPutPixels = null;
+    const context = {
+      clearRect: () => { pixels = new Uint8ClampedArray(Math.max(1, width * height * 4)); },
+      drawImage: (image) => {
+        pixels = new Uint8ClampedArray(pixelMaskFixtures.get(image?.sourceBlob) || pixelMaskOutputs.get(image?.sourceBlob) || Math.max(1, width * height * 4));
+      },
+      getImageData: () => ({ data: new Uint8ClampedArray(pixels) }),
+      putImageData: (imageData) => {
+        lastPutPixels = new Uint8ClampedArray(imageData.data);
+        pixels = new Uint8ClampedArray(lastPutPixels);
+      },
+      createImageData: (nextWidth, nextHeight) => ({ data: new Uint8ClampedArray(nextWidth * nextHeight * 4) })
+    };
+    return {
+      get width() { return width; },
+      set width(value) { width = Number(value) || 0; },
+      get height() { return height; },
+      set height(value) { height = Number(value) || 0; },
+      getContext: () => context,
+      toBlob: (callback) => {
+        const output = new Blob(['pixel-merged-mask'], { type: 'image/png' });
+        const outputPixels = new Uint8ClampedArray(lastPutPixels || pixels);
+        pixelMaskOutputs.set(output, outputPixels);
+        pixelMaskFixtures.set(output, outputPixels);
+        callback(output);
+      }
+    };
+  };
+  const pixelPngBytes = Buffer.from(onePixelPng);
+  pixelPngBytes.writeUInt32BE(2, 16);
+  pixelPngBytes.writeUInt32BE(2, 20);
+  const pixelOriginalBlob = new Blob([pixelPngBytes], { type: 'image/png' });
+  const pixelMaskOnlyBlob = new Blob([pixelPngBytes], { type: 'image/png' });
+  const pixelAnnotationOnlyBlob = new Blob([pixelPngBytes], { type: 'image/png' });
+  fakeIndexedDbStore.set('pixel-prepare-original', pixelOriginalBlob);
+  fakeIndexedDbStore.set('pixel-prepare-mask', pixelMaskOnlyBlob);
+  fakeIndexedDbStore.set('pixel-prepare-annotation', pixelAnnotationOnlyBlob);
+  pixelMaskFixtures.set(pixelMaskOnlyBlob, new Uint8ClampedArray([
+    255, 255, 255, 0,
+    255, 255, 255, 255,
+    255, 255, 255, 255,
+    255, 255, 255, 255
+  ]));
+  pixelMaskFixtures.set(pixelAnnotationOnlyBlob, new Uint8ClampedArray([
+    255, 255, 255, 255,
+    255, 255, 255, 255,
+    255, 255, 255, 0,
+    255, 255, 255, 255
+  ]));
+  const alphaValues = (pixels) => Array.from(pixels || []).filter((_, index) => index % 4 === 3);
+  const hasEditableAndTransparentPixels = (pixels) => {
+    const alphas = alphaValues(pixels);
+    return alphas.includes(0) && alphas.includes(255);
+  };
+  const pixelPreparedMaskOnly = await hooks.prepareEditReferenceFiles([{
+    ref: { id: 'pixel-mask-only', originalBlobId: 'pixel-prepare-original', blobId: 'pixel-prepare-original', maskBlobId: 'pixel-prepare-mask', maskFormat: hooks.OPENAI_MASK_FORMAT },
+    blob: new Blob(['display'], { type: 'image/png' })
+  }]);
+  const pixelPreparedAnnotationOnly = await hooks.prepareEditReferenceFiles([{
+    ref: { id: 'pixel-annotation-only', originalBlobId: 'pixel-prepare-original', blobId: 'pixel-prepare-original', annotationBlobId: 'pixel-prepare-annotation' },
+    blob: new Blob(['display'], { type: 'image/png' })
+  }]);
+  const pixelPreparedMaskAndAnnotation = await hooks.prepareEditReferenceFiles([{
+    ref: { id: 'pixel-mask-and-annotation', originalBlobId: 'pixel-prepare-original', blobId: 'pixel-prepare-original', maskBlobId: 'pixel-prepare-mask', annotationBlobId: 'pixel-prepare-annotation', maskFormat: hooks.OPENAI_MASK_FORMAT },
+    blob: new Blob(['display'], { type: 'image/png' })
+  }]);
+  ok(hasEditableAndTransparentPixels(pixelMaskFixtures.get(pixelPreparedMaskOnly?.mask)),
+    'OpenAI mask-only output must retain a transparent alpha=0 selection and an opaque editable-area boundary');
+  ok(hasEditableAndTransparentPixels(pixelMaskFixtures.get(pixelPreparedAnnotationOnly?.mask)),
+    'OpenAI annotation-only output must retain a transparent alpha=0 selection and an opaque editable-area boundary');
+  ok(hasEditableAndTransparentPixels(pixelMaskFixtures.get(pixelPreparedMaskAndAnnotation?.mask)),
+    'OpenAI mask plus annotation output must preserve at least one alpha=0 selection without dropping the editable-area boundary');
+  sandbox.Image = previousMaskImage;
+  sandbox.document.createElement = previousPixelCreateElement;
   sandbox.fetch = originalFetch;
 
   const fakeJpegBytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01]);

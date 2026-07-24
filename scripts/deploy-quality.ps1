@@ -141,9 +141,9 @@ function Ensure-TestDependencies {
     Write-Host 'Playwright dependency already installed under tests/node_modules.'
   }
   if ($InstallBrowsers) {
-    Invoke-LoggedCommand -FilePath 'npm' -Arguments @('--prefix', (Join-Path $ProjectDir 'tests'), 'exec', '--', 'playwright', 'install', 'chromium')
+    Invoke-LoggedCommand -FilePath 'npm' -Arguments @('--prefix', (Join-Path $ProjectDir 'tests'), 'exec', '--', 'playwright', 'install', 'chromium', 'firefox')
   } else {
-    Write-Host 'Skipping browser install; use -InstallBrowsers if the runner lacks Chromium.'
+    Write-Host 'Skipping browser install; use -InstallBrowsers if the runner lacks Chromium or Firefox.'
   }
 }
 
@@ -159,6 +159,7 @@ function Invoke-StabilityChecks {
   Invoke-LoggedCommand -FilePath 'node' -Arguments @('--check', 'assets/shell-ui.js')
   Invoke-LoggedCommand -FilePath 'node' -Arguments @('--check', 'functions/api-proxy/[[path]].js')
   Invoke-LoggedCommand -FilePath 'node' -Arguments @('--check', 'tests/e2e-quality.js')
+  Invoke-LoggedCommand -FilePath 'node' -Arguments @('--check', 'tests/mask-editor-browser-smoke.cjs')
   Invoke-LoggedCommand -FilePath 'node' -Arguments @('--check', 'scripts/api-smoke.mjs')
   Invoke-LoggedCommand -FilePath 'node' -Arguments @('tests/image-stream-regression.js')
   Invoke-LoggedCommand -FilePath 'node' -Arguments @('tests/image-edit-request-regression.js')
@@ -333,6 +334,7 @@ function Invoke-QualityTests([string]$Url, [string]$Label) {
     Write-Host 'TEST_PASS=<hidden>'
     Invoke-LoggedCommand -FilePath 'npm' -Arguments @('--prefix', (Join-Path $ProjectDir 'tests'), 'run', 'quality', '--silent')
     Invoke-LoggedCommand -FilePath 'node' -Arguments @('scripts/api-smoke.mjs')
+    Invoke-LoggedCommand -FilePath 'node' -Arguments @('tests/mask-editor-browser-smoke.cjs')
   } finally {
     $env:BASE_URL = $oldBase
     $env:TEST_USER = $oldUser

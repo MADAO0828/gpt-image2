@@ -88,14 +88,14 @@ const NANO_BANANA_CAPABILITIES = [
 ];
 
 const BRUSH_COLORS = [
-  { name: '黄', value: '#facc15' },
-  { name: '橙', value: '#fb923c' },
   { name: '红', value: '#ef4444' },
+  { name: '黄', value: '#facc15' },
   { name: '绿', value: '#22c55e' },
-  { name: '青', value: '#06b6d4' },
   { name: '蓝', value: '#3b82f6' },
-  { name: '紫', value: '#a855f7' }
+  { name: '深灰', value: '#374151' },
+  { name: '白', value: '#ffffff' }
 ];
+const MASK_EDIT_INSTRUCTION_MAX_LENGTH = 1000;
 
 const HOMEPAGE_V3_TEST_HOOKS = typeof window !== 'undefined' ? (window.__homepageV3TestHooks = window.__homepageV3TestHooks || {}) : null;
 const IMAGE_STREAM_RUNTIME = typeof globalThis !== 'undefined' ? globalThis.NexGenImageStream : null;
@@ -2482,6 +2482,8 @@ function readStore() {
     const merged = { ...base, ...parsed };
     merged.composerPrompt = normalizeRemovedReferencePlaceholderText(merged.composerPrompt);
     merged.composerMentionTokens = sanitizeComposerMentionTokens(parsed.composerMentionTokens);
+    merged.references = (Array.isArray(merged.references) ? merged.references : [])
+      .map((ref) => ({ ...ref, editInstruction: normalizeEditInstruction(ref?.editInstruction) }));
     merged.settings = { ...base.settings, ...(parsed.settings || {}) };
     merged.settings.quality = normalizeImageQuality(merged.settings.quality);
     merged.preferences = { ...DEFAULT_PREFERENCES, ...(parsed.preferences || {}) };
@@ -2520,6 +2522,8 @@ function readStore() {
     }
     merged.agent = migrateAgentThreads({ ...base.agent, ...(parsed.agent || {}) });
     merged.agent.composerMentionTokens = sanitizeComposerMentionTokens(merged.agent.composerMentionTokens);
+    merged.agent.attachments = (Array.isArray(merged.agent.attachments) ? merged.agent.attachments : [])
+      .map((attachment) => ({ ...attachment, editInstruction: normalizeEditInstruction(attachment?.editInstruction) }));
     if (!Array.isArray(merged.agent.projects) || !merged.agent.projects.length) merged.agent.projects = base.agent.projects;
     if (!merged.agent.conversations || typeof merged.agent.conversations !== 'object') merged.agent.conversations = {};
     if (!merged.agent.threadsByProject || typeof merged.agent.threadsByProject !== 'object') merged.agent.threadsByProject = {};
@@ -2741,29 +2745,87 @@ function resolveComposerPromptForRequest(prompt, refs = state.references, tokens
   }
   return nextPrompt;
 }
+function normalizeEditInstruction(value) {
+  return String(value || '').trim().slice(0, MASK_EDIT_INSTRUCTION_MAX_LENGTH);
+}
+function selectedReferencesForImageGeneration(refs = [], tokens = [], options = {}) {
+  const source = Array.isArray(refs) ? refs : [];
+  const prompt = options.prompt === undefined ? null : String(options.prompt || '');
+  if (options.all === true) return source;
+  const selectedIds = new Set();
+  for (const token of sanitizeComposerMentionTokens(tokens)) {
+    if (!token.selected || token.removed) continue;
+    if (prompt !== null && (token.end > prompt.length || prompt.slice(token.start, token.end) !== token.text)) continue;
+    const ref = source.find((item) => String(item?.id || '') === String(token.refId || ''));
+    if (ref?.id) selectedIds.add(String(ref.id));
+  }
+  return selectedIds.size ? source.filter((ref) => selectedIds.has(String(ref?.id || ''))) : source;
+}
+function appendReferenceEditInstructions(prompt, refs = []) {
+  const source = String(prompt || '');
+  const lines = (Array.isArray(refs) ? refs : [])
+    .map((ref, index) => {
+      const instruction = normalizeEditInstruction(ref?.editInstruction);
+      return instruction ? `参考图${index + 1}编辑说明：${instruction}` : '';
+    })
+    .filter(Boolean)
+    .filter((line) => !source.includes(line));
+  return lines.length ? `${source}${source ? '\n' : ''}${lines.join('\n')}` : source;
+}
+function appendReferenceRequestInstructions(prompt, refs = [], provider = '') {
+  const sourceRefs = Array.isArray(refs) ? refs : [];
+  let next = appendReferenceEditInstructions(prompt, sourceRefs);
+  const hasColorAnnotation = provider !== 'openai'
+    ? sourceRefs.some((ref) => ref?.maskBlobId || ref?.annotationBlobId)
+    : sourceRefs.some((ref, index) => index > 0 && (ref?.maskBlobId || ref?.annotationBlobId));
+  const colorLine = '请将参考图中的彩色标注区域作为需要修改的区域，仅编辑这些区域。';
+  if (hasColorAnnotation && !next.includes(colorLine)) next = `${next}${next ? '\n' : ''}${colorLine}`;
+  return next;
+}
 function sanitizeReferenceSnapshots(refs = []) {
-  return (Array.isArray(refs) ? refs : []).map((ref) => ({
-    id: ref.id,
-    name: ref.name || 'reference.png',
-    type: ref.type || 'image/png',
-    blobId: ref.blobId,
-    compositedBlobId: ref.compositedBlobId || ref.blobId,
-    originalBlobId: ref.originalBlobId || ref.blobId,
-    maskBlobId: ref.maskBlobId || '',
-    annotationBlobId: ref.annotationBlobId || '',
-    maskFormat: ref.maskFormat || '',
-    width: ref.width,
-    height: ref.height
-  })).filter((ref) => ref.blobId);
+  return (Array.isArray(refs) ? refs : []).map((ref) => {
+    const marked = !!(ref?.maskBlobId || ref?.annotationBlobId);
+    const hasOriginalBlobId = !!ref && Object.prototype.hasOwnProperty.call(ref, 'originalBlobId');
+    const hasCompositedBlobId = !!ref && Object.prototype.hasOwnProperty.call(ref, 'compositedBlobId');
+    const legacyOriginalBlobId = ref.compositedBlobId && ref.blobId === ref.compositedBlobId ? '' : (ref.blobId || '');
+    const originalBlobId = marked
+      ? (hasOriginalBlobId ? (ref.originalBlobId || '') : '')
+      : (ref.originalBlobId || legacyOriginalBlobId);
+    const legacyCompositeBlobId = originalBlobId && ref.blobId && ref.blobId !== originalBlobId ? ref.blobId : '';
+    return {
+      id: ref.id,
+      name: ref.name || 'reference.png',
+      type: ref.type || 'image/png',
+      blobId: ref.blobId,
+      compositedBlobId: marked
+        ? (hasCompositedBlobId ? (ref.compositedBlobId || '') : legacyCompositeBlobId)
+        : (ref.compositedBlobId || ref.blobId),
+      originalBlobId,
+      maskBlobId: ref.maskBlobId || '',
+      annotationBlobId: ref.annotationBlobId || '',
+      maskFormat: ref.maskFormat || '',
+      editInstruction: normalizeEditInstruction(ref.editInstruction),
+      width: ref.width,
+      height: ref.height
+    };
+  }).filter((ref) => ref.blobId);
 }
 async function cloneReferenceSnapshots(refs = [], options = {}) {
   const out = [];
   const sourceRefs = Array.isArray(refs) ? refs : [];
   const clonedIds = [];
+  const provider = String(options.provider || '').toLowerCase();
   const readableBlob = (blob) => blob
     && Number.isFinite(Number(blob.size))
     && Number(blob.size) > 0
     && typeof blob.arrayBuffer === 'function';
+  const snapshotUnreadableError = (index, layer) => imageResponseError(
+    layer === 'original'
+      ? `参考图 ${index + 1} 的原图快照不可读取，请重新上传`
+      : `参考图 ${index + 1} 的标注合成快照不可读取，请重新编辑并保存遮罩后再生成`,
+    'IMAGE_EDIT_INPUT_SNAPSHOT_UNREADABLE',
+    'request-validation'
+  );
   try {
     for (const [index, ref] of sourceRefs.entries()) {
       if (!ref?.blobId) {
@@ -2777,18 +2839,47 @@ async function cloneReferenceSnapshots(refs = [], options = {}) {
       }
       const blobId = await putBlob(usedBlob);
       clonedIds.push(blobId);
-      let originalBlobId = blobId;
-      if (ref.originalBlobId && ref.originalBlobId !== ref.blobId) {
-        const originalBlob = await getBlob(ref.originalBlobId).catch(() => null);
-        if (readableBlob(originalBlob)) {
+      const marked = !!(ref.maskBlobId || ref.annotationBlobId);
+      const hasOriginalBlobId = Object.prototype.hasOwnProperty.call(ref, 'originalBlobId');
+      const hasCompositedBlobId = Object.prototype.hasOwnProperty.call(ref, 'compositedBlobId');
+      const originalSourceId = marked
+        ? (hasOriginalBlobId
+          ? (ref.originalBlobId || '')
+          : (ref.compositedBlobId && ref.blobId === ref.compositedBlobId ? '' : (ref.blobId || '')))
+        : (ref.originalBlobId || (ref.compositedBlobId && ref.blobId === ref.compositedBlobId ? '' : (ref.blobId || '')));
+      const legacyCompositeId = ref.blobId && originalSourceId && ref.blobId !== originalSourceId ? ref.blobId : '';
+      const compositeSourceId = marked
+        ? (hasCompositedBlobId ? (ref.compositedBlobId || '') : legacyCompositeId)
+        : (ref.compositedBlobId || legacyCompositeId || ref.blobId);
+      const requiresOriginal = options.strict && marked && provider === 'openai' && index === 0;
+      const requiresComposite = options.strict && marked && (
+        provider === 'google'
+        || provider === 'xai'
+        || (provider === 'openai' && index > 0)
+      );
+      const compositeMatchesOriginal = !!compositeSourceId && !!originalSourceId && compositeSourceId === originalSourceId;
+      if (requiresOriginal && !originalSourceId) {
+        throw imageResponseError('遮罩原图已丢失，请重新上传原图后再生成', 'IMAGE_EDIT_MASK_ORIGINAL_MISSING', 'request-validation');
+      }
+      if (requiresComposite && (!compositeSourceId || compositeMatchesOriginal)) {
+        throw imageResponseError('遮罩合成图已丢失，请重新打开遮罩编辑器并保存后再生成', 'IMAGE_EDIT_MASK_COMPOSITE_MISSING', 'request-validation');
+      }
+      let originalBlobId = originalSourceId === ref.blobId ? blobId : '';
+      if (originalSourceId && originalSourceId !== ref.blobId) {
+        const originalBlob = await getBlob(originalSourceId).catch(() => null);
+        if (!readableBlob(originalBlob)) {
+          if (options.strict) throw snapshotUnreadableError(index, 'original');
+        } else {
           originalBlobId = await putBlob(originalBlob);
           clonedIds.push(originalBlobId);
         }
       }
-      let compositedBlobId = blobId;
-      if (ref.compositedBlobId && ref.compositedBlobId !== ref.blobId) {
-        const compositedBlob = await getBlob(ref.compositedBlobId).catch(() => null);
-        if (readableBlob(compositedBlob)) {
+      let compositedBlobId = compositeSourceId === ref.blobId ? blobId : '';
+      if (compositeSourceId && compositeSourceId !== ref.blobId) {
+        const compositedBlob = await getBlob(compositeSourceId).catch(() => null);
+        if (!readableBlob(compositedBlob)) {
+          if (options.strict) throw snapshotUnreadableError(index, 'composite');
+        } else {
           compositedBlobId = await putBlob(compositedBlob);
           clonedIds.push(compositedBlobId);
         }
@@ -2818,11 +2909,12 @@ async function cloneReferenceSnapshots(refs = [], options = {}) {
         name: ref.name || 'reference.png',
         type: usedBlob.type || ref.type || 'image/png',
         blobId,
-        compositedBlobId,
+        compositedBlobId: compositedBlobId || (marked ? '' : blobId),
         originalBlobId,
         maskBlobId,
         annotationBlobId,
         maskFormat: ref.maskFormat || '',
+        editInstruction: normalizeEditInstruction(ref.editInstruction),
         width: ref.width,
         height: ref.height
       });
@@ -3420,7 +3512,7 @@ function imageModerationSupported(profile = imageProfile()) {
 function imageMaskSupportLabel(profile = imageProfile()) {
   return openAiImagesProfile(profile)
     ? '当前 OpenAI-compatible Images 模型会发送像素遮罩。'
-    : '当前供应商不支持独立像素遮罩；本次已标注参考图会发送黄色半透明标注合成图，并在提示词中说明标注区域，不发送独立 mask。';
+    : '当前供应商不支持独立像素遮罩；本次已标注参考图会发送彩色标注合成图，并在提示词中说明彩色标注区域，不发送独立 mask。';
 }
 function googleVersion(profile = activeProfile()) {
   return nanoBananaCapability(profile)?.version || (/3\.1|nano banana 2|banana-?2/i.test(`${profile.model || ''} ${profile.name || ''}`) ? '3.1' : '2.5');
@@ -6288,6 +6380,65 @@ function maskEditorReferences() {
 function maskEditorReference(id = state.maskEditor?.activeRefId) {
   return maskEditorReferences().find((ref) => String(ref?.id || '') === String(id || '')) || null;
 }
+function maskEditorIsReady(editor = state.maskEditor) {
+  return !!editor
+    && editor.loadStatus === 'ready'
+    && editor.canvasReady === true
+    && String(editor.loadRefId || '') === String(editor.activeRefId || '');
+}
+function maskLoadIsCurrent(editor, refId, token, epoch) {
+  return !!editor
+    && state.maskEditor === editor
+    && editor.loadStatus === 'loading'
+    && String(editor.activeRefId || '') === String(refId || '')
+    && String(editor.loadRefId || '') === String(refId || '')
+    && Number(editor.loadToken || 0) === Number(token || 0)
+    && Number(editor.loadEpoch || 0) === Number(epoch || 0);
+}
+function maskEditorLoadMessage(editor = state.maskEditor) {
+  if (editor?.loadStatus === 'ready') return '图片已加载，可以编辑';
+  if (editor?.loadStatus === 'error') return '图片加载失败，请关闭后重新打开';
+  return '正在加载图片和已保存标注...';
+}
+function syncMaskEditorLoadUi(editor = state.maskEditor) {
+  if (!editor || state.maskEditor !== editor) return;
+  const layer = $('.mask-layer');
+  if (!layer) return;
+  const ready = maskEditorIsReady(editor);
+  layer.dataset.maskStatus = editor.loadStatus || 'loading';
+  layer.dataset.maskReady = ready ? '1' : '0';
+  const shell = $('.mask-canvas-shell', layer);
+  if (shell) {
+    shell.dataset.maskStatus = editor.loadStatus || 'loading';
+    shell.dataset.maskReady = ready ? '1' : '0';
+  }
+  const status = $('[data-mask-load-status]', layer);
+  if (status) {
+    status.textContent = maskEditorLoadMessage(editor);
+    status.dataset.state = editor.loadStatus || 'loading';
+  }
+  const guardedActions = [
+    '[data-action="switch-mask-ref"]',
+    '[data-action="mask-tool"]', '[data-action="mask-color"]', '[data-action="mask-crop-ratio"]',
+    '[data-action="mask-crop-cancel"]', '[data-action="mask-crop-confirm"]', '[data-action="mask-center"]',
+    '[data-action="mask-fullscreen"]', '[data-action="mask-undo"]', '[data-action="mask-redo"]',
+    '[data-action="mask-delete"]', '[data-action="save-mask-editor"]', '[data-action="mask-size"]',
+    '[data-action="mask-edit-instruction"]'
+  ];
+  $$(guardedActions.join(','), layer).forEach((node) => {
+    node.disabled = !ready || !!editor.saving;
+    if (!ready || editor.saving) node.setAttribute('aria-disabled', 'true');
+    else node.removeAttribute('aria-disabled');
+  });
+}
+function setMaskEditorLoadState(editor, status, error = '') {
+  if (!editor || state.maskEditor !== editor) return false;
+  editor.loadStatus = status;
+  editor.loadError = String(error || '');
+  editor.canvasReady = status === 'ready';
+  syncMaskEditorLoadUi(editor);
+  return true;
+}
 function renderAgentAttachmentTray(attachments, removable = false) {
   const items = (attachments || []).filter(Boolean);
   if (!items.length) return '';
@@ -8823,40 +8974,93 @@ function renderMaskEditor() {
   const editor = state.maskEditor;
   const refs = maskEditorReferences();
   const active = refs.find((ref) => ref.id === editor.activeRefId) || refs[0];
+  const editInstruction = normalizeEditInstruction(editor.editInstruction ?? active?.editInstruction);
   const agentMode = editor.mode === 'agent-attachment';
   const tool = editor.tool || 'brush';
-  const button = (action, value, label, icon, activeState = false) => `<button type="button" class="tool-button ${activeState ? 'active' : ''}" data-action="${action}"${value ? ` data-tool="${value}"` : ''} title="${esc(label)}" aria-label="${esc(label)}" data-tooltip="${esc(label)}">${icon}</button>`;
+  const editorReady = maskEditorIsReady(editor);
+  const disabled = !editorReady || editor.saving ? ' disabled aria-disabled="true"' : '';
+  const loadingMessage = maskEditorLoadMessage(editor);
+  const maskSvg = (name) => {
+    const icons = {
+      center: '<circle cx="12" cy="12" r="5"/><path d="M12 3v4m0 10v4M3 12h4m10 0h4"/>',
+      move: '<path d="M4 12h16m-5-5 5 5-5 5M20 12H4m5-5-5 5 5 5M12 4v16m-5-5 5 5 5-5M12 20V4m-5 5 5-5 5 5"/>',
+      rect: '<rect x="4" y="5" width="16" height="14" rx="1"/>',
+      ellipse: '<ellipse cx="12" cy="12" rx="8" ry="6"/>',
+      line: '<path d="M5 19 19 5"/>',
+      arrow: '<path d="M4 12h15m-6-6 6 6-6 6"/>',
+      brush: '<path d="m5 15 9-9a2.1 2.1 0 0 1 3 0l1 1a2.1 2.1 0 0 1 0 3l-9 9H5zM4 20h7"/>',
+      polygon: '<path d="m12 3 8 6-3 10H7L4 9z"/>',
+      text: '<path d="M5 5h14M12 5v14M8 19h8"/>',
+      fill: '<path d="m5 5 8 8-5 5-5-5zM13 4l7 7-3 3M16 18c0 1.7-1.2 3-3 3"/>',
+      crop: '<path d="M9 4H4v5m11-5h5v5m0 6v5h-5M9 20H4v-5"/>',
+      eraser: '<path d="m5 15 9-9a2.1 2.1 0 0 1 3 0l2 2a2.1 2.1 0 0 1 0 3l-7 7H7zM3 20h8"/>',
+      delete: '<path d="M6 7h12m-8-3h4l1 3M8 10v8m4-8v8m4-8v8M7 7l1 13h8l1-13"/>',
+      undo: '<path d="m9 7-5 5 5 5M5 12h8a6 6 0 0 1 6 6v1"/>',
+      redo: '<path d="m15 7 5 5-5 5M19 12h-8a6 6 0 0 0-6 6v1"/>',
+      cancel: '<path d="m6 6 12 12M18 6 6 18"/>',
+      confirm: '<path d="m5 12 4 4L19 6"/>',
+      fullscreen: '<path d="M8 3H3v5m13-5h5v5m0 8v5h-5M3 16v5h5"/>',
+      saving: '<circle cx="12" cy="12" r="8" stroke-dasharray="4 3"/>'
+    };
+    return `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${icons[name] || icons.brush}</svg>`;
+  };
+  const button = (action, value, label, icon, activeState = false, extraClass = '') => {
+    const actionDisabled = action === 'cancel-mask-editor' && !editor.saving ? '' : disabled;
+    return `<button type="button" class="tool-button ${activeState ? 'active' : ''} ${extraClass}" data-action="${action}"${value ? ` data-tool="${value}"` : ''} title="${esc(label)}" aria-label="${esc(label)}" data-tooltip="${esc(label)}"${actionDisabled}><span class="mask-tool-icon" aria-hidden="true">${icon}</span></button>`;
+  };
   const tools = [
-    ['move', '移动', '↔'], ['brush', '画笔', '✎'], ['rect', '矩形填充', '▣'], ['ellipse', '圆形填充', '◯'],
-    ['line', '直线标注', '╱'], ['arrow', '箭头标注', '➜'], ['polygon', '多边形填充', '⬠'], ['text', '文字标注', 'T'],
-    ['fill', '连续区域填充', '▤'], ['crop', '裁剪框（仅限制编辑区域）', '⌗'], ['eraser', '橡皮擦', '⌫']
+    ['move', '移动', maskSvg('move')], ['rect', '矩形', maskSvg('rect')], ['ellipse', '圆形', maskSvg('ellipse')], ['line', '直线', maskSvg('line')], ['arrow', '箭头', maskSvg('arrow')],
+    ['brush', '画笔', maskSvg('brush')], ['polygon', '多边形', maskSvg('polygon')], ['text', '文字', maskSvg('text')], ['fill', '填充', maskSvg('fill')], ['crop', '裁切', maskSvg('crop')], ['eraser', '橡皮', maskSvg('eraser')]
   ];
+  const profile = agentMode ? agentImageProfile() : imageProfile();
+  const provider = providerKey(profile);
+  const ratioValues = provider === 'google'
+    ? (googleVersion(profile) === '3.1' ? PROVIDER.google.ratios31 : PROVIDER.google.ratios25)
+    : provider === 'xai'
+      ? PROVIDER.xai.ratios
+      : ['auto', '1:1', '5:4', '9:16', '16:9', '4:3', '3:2', '4:5', '3:4', '2:3', '21:9'];
+  const ratioButtons = ['free', ...ratioValues.filter((value) => value !== 'auto')]
+    .filter((value, index, values) => values.indexOf(value) === index)
+    .map((value) => `<button type="button" class="mask-crop-ratio ${String(editor.cropRatio || 'free') === value ? 'active' : ''}" data-action="mask-crop-ratio" data-value="${esc(value)}"${disabled}>${esc(value === 'free' ? '自由' : value)}</button>`).join('');
+  const drawOptions = tool === 'brush' ? `<div class="mask-draw-options" role="group" aria-label="画笔设置">
+    <div class="mask-draw-colors">${BRUSH_COLORS.map((color) => `<button type="button" class="color-button ${editor.color === color.value ? 'active' : ''}" title="${esc(color.name)}" aria-label="${esc(color.name)}" data-tooltip="${esc(color.name)}" style="background:${color.value}" data-action="mask-color" data-color="${color.value}"${disabled}></button>`).join('')}</div>
+    <span class="mask-tool-divider" role="separator" aria-hidden="true"></span>
+    <label class="mask-size-control" title="画笔大小（原图像素）"><span>大小</span><input class="mask-size-slider" type="range" min="1" max="100" step="1" value="${esc(editor.brushSize || 64)}" data-action="mask-size" aria-label="画笔大小（原图像像素）"${disabled}><output>${esc(editor.brushSize || 64)}</output></label>
+  </div>` : '';
+  const cropActions = tool === 'crop' ? `<div class="mask-crop-actions" role="group" aria-label="裁切操作"><span class="mask-crop-label">比例</span><div class="mask-crop-ratios">${ratioButtons}</div><button type="button" data-action="mask-crop-cancel"${disabled}>取消裁切</button><button type="button" data-action="mask-crop-confirm"${disabled}>确认裁切</button></div>` : '';
+  const inlineText = editor.pendingText ? `<div class="mask-text-inline" role="group" aria-label="文字标注输入"><input id="maskTextInput" data-action="mask-text-input" data-modal-autofocus maxlength="120" value="${esc(editor.pendingText.value || '')}" placeholder="输入文字" aria-label="文字标注"${disabled}><button type="button" data-action="confirm-mask-text" aria-label="提交文字" title="提交文字"${disabled}><span class="mask-tool-icon" aria-hidden="true">${maskSvg('confirm')}</span></button><button type="button" data-action="cancel-mask-text" aria-label="取消文字" title="取消文字"${disabled}><span class="mask-tool-icon" aria-hidden="true">${maskSvg('cancel')}</span></button></div>` : '';
+  const toolbarButtons = [
+    button('mask-center', '', '居中', maskSvg('center')),
+    ...tools.map(([value, label, icon]) => button('mask-tool', value, label, icon, tool === value)),
+    '<span class="mask-tool-divider" role="separator" aria-hidden="true"></span>',
+    button('mask-delete', '', '删除全部标注', maskSvg('delete')),
+    button('mask-undo', '', '撤销', maskSvg('undo')),
+    button('mask-redo', '', '重做', maskSvg('redo')),
+    '<span class="mask-tool-divider" role="separator" aria-hidden="true"></span>',
+    button('cancel-mask-editor', '', '取消且不保存', maskSvg('cancel')),
+    button('save-mask-editor', '', editor.saving ? '保存中' : '确认保存', editor.saving ? maskSvg('saving') : maskSvg('confirm'), false, 'mask-save'),
+    button('mask-fullscreen', '', '全屏', maskSvg('fullscreen'))
+  ].join('');
   return `
-    <section class="mask-layer" role="dialog" aria-modal="true" aria-label="编辑遮罩" tabindex="-1" data-modal-key="mask-editor">
-      <div class="mask-topbar">
-        <button type="button" class="mask-close" aria-label="关闭遮罩编辑器" title="取消并关闭" ${editor.pendingText ? '' : 'data-modal-autofocus'} data-action="cancel-mask-editor" style="position:static">×</button>
-        <div class="mask-title">${agentMode ? 'Agent 附件遮罩' : '编辑遮罩'}</div>
-        <div class="mask-info" title="根据官方说明，此功能仅辅助限定修改区域">i</div>
-        <div class="mask-tip">${esc(imageMaskSupportLabel(agentMode ? agentImageProfile() : imageProfile()))} 建议在提示词中说明需要编辑的区域。</div>
-        <button type="button" class="mask-save" data-action="save-mask-editor" title="确认并保存" aria-label="确认并保存">确认</button>
-      </div>
+    <section class="mask-layer ${editor.saving ? 'mask-editor-saving' : ''}" role="dialog" aria-modal="true" aria-label="编辑遮罩" tabindex="-1" data-modal-key="mask-editor" data-mask-status="${esc(editor.loadStatus || 'loading')}" data-mask-ready="${editorReady ? '1' : '0'}">
       <div class="mask-body">
-        <div class="mask-refs">
-          ${refs.map((ref) => `<button class="mask-ref ${ref.id === active?.id ? 'active' : ''}" data-action="switch-mask-ref" data-id="${esc(ref.id)}"><img ${agentMode ? `data-agent-attachment-id="${esc(ref.id)}"` : `data-ref-id="${esc(ref.id)}"`} alt="${esc(ref.name || '图片附件')}">${ref.maskBlobId || ref.annotationBlobId ? '<span class="mask-ref-status">已标注</span>' : ''}</button>`).join('')}
+        ${refs.length > 1 ? `<div class="mask-refs">${refs.map((ref, index) => {
+          const referenceLabel = `图${index + 1}`;
+          const referenceName = ref.name || (agentMode ? '图片附件' : '参考图');
+          const referenceAccessibleLabel = `${referenceLabel} · ${referenceName} · 点击切换编辑对象`;
+          const activeReference = ref.id === active?.id;
+          return `<button type="button" class="mask-ref ${activeReference ? 'active' : ''}" data-action="switch-mask-ref" data-id="${esc(ref.id)}" title="${esc(referenceAccessibleLabel)}" aria-label="${esc(referenceAccessibleLabel)}" aria-pressed="${activeReference ? 'true' : 'false'}"${disabled}><span class="mask-ref-preview"><img ${agentMode ? `data-agent-attachment-id="${esc(ref.id)}"` : `data-ref-id="${esc(ref.id)}"`} alt="${esc(referenceName)}">${ref.maskBlobId || ref.annotationBlobId ? '<span class="mask-ref-status">已标注</span>' : ''}</span><span class="mask-ref-number">${esc(referenceLabel)}</span></button>`;
+        }).join('')}</div>` : ''}
+        <div class="mask-canvas-wrap">
+          ${cropActions}
+          <div class="mask-load-status" data-mask-load-status data-state="${esc(editor.loadStatus || 'loading')}" role="status" aria-live="polite">${esc(loadingMessage)}</div>
+          <div class="mask-canvas-shell ${tool === 'eraser' ? 'is-eraser' : ['brush', 'eraser'].includes(tool) ? 'is-brush' : ''}" data-cropped="${editor.cropped ? '1' : '0'}" data-mask-status="${esc(editor.loadStatus || 'loading')}" data-mask-ready="${editorReady ? '1' : '0'}" style="transform-origin:top left;--mask-cursor-size:${esc(editor.brushSize || 64)}px;--mask-cursor-color:${esc(editor.color || BRUSH_COLORS[0].value)}"><canvas id="maskBaseCanvas"></canvas><canvas id="maskCanvas"></canvas><canvas id="maskAnnotationCanvas" aria-hidden="true" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;background:transparent"></canvas><div class="mask-crop-guide" id="maskCropGuide" aria-hidden="true" style="display:none;position:absolute;z-index:4;pointer-events:none;border:2px dashed #f59e0b;box-sizing:border-box"></div><div class="mask-cursor" id="maskCursor"></div>${inlineText}</div>
         </div>
-        <div class="mask-canvas-wrap"><div class="mask-canvas-shell ${tool === 'eraser' ? 'is-eraser' : ['brush', 'eraser'].includes(tool) ? 'is-brush' : ''}" style="transform-origin:top left;--mask-cursor-size:${esc(editor.brushSize || 64)}px;--mask-cursor-color:${esc(editor.color || BRUSH_COLORS[0].value)}"><canvas id="maskBaseCanvas"></canvas><canvas id="maskCanvas"></canvas><canvas id="maskAnnotationCanvas" aria-hidden="true" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;background:transparent"></canvas><div class="mask-crop-guide" id="maskCropGuide" aria-hidden="true" style="display:none;position:absolute;z-index:4;pointer-events:none;border:2px dashed #f59e0b;box-sizing:border-box"></div><div class="mask-cursor" id="maskCursor"></div></div>${editor.pendingText ? `<div class="mask-text-editor" role="group" aria-label="文字标注输入"><label for="maskTextInput">文字标注<textarea id="maskTextInput" data-action="mask-text-input" data-modal-autofocus maxlength="120" rows="3" placeholder="输入要放到图片上的文字">${esc(editor.pendingText.value || '')}</textarea></label><div class="mask-text-editor-actions"><button type="button" data-action="confirm-mask-text">添加文字</button><button type="button" class="secondary" data-action="cancel-mask-text">取消</button></div></div>` : ''}</div>
       </div>
-      <div class="mask-tools">
-        ${button('mask-center', '', '居中图片（重置平移）', '⌖')}
-        ${tools.map(([value, label, icon]) => button('mask-tool', value, label, icon, tool === value)).join('')}
-        <input class="brush-size" type="number" min="4" max="160" step="1" value="${esc(editor.brushSize || 64)}" data-action="mask-size" title="画笔大小（原图像素）" aria-label="画笔大小（原图像素）" data-tooltip="画笔大小（原图像像素）">
-        ${BRUSH_COLORS.map((c) => `<button type="button" class="color-button ${editor.color === c.value ? 'active' : ''}" title="${esc(c.name)}" aria-label="${esc(c.name)}" data-tooltip="${esc(c.name)}" style="background:${c.value}" data-action="mask-color" data-color="${c.value}"></button>`).join('')}
-        ${button('mask-undo', '', '撤销', '↶')}
-        ${button('mask-redo', '', '重做', '↷')}
-        ${button('mask-delete', '', '删除全部标注', '⌧')}
-        ${button('cancel-mask-editor', '', '取消且不保存', '取消')}
-        ${button('save-mask-editor', '', '确认保存', '确认')}
-        ${button('mask-fullscreen', '', '切换全屏', '⛶')}
+      <div class="mask-toolbar-compose">
+        ${drawOptions}
+        <div class="mask-tool-row">${toolbarButtons}</div>
+        <textarea class="mask-editor-prompt" data-action="mask-edit-instruction" maxlength="${MASK_EDIT_INSTRUCTION_MAX_LENGTH}" placeholder="输入本张参考图编辑说明" aria-label="本张参考图编辑说明"${disabled}>${esc(editInstruction)}</textarea>
       </div>
     </section>
   `;
@@ -9004,7 +9208,11 @@ function bindTransientEvents() {
       workflowScroll.addEventListener('scrollend', () => finishWorkflowScroll(), { passive: true });
     }
   }
-  if (state.maskEditor) setupMaskCanvas();
+  if (state.maskEditor) {
+    setupMaskCanvas();
+    syncMaskDrawOptionsPosition();
+    if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(syncMaskDrawOptionsPosition);
+  }
   const agentInput = $('#agentInput');
   if (agentInput) {
     autoGrow(agentInput);
@@ -9449,6 +9657,9 @@ document.addEventListener('click', async (event) => {
   if (action === 'switch-mask-ref') { await switchMaskRef(target.dataset.id); return; }
   if (action === 'mask-tool') { setMaskTool(target.dataset.tool); return; }
   if (action === 'mask-color') { setMaskColor(target.dataset.color); return; }
+  if (action === 'mask-crop-ratio') { setMaskCropRatio(target.dataset.value); return; }
+  if (action === 'mask-crop-cancel') { cancelMaskCrop(); return; }
+  if (action === 'mask-crop-confirm') { await confirmMaskCrop(); return; }
   if (action === 'mask-center') { centerMaskCanvas(); return; }
   if (action === 'mask-fullscreen') { await toggleMaskFullscreen(); return; }
   if (action === 'mask-undo') { maskUndo(); return; }
@@ -9656,11 +9867,15 @@ document.addEventListener('input', (event) => {
       writeStore();
     }
   }
-  if (action === 'mask-size' && state.maskEditor) {
-    state.maskEditor.brushSize = Math.max(4, Math.min(160, Number(event.target.value) || 64));
+  if (action === 'mask-size' && maskEditorIsReady()) {
+    state.maskEditor.brushSize = Math.max(1, Math.min(100, Number(event.target.value) || 64));
     updateMaskToolUi();
   }
-  if (action === 'mask-text-input' && state.maskEditor?.pendingText) {
+  if (action === 'mask-edit-instruction' && maskEditorIsReady()) {
+    state.maskEditor.editInstruction = normalizeEditInstruction(event.target.value);
+    captureMaskDraft();
+  }
+  if (action === 'mask-text-input' && maskEditorIsReady() && state.maskEditor?.pendingText) {
     state.maskEditor.pendingText.value = String(event.target.value || '').slice(0, 120);
   }
 });
@@ -11164,6 +11379,7 @@ async function addTaskReferenceToComposer(taskId, index = 0) {
     originalBlobId: blobId,
     name: normalized.name || ref.name || 'reference.png',
     type: normalized.type || ref.type || 'image/png',
+    editInstruction: normalizeEditInstruction(ref.editInstruction),
     width: normalized.width || ref.width,
     height: normalized.height || ref.height
   });
@@ -11229,18 +11445,24 @@ function validateReferenceCountForProfile(profile, refs = []) {
 }
 
 async function generateImageTask(seedTask = null) {
-  const prompt = seedTask?.prompt || state.composerPrompt.trim();
+  const rawComposerPrompt = seedTask ? '' : String(state.composerPrompt || '');
+  const prompt = seedTask?.prompt || rawComposerPrompt.trim();
   if (!prompt) { toast('请先输入提示词'); return; }
   const profile = seedTask ? resolveTaskProfile(seedTask) : imageProfile();
   if (!profile) {
     toast('原任务模型配置已不存在，请先复用并选择可用模型后再生成。');
     return null;
   }
-  const references = Array.isArray(seedTask?.referenceSnapshots) ? seedTask.referenceSnapshots : Array.isArray(seedTask?.references) ? seedTask.references : state.references;
+  const sourceReferences = Array.isArray(seedTask?.referenceSnapshots) ? seedTask.referenceSnapshots : Array.isArray(seedTask?.references) ? seedTask.references : state.references;
+  const references = selectedReferencesForImageGeneration(
+    sourceReferences,
+    seedTask ? [] : state.composerMentionTokens,
+    { prompt: seedTask ? undefined : rawComposerPrompt }
+  );
   if (!validateReferenceCountForProfile(profile, references)) return null;
   let referenceSnapshots;
   try {
-    referenceSnapshots = await cloneReferenceSnapshots(references, { strict: true });
+    referenceSnapshots = await cloneReferenceSnapshots(references, { strict: true, provider: providerKey(profile) });
   } catch (error) {
     const normalized = normalizeError(error, '参考图快照失败');
     toast(`生成前检查失败：${normalized.summary}`);
@@ -11255,8 +11477,13 @@ async function generateImageTask(seedTask = null) {
   const effectiveParams = transparentRequested ? getTransparentRequestParams(params) : params;
   const meta = seedTask?.workflowMeta || {};
   const advanced = effectiveAdvanced(meta.entry || 'gallery', profile, seedTask?.advanced || meta.advanced);
-  const submittedPrompt = seedTask?.submittedPrompt
-    || promptWithCanvasConstraint(resolveComposerPromptForRequest(prompt, references, seedTask ? [] : state.composerMentionTokens), providerKey(profile), params);
+  const submittedPromptBase = seedTask?.submittedPrompt
+    || promptWithCanvasConstraint(
+      resolveComposerPromptForRequest(seedTask ? prompt : rawComposerPrompt, references, seedTask ? [] : state.composerMentionTokens).trim(),
+      providerKey(profile),
+      params
+    );
+  const submittedPrompt = appendReferenceRequestInstructions(submittedPromptBase, referenceSnapshots, providerKey(profile));
   const task = {
     id: uid('task'),
     status: 'running',
@@ -11796,16 +12023,39 @@ async function sendGenerationRequest(prompt, params = {}, options = {}) {
   if (!validateReferenceCountForProfile(profile, sourceRefs)) throw new Error(`参考图数量超过当前模型限制：${referenceLimit(profile)}`);
   const refs = await Promise.all(sourceRefs.map(async (ref, index) => {
     const marked = !!(ref?.maskBlobId || ref?.annotationBlobId);
-    const originalBlobId = ref?.originalBlobId
-      || (ref?.compositedBlobId && ref?.blobId === ref.compositedBlobId ? '' : (ref?.blobId || ''));
-    const legacyCompositeId = ref?.blobId && ref.blobId !== originalBlobId ? ref.blobId : '';
-    const compositeBlobId = ref?.compositedBlobId || legacyCompositeId || '';
+    const hasOriginalBlobId = !!ref && Object.prototype.hasOwnProperty.call(ref, 'originalBlobId');
+    const hasCompositedBlobId = !!ref && Object.prototype.hasOwnProperty.call(ref, 'compositedBlobId');
+    const originalBlobId = marked
+      ? (hasOriginalBlobId
+        ? (ref?.originalBlobId || '')
+        : (ref?.compositedBlobId && ref?.blobId === ref.compositedBlobId ? '' : (ref?.blobId || '')))
+      : (ref?.originalBlobId
+        || (ref?.compositedBlobId && ref?.blobId === ref.compositedBlobId ? '' : (ref?.blobId || '')));
+    const legacyCompositeId = ref?.blobId && originalBlobId && ref.blobId !== originalBlobId ? ref.blobId : '';
+    const compositeBlobId = marked
+      ? (hasCompositedBlobId ? (ref?.compositedBlobId || '') : legacyCompositeId)
+      : (ref?.compositedBlobId || legacyCompositeId || '');
     const blobId = provider === 'openai'
-      ? (marked ? originalBlobId : (ref?.blobId || originalBlobId))
+      ? (marked
+        ? (index === 0 ? originalBlobId : compositeBlobId)
+        : (ref?.blobId || originalBlobId))
       : (marked ? compositeBlobId : (ref?.blobId || originalBlobId));
     return { ref, blobId, originalBlobId, compositeBlobId, marked, blob: blobId ? await getBlob(blobId).catch(() => null) : null, index };
   }));
+  const requiresComposite = (item, index) => item.marked
+    && (provider !== 'openai' || index > 0);
+  if (refs.some((item, index) => requiresComposite(item, index)
+    && (!item.compositeBlobId || (!!item.originalBlobId && item.compositeBlobId === item.originalBlobId)))) {
+    throw imageResponseError(
+      provider === 'openai' ? '后续标注参考图缺少彩色标注合成图，请重新编辑并保存遮罩后再生成' : '遮罩合成图已丢失，请重新打开遮罩编辑器并保存后再生成',
+      'IMAGE_EDIT_MASK_COMPOSITE_MISSING',
+      'request-validation'
+    );
+  }
   if (sourceRefs.length && refs.some((item) => !item.blob)) {
+    if (provider === 'openai' && refs.some((item, index) => index > 0 && item.marked && !item.compositeBlobId)) {
+      throw imageResponseError('后续标注参考图缺少彩色标注合成图，请重新编辑并保存遮罩后再生成', 'IMAGE_EDIT_MASK_COMPOSITE_MISSING', 'request-validation');
+    }
     if (provider !== 'openai' && refs.some((item) => item.marked && !item.compositeBlobId)) {
       throw imageResponseError('遮罩合成图已丢失，请重新打开遮罩编辑器并保存后再生成', 'IMAGE_EDIT_MASK_COMPOSITE_MISSING', 'request-validation');
     }
@@ -11814,6 +12064,9 @@ async function sendGenerationRequest(prompt, params = {}, options = {}) {
     }
     if (provider !== 'openai' && refs.some((item) => item.marked && item.compositeBlobId && !item.blob)) {
       throw imageResponseError('遮罩合成文件已丢失，请重新编辑并保存遮罩后再生成', 'IMAGE_EDIT_MASK_COMPOSITE_MISSING', 'request-validation');
+    }
+    if (provider === 'openai' && refs.some((item, index) => index > 0 && item.marked && item.compositeBlobId && !item.blob)) {
+      throw imageResponseError('后续标注参考图合成文件已丢失，请重新编辑并保存遮罩后再生成', 'IMAGE_EDIT_MASK_COMPOSITE_MISSING', 'request-validation');
     }
     throw imageResponseError('参考图文件已丢失，请重新上传后再生成', 'IMAGE_EDIT_INPUT_MISSING', 'request-validation');
   }
@@ -11830,9 +12083,7 @@ async function sendGenerationRequest(prompt, params = {}, options = {}) {
   };
   const responseOptions = responseOptionsFor(options.advanced);
   const requestPromptBase = options.promptPrepared ? String(prompt || '') : promptWithCanvasConstraint(prompt, provider, requestParams);
-  const requestPrompt = provider !== 'openai' && refs.some((item) => item.marked)
-    ? `${requestPromptBase}\n请将参考图中的黄色标注区域作为需要修改的区域，仅编辑这些区域。`
-    : requestPromptBase;
+  const requestPrompt = appendReferenceRequestInstructions(requestPromptBase, refs.map((item) => item.ref), provider);
   if (hasRefs) {
     const validRefs = refs.filter((item) => item.blob);
     if (!validRefs.length) throw imageResponseError('参考图文件不存在或为空', 'IMAGE_EDIT_INPUT_EMPTY', 'request-validation');
@@ -12112,55 +12363,111 @@ async function resizeMaskImageBlobToPng(blob, width, height, label) {
     URL.revokeObjectURL(objectUrl);
   }
 }
+async function mergeOpenAiMaskBlobs(maskBlob, annotationMaskBlob, width, height) {
+  if (!maskBlob || !annotationMaskBlob) return maskBlob || annotationMaskBlob || null;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Number(width) || 1);
+  canvas.height = Math.max(1, Number(height) || 1);
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('当前浏览器无法合并 OpenAI 像素遮罩');
+  const readPixels = async (blob) => {
+    const objectUrl = URL.createObjectURL(blob);
+    const image = new Image();
+    image.decoding = 'async';
+    try {
+      await new Promise((resolve, reject) => {
+        image.onload = resolve;
+        image.onerror = reject;
+        image.src = objectUrl;
+      });
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      return context.getImageData(0, 0, canvas.width, canvas.height).data;
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
+  };
+  const maskPixels = await readPixels(maskBlob);
+  const annotationPixels = await readPixels(annotationMaskBlob);
+  const output = new Uint8ClampedArray(canvas.width * canvas.height * 4);
+  for (let offset = 0; offset < output.length; offset += 4) {
+    const selected = Number(maskPixels[offset + 3] ?? 255) === 0 || Number(annotationPixels[offset + 3] ?? 255) === 0;
+    output[offset] = 255;
+    output[offset + 1] = 255;
+    output[offset + 2] = 255;
+    output[offset + 3] = selected ? 0 : 255;
+  }
+  context.putImageData(imageDataForPixels(context, output, canvas.width, canvas.height), 0, 0);
+  return canvasPngBlob(canvas);
+}
 async function prepareEditReferenceFiles(validRefs = []) {
   const refs = Array.isArray(validRefs) ? validRefs : [];
-  const maskIndexes = refs
-    .map(({ ref }, index) => ref?.maskBlobId ? index : -1)
-    .filter((index) => index >= 0);
-  if (maskIndexes.length > 1 || (maskIndexes.length && maskIndexes[0] !== 0)) {
-    throw imageResponseError(
-      '遮罩只能绑定第一张主参考图',
-      'IMAGE_EDIT_MASK_PRIMARY_REQUIRED',
-      'request-validation'
-    );
-  }
   const first = refs[0];
   const prepared = [];
   let mask = null;
   for (let index = 0; index < refs.length; index += 1) {
     const item = refs[index];
     let blob = item.blob;
-    if (index === 0 && first?.ref?.maskBlobId) {
+    if (index === 0 && (first?.ref?.maskBlobId || first?.ref?.annotationBlobId)) {
       const original = await getBlob(first.ref.originalBlobId || first.ref.blobId).catch(() => null);
       const normalizedOriginal = await normalizeEditImageBlob(original, '遮罩主图');
       blob = normalizedOriginal.blob;
-      const maskBlob = await getBlob(first.ref.maskBlobId).catch(() => null);
-      const normalizedMask = await normalizeEditImageBlob(maskBlob, '遮罩');
-      if (normalizedOriginal.info.width !== normalizedMask.info.width || normalizedOriginal.info.height !== normalizedMask.info.height) {
-        throw imageResponseError(
-          '遮罩尺寸与遮罩主图不一致，请重新绘制遮罩',
-          'IMAGE_EDIT_MASK_DIMENSIONS_MISMATCH',
-          'request-validation',
-          `主图：${normalizedOriginal.info.width}x${normalizedOriginal.info.height}；遮罩：${normalizedMask.info.width}x${normalizedMask.info.height}。`
-        );
+      const maskBlob = first.ref.maskBlobId ? await getBlob(first.ref.maskBlobId).catch(() => null) : null;
+      const annotationBlob = first.ref.annotationBlobId ? await getBlob(first.ref.annotationBlobId).catch(() => null) : null;
+      const normalizedMask = maskBlob ? await normalizeEditImageBlob(maskBlob, '遮罩') : null;
+      const normalizedAnnotation = annotationBlob ? await normalizeEditImageBlob(annotationBlob, '彩色标注') : null;
+      for (const normalizedLayer of [normalizedMask, normalizedAnnotation].filter(Boolean)) {
+        if (normalizedOriginal.info.width !== normalizedLayer.info.width || normalizedOriginal.info.height !== normalizedLayer.info.height) {
+          throw imageResponseError(
+            '遮罩尺寸与遮罩主图不一致，请重新绘制遮罩',
+            'IMAGE_EDIT_MASK_DIMENSIONS_MISMATCH',
+            'request-validation',
+            `主图：${normalizedOriginal.info.width}x${normalizedOriginal.info.height}；遮罩：${normalizedLayer.info.width}x${normalizedLayer.info.height}。`
+          );
+        }
       }
-      let requestMask = normalizedMask.blob;
-      if (first.ref.maskFormat !== OPENAI_MASK_FORMAT) {
+      let requestMask = null;
+      if (normalizedMask) {
+        requestMask = normalizedMask.blob;
+        if (first.ref.maskFormat !== OPENAI_MASK_FORMAT) {
+          try {
+            requestMask = await openAiMaskBlobFromLegacyOverlayBlob(
+              normalizedMask.blob,
+              normalizedOriginal.info.width,
+              normalizedOriginal.info.height
+            );
+          } catch (error) {
+            throw imageResponseError(
+              '旧版遮罩无法转换为 OpenAI 像素遮罩，请重新绘制遮罩',
+              'IMAGE_EDIT_MASK_DECODE_FAILED',
+              'request-validation',
+              error?.message || '旧版遮罩转换失败'
+            );
+          }
+        }
+      }
+      let annotationMask = null;
+      if (normalizedAnnotation) {
         try {
-          requestMask = await openAiMaskBlobFromLegacyOverlayBlob(
-            normalizedMask.blob,
+          annotationMask = await openAiMaskBlobFromLegacyOverlayBlob(
+            normalizedAnnotation.blob,
             normalizedOriginal.info.width,
             normalizedOriginal.info.height
           );
         } catch (error) {
           throw imageResponseError(
-            '旧版遮罩无法转换为 OpenAI 像素遮罩，请重新绘制遮罩',
+            '彩色标注无法转换为 OpenAI 像素遮罩，请重新绘制标注',
             'IMAGE_EDIT_MASK_DECODE_FAILED',
             'request-validation',
-            error?.message || '旧版遮罩转换失败'
+            error?.message || '彩色标注转换失败'
           );
         }
       }
+      if (!requestMask && !annotationMask) {
+        throw imageResponseError('遮罩标注文件不存在，请重新绘制遮罩', 'IMAGE_EDIT_MASK_MISSING', 'request-validation');
+      }
+      if (requestMask && annotationMask) requestMask = await mergeOpenAiMaskBlobs(requestMask, annotationMask, normalizedOriginal.info.width, normalizedOriginal.info.height);
+      else requestMask = requestMask || annotationMask;
       const workingSize = maskWorkingSize(normalizedOriginal.info.width, normalizedOriginal.info.height);
       if (workingSize.width !== normalizedOriginal.info.width || workingSize.height !== normalizedOriginal.info.height) {
         const [workingOriginal, workingMask] = await Promise.all([
@@ -13194,6 +13501,13 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     restoreGalleryScrollState,
     sanitizeReferenceSnapshots,
     cloneReferenceSnapshots,
+    normalizeEditInstruction,
+    selectedReferencesForImageGeneration,
+    appendReferenceEditInstructions,
+    appendReferenceRequestInstructions,
+    prepareEditReferenceFiles,
+    mergeOpenAiMaskBlobs,
+    canvasPngBlob,
     referenceBlobIdCandidates,
     getReferenceBlobWithFallback,
     hydrateTaskReferenceImage,
@@ -13232,7 +13546,11 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     promptRepoVirtualWindow,
     measurePromptRepoVirtualLayout,
     maskCanvasHasPaint,
+    maskEditorIsReady,
+    setupMaskCanvas,
+    captureMaskDraft,
     openMaskEditor,
+    switchMaskRef,
     maskClear,
     maskUndo,
     maskRedo,
@@ -13400,6 +13718,12 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
       if (patch.galleryVirtual) state.galleryVirtual = { ...state.galleryVirtual, ...patch.galleryVirtual };
       if (patch.promptRepo) state.promptRepo = { ...state.promptRepo, ...patch.promptRepo };
       if (patch.popover !== undefined) state.popover = patch.popover;
+      if (patch.maskEditorReady !== undefined && state.maskEditor) {
+        const ready = patch.maskEditorReady === true;
+        state.maskEditor.loadStatus = ready ? 'ready' : 'loading';
+        state.maskEditor.canvasReady = ready;
+        state.maskEditor.loadRefId = ready ? state.maskEditor.activeRefId : '';
+      }
     },
     getTestState: () => JSON.parse(JSON.stringify({
       profiles: state.profiles,
@@ -15080,6 +15404,7 @@ function cloneReferenceSnapshotsForAgent(sourceAttachments = []) {
     maskBlobId: ref.maskBlobId || '',
     annotationBlobId: ref.annotationBlobId || '',
     maskFormat: ref.maskFormat || '',
+    editInstruction: normalizeEditInstruction(ref.editInstruction),
     width: ref.width,
     height: ref.height
   }));
@@ -15916,51 +16241,112 @@ function createMaskEditorState(mode, activeRefId, agentAttachmentId = '') {
     redo: {},
     drafts: {},
     crop: null,
+    cropRatio: 'free',
+    cropSource: null,
+    cropped: false,
+    editInstruction: '',
+    sourceWidth: 0,
+    sourceHeight: 0,
+    originalSourceWidth: 0,
+    originalSourceHeight: 0,
+    imageScale: 1,
     panX: 0,
     panY: 0,
     zoom: 1,
     pendingText: null,
+    saving: false,
+    loadStatus: 'loading',
+    loadError: '',
+    loadRefId: '',
+    loadEpoch: 0,
+    canvasReady: false,
     loadToken: 0,
     fullscreen: false
   };
 }
 function openMaskEditor(refId) {
-  if (!state.references.length) return;
-  state.maskEditor = createMaskEditorState('gallery-reference', refId || state.references[0].id);
+  const refs = (Array.isArray(state.references) ? state.references : []).filter((ref) => ref?.id);
+  if (!refs.length) return;
+  const requested = refs.find((ref) => String(ref.id) === String(refId || ''));
+  const targetRef = requested || refs[0];
+  state.maskEditor = createMaskEditorState('gallery-reference', targetRef.id);
+  state.maskEditor.editInstruction = normalizeEditInstruction(maskEditorReference()?.editInstruction);
   render();
 }
 function openAgentAttachmentMaskEditor(attachmentId) {
   const attachment = findAgentAttachment(attachmentId);
   if (!attachment || !isAgentImageAttachment(attachment)) return toast('未找到可编辑的 Agent 图片附件');
   state.maskEditor = createMaskEditorState('agent-attachment', attachment.id, attachment.id);
+  state.maskEditor.editInstruction = normalizeEditInstruction(attachment.editInstruction);
   render();
 }
 function cancelMaskEditor() {
   if (!state.maskEditor) return;
+  state.maskEditor.loadEpoch = Number(state.maskEditor.loadEpoch || 0) + 1;
+  state.maskEditor.loadToken = Number(state.maskEditor.loadToken || 0) + 1;
+  state.maskEditor.canvasReady = false;
+  state.maskEditor.loadStatus = 'cancelled';
   if (document.fullscreenElement && document.exitFullscreen) void document.exitFullscreen().catch(() => {});
   state.maskEditor = null;
   render();
 }
 async function switchMaskRef(id) {
-  if (!state.maskEditor || !maskEditorReference(id)) return;
+  if (!state.maskEditor || state.maskEditor.saving || !maskEditorIsReady(state.maskEditor) || !maskEditorReference(id)) return;
   captureMaskDraft();
   state.maskEditor.activeRefId = id;
-  state.maskEditor.crop = state.maskEditor.drafts?.[id]?.crop || null;
-  state.maskEditor.panX = Number(state.maskEditor.drafts?.[id]?.panX || 0);
-  state.maskEditor.panY = Number(state.maskEditor.drafts?.[id]?.panY || 0);
-  state.maskEditor.zoom = Number(state.maskEditor.drafts?.[id]?.zoom || 1);
+  state.maskEditor.loadStatus = 'loading';
+  state.maskEditor.loadError = '';
+  state.maskEditor.loadRefId = '';
+  state.maskEditor.canvasReady = false;
+  state.maskEditor.loadEpoch = Number(state.maskEditor.loadEpoch || 0) + 1;
+  state.maskEditor.loadToken = Number(state.maskEditor.loadToken || 0) + 1;
+  const draft = state.maskEditor.drafts?.[id] || {};
+  state.maskEditor.editInstruction = normalizeEditInstruction(draft.editInstruction ?? maskEditorReference(id)?.editInstruction);
+  state.maskEditor.crop = draft.crop ? { ...draft.crop } : null;
+  state.maskEditor.cropRatio = draft.cropRatio || 'free';
+  state.maskEditor.cropSource = draft.cropSource ? { ...draft.cropSource } : null;
+  state.maskEditor.cropped = !!draft.cropped;
+  state.maskEditor.sourceWidth = Number(draft.sourceWidth || 0);
+  state.maskEditor.sourceHeight = Number(draft.sourceHeight || 0);
+  state.maskEditor.originalSourceWidth = Number(draft.originalSourceWidth || 0);
+  state.maskEditor.originalSourceHeight = Number(draft.originalSourceHeight || 0);
+  state.maskEditor.imageScale = Number(draft.imageScale || 1);
+  state.maskEditor.panX = Number(draft.panX || 0);
+  state.maskEditor.panY = Number(draft.panY || 0);
+  state.maskEditor.zoom = Number(draft.zoom || 1);
   render();
 }
 const MASK_TOOLS = new Set(['move', 'brush', 'rect', 'ellipse', 'line', 'arrow', 'polygon', 'text', 'fill', 'crop', 'eraser']);
 function setMaskTool(tool) {
-  if (!state.maskEditor || !MASK_TOOLS.has(tool)) return;
+  if (!state.maskEditor || state.maskEditor.saving || !maskEditorIsReady(state.maskEditor) || !MASK_TOOLS.has(tool)) return;
+  captureMaskDraft();
   state.maskEditor.tool = tool;
-  updateMaskToolUi();
+  render();
 }
 function setMaskColor(color) {
-  if (!state.maskEditor || !BRUSH_COLORS.some((item) => item.value === color)) return;
+  if (!state.maskEditor || state.maskEditor.saving || !maskEditorIsReady(state.maskEditor) || !BRUSH_COLORS.some((item) => item.value === color)) return;
   state.maskEditor.color = color;
   updateMaskToolUi();
+}
+function setMaskCropRatio(ratio) {
+  if (!state.maskEditor || state.maskEditor.saving || !maskEditorIsReady(state.maskEditor)) return;
+  const value = String(ratio || 'free');
+  state.maskEditor.cropRatio = value === 'auto' ? 'free' : value;
+  const canvas = $('#maskCanvas');
+  const crop = state.maskEditor.crop;
+  if (canvas && crop) {
+    const center = { x: crop.x + crop.width / 2, y: crop.y + crop.height / 2 };
+    const next = cropRectWithRatio(
+      { x: center.x - crop.width / 2, y: center.y - crop.height / 2 },
+      { x: center.x + crop.width / 2, y: center.y + crop.height / 2 },
+      state.maskEditor.cropRatio,
+      canvas.width,
+      canvas.height
+    );
+    state.maskEditor.crop = next.width > 2 && next.height > 2 ? next : null;
+  }
+  captureMaskDraft();
+  render();
 }
 function confirmMaskText() {
   const editor = state.maskEditor;
@@ -15968,11 +16354,12 @@ function confirmMaskText() {
   const annotationCanvas = $('#maskAnnotationCanvas');
   const annotationContext = annotationCanvas?.getContext('2d');
   const value = String(pending?.value || '').trim().slice(0, 120);
-  if (!editor || !pending || !annotationCanvas || !annotationContext || !value) return false;
+  if (!editor || !maskEditorIsReady(editor) || !pending || !annotationCanvas || !annotationContext || !value) return false;
   pushMaskHistory();
   annotationContext.save();
   annotationContext.fillStyle = editor.color || BRUSH_COLORS[0].value;
-  annotationContext.font = `${Math.max(12, Number(editor.brushSize) || 32)}px sans-serif`;
+  const imageScale = Math.max(.01, Number(editor.imageScale) || 1);
+  annotationContext.font = `${Math.max(12, (Number(editor.brushSize) || 32) * imageScale)}px sans-serif`;
   annotationContext.textBaseline = 'alphabetic';
   annotationContext.fillText(value, Number(pending.x) || 0, Number(pending.y) || 0);
   annotationContext.restore();
@@ -15987,11 +16374,35 @@ function cancelMaskText() {
   render();
   return true;
 }
+function syncMaskDrawOptionsPosition() {
+  const compose = $('.mask-toolbar-compose');
+  const options = $('.mask-draw-options');
+  const brush = $('[data-action="mask-tool"][data-tool="brush"]');
+  if (!compose || !options || !brush || !compose.getBoundingClientRect || !brush.getBoundingClientRect) return;
+  const composeRect = compose.getBoundingClientRect();
+  const brushRect = brush.getBoundingClientRect();
+  const composeWidth = Math.max(Number(compose.clientWidth || 0), Number(composeRect.width || 0));
+  const optionsRect = options.getBoundingClientRect();
+  const optionsWidth = Math.max(Number(options.clientWidth || 0), Number(optionsRect.width || 0));
+  if (!composeWidth) return;
+  // The CSS caret is 38px from the popover's left edge. Keep that caret over the brush center.
+  const brushLeft = Number(brushRect.left || 0);
+  const brushRight = Number(brushRect.right ?? (brushLeft + Number(brushRect.width || 0)));
+  const brushCenter = ((brushLeft + brushRight) / 2) - Number(composeRect.left || 0);
+  const maxLeft = Math.max(0, composeWidth - optionsWidth);
+  const left = Math.max(0, Math.min(maxLeft, brushCenter - 38));
+  compose.style.setProperty('--mask-draw-options-left', `${left}px`);
+}
 function maskCanvasScale() {
   const canvas = $('#maskCanvas');
   if (!canvas) return 1;
   const rect = canvas.getBoundingClientRect();
   return Math.max(.01, Number(rect.width || 0) / Math.max(1, Number(canvas.width || 0)));
+}
+function maskCanvasFitScale() {
+  const editor = state.maskEditor;
+  const zoom = Math.max(.1, Math.min(8, Number(editor?.zoom) || 1));
+  return maskCanvasScale() / zoom;
 }
 function syncMaskViewport() {
   const editor = state.maskEditor;
@@ -16000,21 +16411,24 @@ function syncMaskViewport() {
   shell.style.transform = `translate(${Number(editor.panX || 0)}px, ${Number(editor.panY || 0)}px) scale(${Math.max(.1, Math.min(8, Number(editor.zoom) || 1))})`;
   const cursor = $('#maskCursor');
   if (cursor) {
-    const cssSize = (Number(editor.brushSize) || 64) * maskCanvasScale();
+    const imageScale = Math.max(.01, Number(editor.imageScale) || 1);
+    const cssSize = (Number(editor.brushSize) || 64) * imageScale * maskCanvasFitScale();
     cursor.style.width = `${Math.max(2, cssSize)}px`;
     cursor.style.height = `${Math.max(2, cssSize)}px`;
   }
   syncMaskCropGuide();
+  syncMaskDrawOptionsPosition();
 }
 function centerMaskCanvas() {
-  if (!state.maskEditor) return;
+  if (!maskEditorIsReady()) return;
   state.maskEditor.panX = 0;
   state.maskEditor.panY = 0;
   syncMaskViewport();
 }
 async function toggleMaskFullscreen() {
+  if (!maskEditorIsReady()) return false;
   const layer = $('.mask-layer');
-  if (!layer) return;
+  if (!layer) return false;
   try {
     if (document.fullscreenElement) await document.exitFullscreen?.();
     else await layer.requestFullscreen?.();
@@ -16023,6 +16437,7 @@ async function toggleMaskFullscreen() {
   }
   if (state.maskEditor) state.maskEditor.fullscreen = !!document.fullscreenElement;
   syncMaskViewport();
+  return true;
 }
 function updateMaskToolUi() {
   const editor = state.maskEditor;
@@ -16037,12 +16452,13 @@ function updateMaskToolUi() {
   }
   $$('[data-action="mask-tool"]').forEach((button) => button.classList.toggle('active', button.dataset.tool === editor.tool));
   $$('.color-button[data-color]').forEach((button) => button.classList.toggle('active', button.dataset.color === editor.color));
+  $$('[data-action="mask-size"]').forEach((input) => { if (String(input.value) !== String(editor.brushSize)) input.value = editor.brushSize; });
   updateMaskHistoryButtons();
   syncMaskViewport();
 }
 function maskColorRgb(value = BRUSH_COLORS[0].value) {
   const match = /^#([\da-f]{6})$/i.exec(String(value || '').trim());
-  if (!match) return [250, 204, 21];
+  if (!match) return [239, 68, 68];
   const hex = match[1];
   return [Number.parseInt(hex.slice(0, 2), 16), Number.parseInt(hex.slice(2, 4), 16), Number.parseInt(hex.slice(4, 6), 16)];
 }
@@ -16094,7 +16510,7 @@ async function openAiMaskBlobFromOverlayCanvas(canvas, width, height) {
   const targetCanvas = document.createElement('canvas');
   targetCanvas.width = targetWidth;
   targetCanvas.height = targetHeight;
-  const targetContext = targetCanvas.getContext('2d');
+  const targetContext = targetCanvas.getContext('2d', { willReadFrequently: true });
   if (!targetContext?.getImageData || !targetContext?.putImageData) throw new Error('当前浏览器无法创建遮罩画布');
   if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
     targetContext.drawImage(canvas, 0, 0, targetWidth, targetHeight);
@@ -16144,16 +16560,20 @@ function drawMaskOverlayFromOpenAiMask(context, maskImage, width, height, color 
   maskContext.putImageData(imageDataForPixels(maskContext, overlayPixelsFromOpenAiMask(maskPixels, width, height, color), width, height), 0, 0);
   context.drawImage(canvas, 0, 0, width, height);
 }
-function drawDataUrlIntoCanvas(canvas, dataUrl) {
-  if (!canvas || !dataUrl) return Promise.resolve();
+function drawDataUrlIntoCanvas(canvas, dataUrl, isCurrent = () => true) {
+  if (!canvas || !dataUrl || !isCurrent()) return Promise.resolve(false);
   return new Promise((resolve) => {
     const image = new Image();
     image.onload = () => {
+      if (!isCurrent()) {
+        resolve(false);
+        return;
+      }
       const context = canvas.getContext('2d');
       context?.drawImage(image, 0, 0, canvas.width, canvas.height);
-      resolve();
+      resolve(true);
     };
-    image.onerror = () => resolve();
+    image.onerror = () => resolve(false);
     image.src = dataUrl;
   });
 }
@@ -16166,7 +16586,19 @@ function canvasHasPixels(canvas) {
   return false;
 }
 function canvasPngBlob(canvas) {
-  return new Promise((resolve) => canvas?.toBlob?.((blob) => resolve(blob), 'image/png'));
+  return new Promise((resolve, reject) => {
+    if (!canvas?.toBlob) {
+      reject(new Error('图片导出失败：当前浏览器不支持 Canvas PNG 导出'));
+      return;
+    }
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        reject(new Error('图片导出失败：Canvas PNG Blob 为空'));
+        return;
+      }
+      resolve(blob);
+    }, 'image/png');
+  });
 }
 function syncMaskCropGuide() {
   const guide = $('#maskCropGuide');
@@ -16176,7 +16608,7 @@ function syncMaskCropGuide() {
     if (guide) guide.style.display = 'none';
     return;
   }
-  const scale = maskCanvasScale();
+  const scale = maskCanvasFitScale();
   guide.style.display = 'block';
   guide.style.left = `${Number(crop.x || 0) * scale}px`;
   guide.style.top = `${Number(crop.y || 0) * scale}px`;
@@ -16186,13 +16618,25 @@ function syncMaskCropGuide() {
 function captureMaskDraft() {
   const editor = state.maskEditor;
   const canvas = $('#maskCanvas');
-  if (!editor || !canvas) return null;
+  if (!editor || !maskEditorIsReady(editor) || !canvas || !canvas.width || !canvas.height) return editor?.drafts?.[editor.activeRefId] || null;
   const id = editor.activeRefId;
   const annotation = $('#maskAnnotationCanvas');
+  const base = $('#maskBaseCanvas');
+  const imageScale = Math.max(.01, Number(editor.imageScale) || 1);
   const draft = {
     maskDataUrl: canvas.toDataURL('image/png'),
     annotationDataUrl: annotation?.toDataURL('image/png') || '',
+    baseDataUrl: editor.cropped ? (base?.toDataURL('image/png') || '') : '',
+    editInstruction: normalizeEditInstruction(editor.editInstruction),
     crop: editor.crop ? { ...editor.crop } : null,
+    cropRatio: editor.cropRatio || 'free',
+    cropSource: editor.cropSource ? { ...editor.cropSource } : null,
+    cropped: !!editor.cropped,
+    sourceWidth: Number(editor.sourceWidth || canvas.width / imageScale),
+    sourceHeight: Number(editor.sourceHeight || canvas.height / imageScale),
+    originalSourceWidth: Number(editor.originalSourceWidth || editor.sourceWidth || canvas.width / imageScale),
+    originalSourceHeight: Number(editor.originalSourceHeight || editor.sourceHeight || canvas.height / imageScale),
+    imageScale,
     panX: Number(editor.panX || 0),
     panY: Number(editor.panY || 0),
     zoom: Number(editor.zoom || 1),
@@ -16202,22 +16646,49 @@ function captureMaskDraft() {
   editor.drafts[id] = draft;
   return draft;
 }
-function restoreMaskSnapshot(snapshot) {
+function restoreMaskSnapshot(snapshot, isCurrent = () => true) {
+  const base = $('#maskBaseCanvas');
   const canvas = $('#maskCanvas');
   const annotation = $('#maskAnnotationCanvas');
-  if (!canvas || !snapshot) return Promise.resolve();
+  if (!base || !canvas || !annotation || !snapshot || !isCurrent()) return Promise.resolve(false);
+  const width = Math.max(1, Number(snapshot.width || canvas.width || 1));
+  const height = Math.max(1, Number(snapshot.height || canvas.height || 1));
+  [base, canvas, annotation].forEach((node) => {
+    if (node.width !== width) node.width = width;
+    if (node.height !== height) node.height = height;
+  });
+  const shell = $('.mask-canvas-shell');
+  if (shell) { shell.style.width = `${width}px`; shell.style.height = `${height}px`; }
+  if (!isCurrent()) return Promise.resolve(false);
+  if (state.maskEditor) {
+    state.maskEditor.cropped = !!snapshot.cropped;
+    state.maskEditor.cropSource = snapshot.cropSource ? { ...snapshot.cropSource } : null;
+    state.maskEditor.sourceWidth = Number(snapshot.sourceWidth || width);
+    state.maskEditor.sourceHeight = Number(snapshot.sourceHeight || height);
+    state.maskEditor.originalSourceWidth = Number(snapshot.originalSourceWidth || state.maskEditor.sourceWidth);
+    state.maskEditor.originalSourceHeight = Number(snapshot.originalSourceHeight || state.maskEditor.sourceHeight);
+    state.maskEditor.imageScale = Number(snapshot.imageScale || state.maskEditor.imageScale || 1);
+    state.maskEditor.editInstruction = normalizeEditInstruction(snapshot.editInstruction ?? state.maskEditor.editInstruction);
+  }
+  const baseCtx = base.getContext('2d');
   const ctx = canvas.getContext('2d');
   const annotationCtx = annotation?.getContext('2d');
+  if (snapshot.baseDataUrl) baseCtx?.clearRect(0, 0, width, height);
   ctx?.clearRect(0, 0, canvas.width, canvas.height);
   annotationCtx?.clearRect(0, 0, annotation.width, annotation.height);
   return Promise.all([
-    drawDataUrlIntoCanvas(canvas, snapshot.maskDataUrl),
-    drawDataUrlIntoCanvas(annotation, snapshot.annotationDataUrl)
+    snapshot.baseDataUrl ? drawDataUrlIntoCanvas(base, snapshot.baseDataUrl, isCurrent) : Promise.resolve(true),
+    drawDataUrlIntoCanvas(canvas, snapshot.maskDataUrl, isCurrent),
+    drawDataUrlIntoCanvas(annotation, snapshot.annotationDataUrl, isCurrent)
   ]).then(() => {
+    if (!isCurrent()) return false;
     if (state.maskEditor) {
       state.maskEditor.crop = snapshot.crop ? { ...snapshot.crop } : null;
+      state.maskEditor.cropRatio = snapshot.cropRatio || 'free';
+      state.maskEditor.editInstruction = normalizeEditInstruction(snapshot.editInstruction ?? state.maskEditor.editInstruction);
       updateMaskToolUi();
     }
+    return true;
   });
 }
 async function setupMaskCanvas() {
@@ -16226,57 +16697,115 @@ async function setupMaskCanvas() {
   const annotationCanvas = $('#maskAnnotationCanvas');
   const editor = state.maskEditor;
   if (!baseCanvas || !canvas || !annotationCanvas || !editor) return;
+  const ref = maskEditorReference();
+  const refId = String(editor.activeRefId || '');
   const token = Number(editor.loadToken || 0) + 1;
+  const epoch = Number(editor.loadEpoch || 0) + 1;
   editor.loadToken = token;
-  const ref = maskEditorReference() || maskEditorReferences()[0];
-  const originalBlobId = ref?.originalBlobId || ref?.blobId;
-  const blob = originalBlobId ? await getBlob(originalBlobId).catch(() => null) : null;
-  if (!blob || !state.maskEditor || editor.loadToken !== token) return;
-  const img = new Image();
-  const objectUrl = URL.createObjectURL(blob);
-  img.src = objectUrl;
-  await new Promise((resolve, reject) => { img.onload = resolve; img.onerror = reject; });
-  if (!state.maskEditor || editor.loadToken !== token) { URL.revokeObjectURL(objectUrl); return; }
-  const maxW = Math.min(img.naturalWidth || 1, 1600);
-  const scale = maxW / Math.max(1, img.naturalWidth || 1);
-  const width = Math.max(1, Math.round((img.naturalWidth || 1) * scale));
-  const height = Math.max(1, Math.round((img.naturalHeight || 1) * scale));
-  [baseCanvas, canvas, annotationCanvas].forEach((node) => { node.width = width; node.height = height; });
-  const shell = $('.mask-canvas-shell');
-  if (shell) { shell.style.width = `${width}px`; shell.style.height = `${height}px`; }
-  baseCanvas.getContext('2d')?.drawImage(img, 0, 0, width, height);
-  canvas.getContext('2d')?.clearRect(0, 0, width, height);
-  annotationCanvas.getContext('2d')?.clearRect(0, 0, width, height);
-  URL.revokeObjectURL(objectUrl);
-  const draft = editor.drafts?.[ref.id];
-  if (draft) {
-    await restoreMaskSnapshot(draft);
-  } else {
-    const maskBlob = ref?.maskBlobId ? await getBlob(ref.maskBlobId).catch(() => null) : null;
-    if (maskBlob) {
-      const maskImg = new Image();
-      const maskUrl = URL.createObjectURL(maskBlob);
-      maskImg.src = maskUrl;
-      await new Promise((resolve, reject) => { maskImg.onload = resolve; maskImg.onerror = reject; });
-      if (ref?.maskFormat === OPENAI_MASK_FORMAT) drawMaskOverlayFromOpenAiMask(canvas.getContext('2d'), maskImg, width, height, editor.color || BRUSH_COLORS[0].value);
-      else canvas.getContext('2d')?.drawImage(maskImg, 0, 0, width, height);
-      URL.revokeObjectURL(maskUrl);
-    }
-    const annotationBlob = ref?.annotationBlobId ? await getBlob(ref.annotationBlobId).catch(() => null) : null;
-    if (annotationBlob) {
-      const annotationImg = new Image();
-      const annotationUrl = URL.createObjectURL(annotationBlob);
-      annotationImg.src = annotationUrl;
-      await new Promise((resolve, reject) => { annotationImg.onload = resolve; annotationImg.onerror = reject; });
-      annotationCanvas.getContext('2d')?.drawImage(annotationImg, 0, 0, width, height);
-      URL.revokeObjectURL(annotationUrl);
-    }
+  editor.loadEpoch = epoch;
+  editor.loadRefId = refId;
+  editor.loadStatus = 'loading';
+  editor.loadError = '';
+  editor.canvasReady = false;
+  syncMaskEditorLoadUi(editor);
+  if (!ref || !refId) {
+    setMaskEditorLoadState(editor, 'error', 'missing reference');
+    return false;
   }
-  installCanvasDrawing(canvas, canvas.getContext('2d'));
-  updateMaskToolUi();
-  if (!window.__maskResizeBound) {
-    window.__maskResizeBound = true;
-    window.addEventListener('resize', () => { if (state.maskEditor) syncMaskViewport(); });
+  const isCurrent = () => maskLoadIsCurrent(editor, refId, token, epoch);
+  const loadImageBlob = async (imageBlob) => {
+    if (!imageBlob) return null;
+    const image = new Image();
+    const objectUrl = URL.createObjectURL(imageBlob);
+    try {
+      image.src = objectUrl;
+      await new Promise((resolve, reject) => { image.onload = resolve; image.onerror = reject; });
+      return image;
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
+  };
+  try {
+    const originalBlobId = ref.originalBlobId || ref.blobId;
+    const blob = originalBlobId ? await getBlob(originalBlobId).catch(() => null) : null;
+    if (!isCurrent()) return false;
+    if (!blob) throw new Error('参考图原图文件不存在');
+    const img = await loadImageBlob(blob);
+    if (!isCurrent() || !img) return false;
+    const naturalWidth = Math.max(1, Number(img.naturalWidth || 1));
+    const naturalHeight = Math.max(1, Number(img.naturalHeight || 1));
+    const draft = editor.drafts?.[ref.id];
+    const cropSource = draft?.cropped && draft.cropSource ? {
+      x: Math.max(0, Number(draft.cropSource.x || 0)),
+      y: Math.max(0, Number(draft.cropSource.y || 0)),
+      width: Math.max(1, Number(draft.cropSource.width || naturalWidth)),
+      height: Math.max(1, Number(draft.cropSource.height || naturalHeight))
+    } : null;
+    const sourceWidth = Math.max(1, Number(draft?.sourceWidth || cropSource?.width || naturalWidth));
+    const sourceHeight = Math.max(1, Number(draft?.sourceHeight || cropSource?.height || naturalHeight));
+    const scale = Math.min(1, 1600 / sourceWidth);
+    const width = Math.max(1, Math.round(sourceWidth * scale));
+    const height = Math.max(1, Math.round(sourceHeight * scale));
+    editor.sourceWidth = sourceWidth;
+    editor.sourceHeight = sourceHeight;
+    editor.originalSourceWidth = Number(draft?.originalSourceWidth || naturalWidth);
+    editor.originalSourceHeight = Number(draft?.originalSourceHeight || naturalHeight);
+    editor.imageScale = scale;
+    editor.cropSource = cropSource;
+    editor.cropped = !!draft?.cropped;
+    editor.cropRatio = draft?.cropRatio || 'free';
+    if (!isCurrent()) return false;
+    [baseCanvas, canvas, annotationCanvas].forEach((node) => { node.width = width; node.height = height; });
+    const shell = $('.mask-canvas-shell');
+    if (shell) { shell.style.width = `${width}px`; shell.style.height = `${height}px`; }
+    if (draft?.cropped && draft.baseDataUrl) {
+      await drawDataUrlIntoCanvas(baseCanvas, draft.baseDataUrl, isCurrent);
+      if (!isCurrent()) return false;
+    } else if (cropSource) {
+      baseCanvas.getContext('2d')?.drawImage(img, cropSource.x, cropSource.y, cropSource.width, cropSource.height, 0, 0, width, height);
+    } else {
+      baseCanvas.getContext('2d')?.drawImage(img, 0, 0, width, height);
+    }
+    if (!isCurrent()) return false;
+    canvas.getContext('2d')?.clearRect(0, 0, width, height);
+    annotationCanvas.getContext('2d')?.clearRect(0, 0, width, height);
+    if (draft) {
+      const restored = await restoreMaskSnapshot(draft, isCurrent);
+      if (!restored || !isCurrent()) return false;
+    } else {
+      const maskBlob = ref.maskBlobId ? await getBlob(ref.maskBlobId).catch(() => null) : null;
+      if (!isCurrent()) return false;
+      if (maskBlob) {
+        const maskImg = await loadImageBlob(maskBlob);
+        if (!isCurrent() || !maskImg) return false;
+        if (ref.maskFormat === OPENAI_MASK_FORMAT) drawMaskOverlayFromOpenAiMask(canvas.getContext('2d'), maskImg, width, height, editor.color || BRUSH_COLORS[0].value);
+        else canvas.getContext('2d')?.drawImage(maskImg, 0, 0, width, height);
+      }
+      const annotationBlob = ref.annotationBlobId ? await getBlob(ref.annotationBlobId).catch(() => null) : null;
+      if (!isCurrent()) return false;
+      if (annotationBlob) {
+        const annotationImg = await loadImageBlob(annotationBlob);
+        if (!isCurrent() || !annotationImg) return false;
+        annotationCanvas.getContext('2d')?.drawImage(annotationImg, 0, 0, width, height);
+      }
+    }
+    if (!isCurrent()) return false;
+    installCanvasDrawing(canvas, canvas.getContext('2d'));
+    editor.canvasReady = true;
+    editor.loadStatus = 'ready';
+    editor.loadError = '';
+    syncMaskEditorLoadUi(editor);
+    updateMaskToolUi();
+    if (!window.__maskResizeBound) {
+      window.__maskResizeBound = true;
+      window.addEventListener('resize', () => { if (state.maskEditor) syncMaskViewport(); });
+    }
+    return true;
+  } catch (error) {
+    if (isCurrent()) {
+      setMaskEditorLoadState(editor, 'error', error?.message || error);
+    }
+    return false;
   }
 }
 function withMaskCropClip(context, fn) {
@@ -16296,10 +16825,11 @@ function normalizedMaskRect(a, b) {
 }
 function drawMaskShape(context, tool, start, end, points = []) {
   const color = state.maskEditor?.color || BRUSH_COLORS[0].value;
+  const imageScale = Math.max(.01, Number(state.maskEditor?.imageScale) || 1);
   context.save();
   context.fillStyle = color;
   context.strokeStyle = color;
-  context.lineWidth = Math.max(1, Number(state.maskEditor?.brushSize) || 64);
+  context.lineWidth = Math.max(1, (Number(state.maskEditor?.brushSize) || 64) * imageScale);
   context.lineCap = 'round';
   context.lineJoin = 'round';
   if (tool === 'rect') {
@@ -16321,10 +16851,11 @@ function drawMaskShape(context, tool, start, end, points = []) {
 }
 function drawAnnotationShape(context, tool, start, end) {
   const color = state.maskEditor?.color || BRUSH_COLORS[0].value;
+  const imageScale = Math.max(.01, Number(state.maskEditor?.imageScale) || 1);
   context.save();
   context.strokeStyle = color;
   context.fillStyle = color;
-  context.lineWidth = Math.max(2, Number(state.maskEditor?.brushSize) / 4 || 12);
+  context.lineWidth = Math.max(2, (Number(state.maskEditor?.brushSize) / 4 || 12) * imageScale);
   context.lineCap = 'round';
   context.lineJoin = 'round';
   context.beginPath();
@@ -16333,7 +16864,7 @@ function drawAnnotationShape(context, tool, start, end) {
   context.stroke();
   if (tool === 'arrow') {
     const angle = Math.atan2(end.y - start.y, end.x - start.x);
-    const head = Math.max(10, Number(state.maskEditor?.brushSize) || 32);
+    const head = Math.max(10, (Number(state.maskEditor?.brushSize) || 32) * imageScale);
     context.beginPath();
     context.moveTo(end.x, end.y);
     context.lineTo(end.x - head * Math.cos(angle - Math.PI / 6), end.y - head * Math.sin(angle - Math.PI / 6));
@@ -16357,6 +16888,8 @@ function fillMaskRegion(canvas, point) {
   const nextAlpha = filled ? 0 : 220;
   const visited = new Uint8Array(width * height);
   const queue = [[startX, startY]];
+  let queueHead = 0;
+  const [red, green, blue] = maskColorRgb(state.maskEditor?.color || BRUSH_COLORS[0].value);
   const crop = state.maskEditor?.crop;
   const same = (x, y) => {
     if (x < 0 || y < 0 || x >= width || y >= height) return false;
@@ -16366,13 +16899,41 @@ function fillMaskRegion(canvas, point) {
     visited[index] = 1;
     return (pixels[index * 4 + 3] > 0) === filled;
   };
-  while (queue.length) {
-    const [x, y] = queue.shift();
+  while (queueHead < queue.length) {
+    const [x, y] = queue[queueHead++];
     const index = (y * width + x) * 4;
-    pixels[index] = 250; pixels[index + 1] = 204; pixels[index + 2] = 21; pixels[index + 3] = nextAlpha;
+    pixels[index] = red; pixels[index + 1] = green; pixels[index + 2] = blue; pixels[index + 3] = nextAlpha;
     [[x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]].forEach(([nx, ny]) => { if (same(nx, ny)) queue.push([nx, ny]); });
   }
   context.putImageData(image, 0, 0);
+}
+function cropRectWithRatio(start, end, ratio, width, height) {
+  const raw = normalizedMaskRect(start, end);
+  if (!raw.width || !raw.height) return raw;
+  const parsed = String(ratio || 'free').split(':').map(Number);
+  const targetRatio = parsed.length === 2 && parsed.every((value) => Number.isFinite(value) && value > 0)
+    ? parsed[0] / parsed[1]
+    : 0;
+  let nextWidth = raw.width;
+  let nextHeight = raw.height;
+  if (targetRatio) {
+    if (raw.width / raw.height > targetRatio) nextWidth = raw.height * targetRatio;
+    else nextHeight = raw.width / targetRatio;
+  }
+  const x = start.x <= end.x ? raw.x : raw.x + raw.width - nextWidth;
+  const y = start.y <= end.y ? raw.y : raw.y + raw.height - nextHeight;
+  const clampedX = Math.max(0, Math.min(Math.max(0, width - nextWidth), x));
+  const clampedY = Math.max(0, Math.min(Math.max(0, height - nextHeight), y));
+  return { x: clampedX, y: clampedY, width: Math.min(nextWidth, width), height: Math.min(nextHeight, height) };
+}
+function cropCanvasRegion(source, crop) {
+  const width = Math.max(1, Math.round(Number(crop?.width || 0)));
+  const height = Math.max(1, Math.round(Number(crop?.height || 0)));
+  const target = document.createElement('canvas');
+  target.width = width;
+  target.height = height;
+  target.getContext('2d')?.drawImage(source, Number(crop?.x || 0), Number(crop?.y || 0), width, height, 0, 0, width, height);
+  return target;
 }
 function installCanvasDrawing(canvas, ctx) {
   if (!canvas || !ctx) return;
@@ -16385,16 +16946,20 @@ function installCanvasDrawing(canvas, ctx) {
   let moving = false;
   const point = (event) => {
     const rect = canvas.getBoundingClientRect();
-    return { x: (event.clientX - rect.left) * (canvas.width / Math.max(1, rect.width)), y: (event.clientY - rect.top) * (canvas.height / Math.max(1, rect.height)) };
+    return {
+      x: (event.clientX - rect.left) * (canvas.width / Math.max(1, rect.width)),
+      y: (event.clientY - rect.top) * (canvas.height / Math.max(1, rect.height))
+    };
   };
   const updateCursor = (event, visible = true) => {
     const cursor = $('#maskCursor');
     const shell = $('.mask-canvas-shell');
     if (!cursor || !shell) return;
-    if (!visible || !['brush', 'eraser'].includes(state.maskEditor?.tool)) { cursor.classList.remove('visible'); return; }
+    if (!visible || !maskEditorIsReady() || !['brush', 'eraser'].includes(state.maskEditor?.tool)) { cursor.classList.remove('visible'); return; }
     const rect = shell.getBoundingClientRect();
-    cursor.style.left = `${event.clientX - rect.left}px`;
-    cursor.style.top = `${event.clientY - rect.top}px`;
+    const zoom = Math.max(.1, Math.min(8, Number(state.maskEditor?.zoom) || 1));
+    cursor.style.left = `${(event.clientX - rect.left) / zoom}px`;
+    cursor.style.top = `${(event.clientY - rect.top) / zoom}px`;
     cursor.classList.add('visible');
     syncMaskViewport();
   };
@@ -16402,7 +16967,8 @@ function installCanvasDrawing(canvas, ctx) {
     ctx.save();
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    ctx.lineWidth = Number(state.maskEditor?.brushSize) || 64;
+    const imageScale = Math.max(.01, Number(state.maskEditor?.imageScale) || 1);
+    ctx.lineWidth = (Number(state.maskEditor?.brushSize) || 64) * imageScale;
     ctx.globalCompositeOperation = state.maskEditor?.tool === 'eraser' ? 'destination-out' : 'source-over';
     ctx.strokeStyle = state.maskEditor?.color || BRUSH_COLORS[0].value;
     ctx.fillStyle = state.maskEditor?.color || BRUSH_COLORS[0].value;
@@ -16411,7 +16977,7 @@ function installCanvasDrawing(canvas, ctx) {
     ctx.restore();
   });
   const startEvent = (event) => {
-    if (!state.maskEditor) return;
+    if (!maskEditorIsReady() || state.maskEditor.saving) return;
     const tool = state.maskEditor.tool;
     event.preventDefault();
     canvas.setPointerCapture?.(event.pointerId);
@@ -16428,8 +16994,8 @@ function installCanvasDrawing(canvas, ctx) {
       }
       return;
     }
-    if (tool === 'fill') { pushMaskHistory(); fillMaskRegion(canvas, p); return; }
-    if (tool === 'crop') { pushMaskHistory(); drawing = true; start = p; return; }
+    if (tool === 'fill') { pushMaskHistory(); fillMaskRegion(canvas, p); updateMaskToolUi(); return; }
+    if (tool === 'crop') { drawing = true; start = p; return; }
     if (tool === 'text') {
       captureMaskDraft();
       state.maskEditor.pendingText = { x: p.x, y: p.y, value: '' };
@@ -16442,24 +17008,24 @@ function installCanvasDrawing(canvas, ctx) {
   };
   const moveEvent = (event) => {
     updateCursor(event);
-    if (moving && state.maskEditor) {
+    if (moving && maskEditorIsReady()) {
       state.maskEditor.panX += event.clientX - last.x;
       state.maskEditor.panY += event.clientY - last.y;
       last = { x: event.clientX, y: event.clientY };
       syncMaskViewport();
       return;
     }
-    if (!drawing || !state.maskEditor) return;
+    if (!drawing || !maskEditorIsReady()) return;
     event.preventDefault();
     const p = point(event);
     if (state.maskEditor.tool === 'brush' || state.maskEditor.tool === 'eraser') { drawBrush(last, p); last = p; }
   };
   const endEvent = (event) => {
-    if (state.maskEditor && drawing && start) {
+    if (maskEditorIsReady() && drawing && start) {
       const p = point(event);
       const tool = state.maskEditor.tool;
       if (tool === 'crop') {
-        const crop = normalizedMaskRect(start, p);
+        const crop = cropRectWithRatio(start, p, state.maskEditor.cropRatio, canvas.width, canvas.height);
         state.maskEditor.crop = crop.width > 2 && crop.height > 2 ? crop : null;
       } else if (tool === 'rect' || tool === 'ellipse') withMaskCropClip(ctx, () => drawMaskShape(ctx, tool, start, p));
       else if ((tool === 'line' || tool === 'arrow') && annotationCtx) drawAnnotationShape(annotationCtx, tool, start, p);
@@ -16469,7 +17035,7 @@ function installCanvasDrawing(canvas, ctx) {
     updateMaskToolUi();
   };
   const wheel = (event) => {
-    if (!state.maskEditor) return;
+    if (!maskEditorIsReady() || state.maskEditor.saving) return;
     event.preventDefault();
     const editor = state.maskEditor;
     const oldZoom = Math.max(.1, Number(editor.zoom) || 1);
@@ -16493,19 +17059,34 @@ function installCanvasDrawing(canvas, ctx) {
   canvas.addEventListener('wheel', wheel, { passive: false });
 }
 function maskSnapshot() {
+  const editor = state.maskEditor;
+  const base = $('#maskBaseCanvas');
   const canvas = $('#maskCanvas');
   const annotation = $('#maskAnnotationCanvas');
-  if (!canvas) return null;
+  if (!maskEditorIsReady(editor) || !canvas || !canvas.width || !canvas.height) return null;
+  const imageScale = Math.max(.01, Number(editor?.imageScale) || 1);
   return {
+    baseDataUrl: base?.toDataURL('image/png') || '',
     maskDataUrl: canvas.toDataURL('image/png'),
     annotationDataUrl: annotation?.toDataURL('image/png') || '',
-    crop: state.maskEditor?.crop ? { ...state.maskEditor.crop } : null
+    editInstruction: normalizeEditInstruction(editor?.editInstruction),
+    crop: editor?.crop ? { ...editor.crop } : null,
+    cropRatio: editor?.cropRatio || 'free',
+    cropSource: editor?.cropSource ? { ...editor.cropSource } : null,
+    cropped: !!editor?.cropped,
+    sourceWidth: Number(editor?.sourceWidth || canvas.width / imageScale),
+    sourceHeight: Number(editor?.sourceHeight || canvas.height / imageScale),
+    originalSourceWidth: Number(editor?.originalSourceWidth || editor?.sourceWidth || canvas.width / imageScale),
+    originalSourceHeight: Number(editor?.originalSourceHeight || editor?.sourceHeight || canvas.height / imageScale),
+    imageScale,
+    width: canvas.width,
+    height: canvas.height
   };
 }
 function pushMaskHistory() {
   const id = state.maskEditor?.activeRefId;
   const snapshot = maskSnapshot();
-  if (!id || !snapshot) return;
+  if (!maskEditorIsReady() || !id || !snapshot) return;
   state.maskEditor.history[id] = [...(state.maskEditor.history[id] || []), snapshot].slice(-20);
   state.maskEditor.redo[id] = [];
   updateMaskHistoryButtons();
@@ -16524,7 +17105,7 @@ async function maskUndo() {
   const id = editor?.activeRefId;
   const stack = editor?.history?.[id] || [];
   const current = maskSnapshot();
-  if (!editor || !stack.length || !current) return;
+  if (!maskEditorIsReady(editor) || !stack.length || !current) return;
   editor.redo[id] = [...(editor.redo[id] || []), current].slice(-20);
   await restoreMaskSnapshot(stack.pop());
   updateMaskHistoryButtons();
@@ -16534,7 +17115,7 @@ async function maskRedo() {
   const id = editor?.activeRefId;
   const stack = editor?.redo?.[id] || [];
   const current = maskSnapshot();
-  if (!editor || !stack.length || !current) return;
+  if (!maskEditorIsReady(editor) || !stack.length || !current) return;
   editor.history[id] = [...(editor.history[id] || []), current].slice(-20);
   await restoreMaskSnapshot(stack.pop());
   updateMaskHistoryButtons();
@@ -16558,7 +17139,7 @@ function maskCanvasHasPaint(canvas) {
 }
 async function maskClear() {
   const canvas = $('#maskCanvas');
-  if (!canvas) return;
+  if (!maskEditorIsReady() || !canvas) return;
   pushMaskHistory();
   canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
   $('#maskAnnotationCanvas')?.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
@@ -16567,18 +17148,83 @@ async function maskClear() {
   toast('已清空当前标注（确认保存后生效）');
   return true;
 }
-async function persistCanvasToRefDraft() {
+function cancelMaskCrop() {
+  const editor = state.maskEditor;
+  if (!maskEditorIsReady(editor) || editor.saving) return false;
+  editor.crop = null;
+  editor.cropRatio = 'free';
+  editor.tool = 'brush';
   captureMaskDraft();
+  render();
   return true;
+}
+async function confirmMaskCrop() {
+  const editor = state.maskEditor;
+  const crop = editor?.crop;
+  const base = $('#maskBaseCanvas');
+  const canvas = $('#maskCanvas');
+  const annotation = $('#maskAnnotationCanvas');
+  if (!maskEditorIsReady(editor) || editor.saving || !crop || !base || !canvas || !annotation) return false;
+  const width = Math.max(1, Math.round(Number(crop.width || 0)));
+  const height = Math.max(1, Math.round(Number(crop.height || 0)));
+  if (width < 3 || height < 3) return false;
+  pushMaskHistory();
+  const baseCrop = cropCanvasRegion(base, { ...crop, width, height });
+  const maskCrop = cropCanvasRegion(canvas, { ...crop, width, height });
+  const annotationCrop = cropCanvasRegion(annotation, { ...crop, width, height });
+  [base, canvas, annotation].forEach((node) => { node.width = width; node.height = height; });
+  base.getContext('2d')?.drawImage(baseCrop, 0, 0, width, height);
+  canvas.getContext('2d')?.drawImage(maskCrop, 0, 0, width, height);
+  annotation.getContext('2d')?.drawImage(annotationCrop, 0, 0, width, height);
+  const imageScale = Math.max(.01, Number(editor.imageScale) || 1);
+  const localSourceCrop = {
+    x: Number(crop.x || 0) / imageScale,
+    y: Number(crop.y || 0) / imageScale,
+    width: width / imageScale,
+    height: height / imageScale
+  };
+  const parentSource = editor.cropSource;
+  editor.cropSource = parentSource
+    ? {
+      x: Number(parentSource.x || 0) + localSourceCrop.x,
+      y: Number(parentSource.y || 0) + localSourceCrop.y,
+      width: localSourceCrop.width,
+      height: localSourceCrop.height
+    }
+    : localSourceCrop;
+  editor.sourceWidth = localSourceCrop.width;
+  editor.sourceHeight = localSourceCrop.height;
+  editor.imageScale = width / Math.max(1, editor.sourceWidth);
+  editor.cropped = true;
+  editor.crop = null;
+  editor.cropRatio = 'free';
+  editor.panX = 0;
+  editor.panY = 0;
+  editor.zoom = 1;
+  captureMaskDraft();
+  render();
+  return true;
+}
+async function persistCanvasToRefDraft() {
+  if (!maskEditorIsReady()) return false;
+  return !!captureMaskDraft();
 }
 async function buildMaskSaveBundle(ref, draft) {
   const originalBlobId = ref?.originalBlobId || ref?.blobId || '';
   const originalBlob = originalBlobId ? await getBlob(originalBlobId).catch(() => null) : null;
   if (!originalBlob) throw new Error(`${ref?.name || '参考图'} 原图文件不存在，请重新上传`);
   const info = await imageInfoFromBlob(originalBlob).catch(() => ({}));
-  const width = Number(info.width || ref.width || 0);
-  const height = Number(info.height || ref.height || 0);
-  if (!width || !height) throw new Error(`${ref?.name || '参考图'} 原图尺寸读取失败，请重新上传`);
+  const originalWidth = Number(info.width || ref.width || 0);
+  const originalHeight = Number(info.height || ref.height || 0);
+  if (!originalWidth || !originalHeight) throw new Error(`${ref?.name || '参考图'} 原图尺寸读取失败，请重新上传`);
+  const cropSource = draft?.cropped && draft?.cropSource ? {
+    x: Math.max(0, Number(draft.cropSource.x || 0)),
+    y: Math.max(0, Number(draft.cropSource.y || 0)),
+    width: Math.max(1, Number(draft.cropSource.width || originalWidth)),
+    height: Math.max(1, Number(draft.cropSource.height || originalHeight))
+  } : null;
+  const width = cropSource ? Math.max(1, Math.min(originalWidth, Math.round(cropSource.width))) : originalWidth;
+  const height = cropSource ? Math.max(1, Math.min(originalHeight, Math.round(cropSource.height))) : originalHeight;
   const sourceWidth = Math.max(1, Number(draft?.width || width));
   const sourceHeight = Math.max(1, Number(draft?.height || height));
   const targetCanvas = document.createElement('canvas');
@@ -16597,35 +17243,56 @@ async function buildMaskSaveBundle(ref, draft) {
     annotationTarget.getContext('2d')?.drawImage(annotationCanvas, 0, 0, width, height);
     normalizedAnnotationBlob = await canvasPngBlob(annotationTarget);
   }
-  let compositedBlob = null;
-  if (hasMask || hasAnnotation) {
-    const baseImg = new Image();
-    const baseUrl = URL.createObjectURL(originalBlob);
-    baseImg.src = baseUrl;
-    try {
-      await new Promise((resolve, reject) => { baseImg.onload = resolve; baseImg.onerror = reject; });
-      const compositeCanvas = document.createElement('canvas');
-      compositeCanvas.width = width; compositeCanvas.height = height;
-      const compositeCtx = compositeCanvas.getContext('2d');
-      if (!compositeCtx) throw new Error('当前浏览器无法创建遮罩合成画布');
-      compositeCtx.drawImage(baseImg, 0, 0, width, height);
-      if (hasMask) { compositeCtx.globalAlpha = .42; compositeCtx.drawImage(targetCanvas, 0, 0, width, height); }
-      if (hasAnnotation) { compositeCtx.globalAlpha = 1; compositeCtx.drawImage(annotationCanvas, 0, 0, width, height); }
-      compositeCtx.globalAlpha = 1;
-      compositedBlob = await canvasPngBlob(compositeCanvas);
-    } finally {
-      URL.revokeObjectURL(baseUrl);
-    }
+  const baseCanvas = document.createElement('canvas');
+  baseCanvas.width = width; baseCanvas.height = height;
+  const baseImg = new Image();
+  const baseUrl = URL.createObjectURL(originalBlob);
+  baseImg.src = baseUrl;
+  try {
+    await new Promise((resolve, reject) => { baseImg.onload = resolve; baseImg.onerror = reject; });
+    const baseContext = baseCanvas.getContext('2d');
+    if (!baseContext) throw new Error('当前浏览器无法创建遮罩原图画布');
+    if (cropSource) baseContext.drawImage(baseImg, cropSource.x, cropSource.y, cropSource.width, cropSource.height, 0, 0, width, height);
+    else baseContext.drawImage(baseImg, 0, 0, width, height);
+  } finally {
+    URL.revokeObjectURL(baseUrl);
   }
-  return { originalBlobId, width, height, type: originalBlob.type || 'image/png', maskBlob, annotationBlob: normalizedAnnotationBlob, compositedBlob, hasMask, hasAnnotation };
+  const croppedOriginalBlob = cropSource ? await canvasPngBlob(baseCanvas) : null;
+  let compositedBlob = null;
+  if (hasMask || hasAnnotation || cropSource) {
+    const compositeCanvas = document.createElement('canvas');
+    compositeCanvas.width = width; compositeCanvas.height = height;
+    const compositeCtx = compositeCanvas.getContext('2d');
+    if (!compositeCtx) throw new Error('当前浏览器无法创建遮罩合成画布');
+    compositeCtx.drawImage(baseCanvas, 0, 0, width, height);
+    if (hasMask) { compositeCtx.globalAlpha = .42; compositeCtx.drawImage(targetCanvas, 0, 0, width, height); }
+    if (hasAnnotation) { compositeCtx.globalAlpha = 1; compositeCtx.drawImage(annotationCanvas, 0, 0, width, height); }
+    compositeCtx.globalAlpha = 1;
+    compositedBlob = await canvasPngBlob(compositeCanvas);
+  }
+  return {
+    originalBlobId,
+    originalBlob: croppedOriginalBlob,
+    width,
+    height,
+    type: cropSource ? 'image/png' : (originalBlob.type || 'image/png'),
+    maskBlob,
+    annotationBlob: normalizedAnnotationBlob,
+    compositedBlob,
+    hasMask,
+    hasAnnotation,
+    cropped: !!cropSource
+  };
 }
 async function composeReferenceWithMask(ref, draft) {
   return buildMaskSaveBundle(ref, draft);
 }
 async function saveMaskEditor() {
   const editor = state.maskEditor;
-  if (!editor) return;
-  captureMaskDraft();
+  if (!maskEditorIsReady(editor) || editor.saving) return false;
+  if (!captureMaskDraft()) return false;
+  editor.saving = true;
+  render();
   const targets = editor.mode === 'agent-attachment' ? [maskEditorReference()] : maskEditorReferences();
   const previous = targets.filter(Boolean).map((ref) => ({ ref, snapshot: { ...ref } }));
   const createdBlobIds = [];
@@ -16639,22 +17306,25 @@ async function saveMaskEditor() {
       const putTrackedBlob = async (blob) => {
         if (!blob) return '';
         const id = await putBlob(blob);
-        if (id && id !== bundle.originalBlobId) createdBlobIds.push(id);
+        if (id) createdBlobIds.push(id);
         return id;
       };
+      const nextOriginalBlobId = await putTrackedBlob(bundle.originalBlob) || bundle.originalBlobId;
       const nextMaskBlobId = await putTrackedBlob(bundle.maskBlob);
       const nextAnnotationBlobId = await putTrackedBlob(bundle.annotationBlob);
-      const nextCompositedBlobId = bundle.compositedBlob ? await putTrackedBlob(bundle.compositedBlob) : bundle.originalBlobId;
-      oldBlobIds.push(ref.maskBlobId, ref.annotationBlobId, ref.compositedBlobId, ref.blobId);
-      changes.push({ ref, bundle, nextMaskBlobId, nextAnnotationBlobId, nextCompositedBlobId });
+      const nextCompositedBlobId = bundle.compositedBlob ? await putTrackedBlob(bundle.compositedBlob) : nextOriginalBlobId;
+      oldBlobIds.push(ref.maskBlobId, ref.annotationBlobId, ref.compositedBlobId, ref.originalBlobId, ref.blobId);
+      changes.push({ ref, bundle, nextOriginalBlobId, nextMaskBlobId, nextAnnotationBlobId, nextCompositedBlobId, nextEditInstruction: normalizeEditInstruction(draft.editInstruction) });
     }
   } catch (error) {
-    if (createdBlobIds.length) await deleteUnreferencedBlobIds(createdBlobIds);
+    editor.saving = false;
+    if (createdBlobIds.length) await deleteUnreferencedBlobIds(createdBlobIds).catch((cleanupError) => console.warn('[home-v3] 遮罩合成失败后的 Blob 清理失败', cleanupError));
+    render();
     toast(`遮罩合成失败：${error?.message || error}`);
     return false;
   }
-  changes.forEach(({ ref, bundle, nextMaskBlobId, nextAnnotationBlobId, nextCompositedBlobId }) => {
-    ref.originalBlobId = bundle.originalBlobId;
+  changes.forEach(({ ref, bundle, nextOriginalBlobId, nextMaskBlobId, nextAnnotationBlobId, nextCompositedBlobId, nextEditInstruction }) => {
+    ref.originalBlobId = nextOriginalBlobId;
     ref.maskBlobId = nextMaskBlobId;
     ref.annotationBlobId = nextAnnotationBlobId;
     ref.compositedBlobId = nextCompositedBlobId;
@@ -16662,16 +17332,26 @@ async function saveMaskEditor() {
     ref.width = bundle.width;
     ref.height = bundle.height;
     ref.type = bundle.type || ref.type || 'image/png';
-    ref.blobId = editor.mode === 'agent-attachment' ? bundle.originalBlobId : nextCompositedBlobId;
+    ref.blobId = editor.mode === 'agent-attachment' ? nextOriginalBlobId : nextCompositedBlobId;
+    ref.editInstruction = nextEditInstruction;
   });
   state.maskEditor = null;
-  const committed = persistRender();
+  let committed = false;
+  let persistError = null;
+  try {
+    committed = persistRender();
+  } catch (error) {
+    persistError = error;
+  }
   if (committed !== true && committed !== 'idb') {
     previous.forEach(({ ref, snapshot }) => Object.assign(ref, snapshot));
     state.maskEditor = editor;
+    editor.saving = false;
     render();
-    if (createdBlobIds.length) await deleteUnreferencedBlobIds(createdBlobIds);
-    toast('遮罩状态保存失败，请重试');
+    if (createdBlobIds.length) {
+      await deleteUnreferencedBlobIds(createdBlobIds).catch((error) => console.warn('[home-v3] 遮罩回滚 Blob 清理失败', error));
+    }
+    toast(`遮罩状态保存失败，请重试${persistError ? `：${persistError?.message || persistError}` : ''}`);
     return;
   }
   for (const ref of targets.filter(Boolean)) {
