@@ -85,6 +85,7 @@ const requiredFiles = [
   'functions/api/settings/save.js',
   'functions/api/settings/backup.js',
   'scripts/api-smoke.mjs',
+  'scripts/api-smoke-contract.test.mjs',
   'scripts/local-upstream-fetch.mjs',
   'scripts/local-upstream-fetch.test.mjs',
   'tests/homepage-task-regression.js',
@@ -146,6 +147,7 @@ for (const marker of ["'.codegraph'", "'.agents'", "'.codex'", "'.wrangler'", "'
 assertContains(deploy, "'.git'", 'Deploy staging must exclude worktree .git file as well as .git directories.');
 assertContains(deploy, "Invoke-LoggedCommand -FilePath 'node' -Arguments @('--check', 'tests/mask-editor-browser-smoke.cjs')", 'Deployment quality gate must syntax-check the Firefox mask editor smoke.');
 assertContains(deploy, "Invoke-LoggedCommand -FilePath 'node' -Arguments @('tests/mask-editor-browser-smoke.cjs')", 'Deployment quality gate must run the Firefox mask editor smoke.');
+assertContains(deploy, "Invoke-LoggedCommand -FilePath 'node' -Arguments @('--test', 'scripts/api-smoke-contract.test.mjs')", 'Deployment quality gate must run the API smoke version contract regression.');
 assertContains(deploy, "'playwright', 'install', 'chromium', 'firefox'", 'Deployment browser install must include Chromium and Firefox.');
 
 const homepage = read('assets/homepage-v3.js');
@@ -289,6 +291,7 @@ for (const marker of [
 const apiSmoke = read('scripts/api-smoke.mjs');
 for (const marker of [
   'EXPECTED_ASSET_VERSION',
+  'assertHomeV3AssetVersion',
   '/.well-known/img-runtime-config.json',
   '/api/prompts?categories=1',
   'ThinkAI categories should be present',

@@ -165,6 +165,7 @@ function Invoke-StabilityChecks {
   Invoke-LoggedCommand -FilePath 'node' -Arguments @('--check', 'tests/e2e-quality.js')
   Invoke-LoggedCommand -FilePath 'node' -Arguments @('--check', 'tests/mask-editor-browser-smoke.cjs')
   Invoke-LoggedCommand -FilePath 'node' -Arguments @('--check', 'scripts/api-smoke.mjs')
+  Invoke-LoggedCommand -FilePath 'node' -Arguments @('--test', 'scripts/api-smoke-contract.test.mjs')
   Invoke-LoggedCommand -FilePath 'node' -Arguments @('tests/image-stream-regression.js')
   Invoke-LoggedCommand -FilePath 'node' -Arguments @('tests/image-edit-request-regression.js')
   Invoke-LoggedCommand -FilePath 'node' -Arguments @('tests/homepage-task-regression.js')
