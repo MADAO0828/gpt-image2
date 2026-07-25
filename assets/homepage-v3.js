@@ -5434,21 +5434,14 @@ function cancelGalleryVirtualRender(options = {}) {
 function scheduleGalleryVirtualRender(options = {}) {
   if (options.forceHydrate === true) galleryVirtualHydratePending = true;
   const delay = Math.max(0, Number(options.delay) || 0);
-  if (state.galleryVirtual?.scheduled) {
-    if (delay > 0 || !galleryVirtualRenderTimer) return;
-    clearTimeout(galleryVirtualRenderTimer);
-    galleryVirtualRenderTimer = 0;
-    galleryVirtualRenderToken += 1;
-    state.galleryVirtual = { ...(state.galleryVirtual || {}), scheduled: false };
-  }
-  state.galleryVirtual = { ...(state.galleryVirtual || {}), scheduled: true };
-  const token = ++galleryVirtualRenderToken;
+  const immediate = options.immediate === true;
   const allowDuringScroll = options.allowDuringScroll === true || options.lightweightDuringScroll === true;
   const scrollNode = options.node || (options.allowDuringScroll === true ? galleryScrollNode : null);
   const scrollGeneration = options.generation === undefined
     ? (scrollNode ? galleryScrollGeneration : null)
     : Number(options.generation);
   const isValidScrollRun = () => !scrollNode || isCurrentGalleryScroll(scrollNode, scrollGeneration);
+  let token = 0;
   const run = () => {
     if (token !== galleryVirtualRenderToken || !isValidScrollRun()) return;
     galleryVirtualRenderTimer = 0;
@@ -5459,6 +5452,30 @@ function scheduleGalleryVirtualRender(options = {}) {
     if (forceHydrate) renderGalleryListOnly({ virtualScroll: true, forceHydrate, allowDuringScroll });
     else renderGalleryListOnly({ virtualScroll: true, allowDuringScroll });
   };
+  if (immediate) {
+    clearTimeout(galleryVirtualRenderTimer);
+    cancelRenderFrame(galleryVirtualRenderFrame);
+    galleryVirtualRenderTimer = 0;
+    galleryVirtualRenderFrame = 0;
+    galleryVirtualRenderToken += 1;
+    if (!isValidScrollRun()) {
+      state.galleryVirtual = { ...(state.galleryVirtual || {}), scheduled: false };
+      return;
+    }
+    state.galleryVirtual = { ...(state.galleryVirtual || {}), scheduled: true };
+    token = galleryVirtualRenderToken;
+    run();
+    return;
+  }
+  if (state.galleryVirtual?.scheduled) {
+    if (delay > 0 || !galleryVirtualRenderTimer) return;
+    clearTimeout(galleryVirtualRenderTimer);
+    galleryVirtualRenderTimer = 0;
+    galleryVirtualRenderToken += 1;
+    state.galleryVirtual = { ...(state.galleryVirtual || {}), scheduled: false };
+  }
+  state.galleryVirtual = { ...(state.galleryVirtual || {}), scheduled: true };
+  token = ++galleryVirtualRenderToken;
   const enqueue = () => {
     if (token !== galleryVirtualRenderToken || !isValidScrollRun()) return;
     galleryVirtualRenderFrame = requestRenderFrame(run);

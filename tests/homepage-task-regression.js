@@ -698,6 +698,10 @@ ok(source.includes('function cancelGalleryVirtualRender(options = {})') && sourc
 ok(source.includes('function requestRenderFrame(fn)') && source.includes('function cancelRenderFrame(frameId)'), 'scroll render frame helpers should be present');
 ok(source.includes('galleryVirtualRenderFrame = requestRenderFrame(run)') && source.includes('promptRepoVirtualRenderFrame = requestRenderFrame(run)'), 'virtual renders should be queued on animation frames');
 ok(source.includes('cancelRenderFrame(galleryVirtualRenderFrame)') && source.includes('cancelRenderFrame(promptRepoVirtualRenderFrame)'), 'pending virtual render frames should be cancelled');
+ok(source.includes('const immediate = options.immediate === true;')
+  && source.includes('if (immediate) {')
+  && source.includes('cancelRenderFrame(galleryVirtualRenderFrame);')
+  && source.includes('token = galleryVirtualRenderToken;\n    run();\n    return;'), 'large gallery jumps should invalidate pending work and patch the visible virtual window synchronously');
 ok(source.includes("setGalleryScrollActivity(true)") && source.includes("setPromptRepoScrollActivity(true)"), 'scroll handlers should enable the low-cost scrolling state');
 ok(source.includes("clearTimeout(galleryScrollIdleTimer)") && source.includes("clearTimeout(promptRepoScrollIdleTimer)"), 'scroll idle timers should be cancellable during lifecycle cleanup');
 ok(source.includes('galleryScrollLastAt = Date.now()')
