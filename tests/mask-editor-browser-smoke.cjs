@@ -212,9 +212,17 @@ async function openReferenceEditor(page, index) {
   }, undefined, { timeout: TIMEOUT });
 }
 
-async function closeReferenceEditor(page) {
+async function closeReferenceEditor(page, diagnostics) {
+  const pageErrorCountBeforeClose = diagnostics?.errors.filter((entry) => entry.startsWith('pageerror:')).length || 0;
   await page.locator('[data-modal-key="mask-editor"] [data-action="cancel-mask-editor"]').click();
   await page.locator('[data-modal-key="mask-editor"]').waitFor({ state: 'detached', timeout: TIMEOUT });
+  await page.evaluate(() => new Promise((resolve) => {
+    requestAnimationFrame(() => setTimeout(resolve, 0));
+  }));
+  if (diagnostics) {
+    const pageErrorCountAfterClose = diagnostics.errors.filter((entry) => entry.startsWith('pageerror:')).length;
+    assert(pageErrorCountAfterClose === pageErrorCountBeforeClose, `mask editor cancel should not emit a pageerror after its next layout frame: ${diagnostics.errors.join(' | ')}`);
+  }
 }
 
 async function assertMaskEditorGeometry(page, viewport) {
@@ -347,7 +355,7 @@ async function main() {
     await page.mouse.down();
     await page.mouse.move(canceledBox.x + canceledBox.width * 0.48, canceledBox.y + canceledBox.height * 0.48, { steps: 2 });
     await page.mouse.up();
-    await closeReferenceEditor(page);
+    await closeReferenceEditor(page, diagnostics);
     const canceledState = await page.evaluate(() => {
       const ref = window.__homepageV3TestHooks?.getTestState?.().references?.[0] || {};
       return { marked: !!(ref.maskBlobId || ref.annotationBlobId), instruction: ref.editInstruction || '' };
@@ -355,7 +363,7 @@ async function main() {
     assert(!canceledState.marked && !canceledState.instruction, 'cancel should discard an unsaved single-reference edit');
     await openReferenceEditor(page, 0);
     assert(await page.locator('[data-modal-key="mask-editor"] .mask-ref-status').count() === 0, 'reopening after cancel should not show a persisted mark');
-    await closeReferenceEditor(page);
+    await closeReferenceEditor(page, diagnostics);
 
     await uploadFixture(page, 2);
     const promptInput = page.locator('#promptInput');
@@ -554,7 +562,7 @@ async function main() {
     await openReferenceEditor(page, 1);
     await assertMarkedReferenceAfterReload(page);
     await assertMaskEditorGeometry(page, MASK_VIEWPORTS[2]);
-    await closeReferenceEditor(page);
+    await closeReferenceEditor(page, diagnostics);
 
     await page.evaluate(() => {
       const hooks = window.__homepageV3TestHooks;
@@ -588,7 +596,7 @@ async function main() {
     await page.locator('[data-modal-key="mask-editor"]').waitFor({ state: 'visible', timeout: TIMEOUT });
     await page.waitForFunction(() => document.querySelector('[data-modal-key="mask-editor"]')?.getAttribute('data-mask-status') === 'ready', undefined, { timeout: TIMEOUT });
     await assertMaskEditorGeometry(page, MASK_VIEWPORTS[2]);
-    await closeReferenceEditor(page);
+    await closeReferenceEditor(page, diagnostics);
 
     assert(!unexpectedExternalRequest, 'unexpected external network request was blocked');
     assert(!unexpectedLocalPost, 'unexpected local POST request was blocked');

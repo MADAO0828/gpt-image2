@@ -21,7 +21,7 @@ const PROMPT_PAGE_SIZE = 36;
 const PROMPT_VIRTUAL_THRESHOLD = 108;
 const PROMPT_VIRTUAL_BUFFER_ROWS = 5;
 const PROMPT_REPO_CACHE_LIMIT = 24;
-const HOMEPAGE_ASSET_VERSION = 'home-v3-20260725-reference-editor-r199';
+const HOMEPAGE_ASSET_VERSION = 'home-v3-20260725-mask-lifecycle-r200';
 const PROMPT_FAST_VERSION = 'home-v3-20260721-profile-header-r197';
 const PROMPT_FAST_BOOTSTRAP_URL = `/prompts_fast/bootstrap.json?v=${PROMPT_FAST_VERSION}`;
 const PROMPT_FAST_PREVIEWS_URL = `/prompts_fast/category_previews.json?v=${PROMPT_FAST_VERSION}`;
@@ -16673,12 +16673,13 @@ function cancelMaskText() {
   return true;
 }
 function syncMaskDrawOptionsPosition() {
-  const compose = $('.mask-toolbar-compose');
   const editor = state.maskEditor;
-  const options = $$('.mask-tool-options', compose).find((node) => node.dataset.maskPanel === editor?.tool && node.style.display !== 'none');
+  const compose = $('.mask-toolbar-compose');
+  if (!editor || !compose) return;
+  const options = $$('.mask-tool-options', compose).find((node) => node.dataset.maskPanel === editor.tool && node.style.display !== 'none');
   const activeTool = editor?.tool || 'brush';
   const toolButton = $(`[data-action="mask-tool"][data-tool="${activeTool}"]`, compose);
-  if (!compose || !options || !toolButton || !compose.getBoundingClientRect || !toolButton.getBoundingClientRect) return;
+  if (!options || !toolButton || !compose.getBoundingClientRect || !toolButton.getBoundingClientRect) return;
   const composeRect = compose.getBoundingClientRect();
   const toolRect = toolButton.getBoundingClientRect();
   const composeWidth = Math.max(Number(compose.clientWidth || 0), Number(composeRect.width || 0));
