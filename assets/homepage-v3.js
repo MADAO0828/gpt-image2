@@ -21,7 +21,7 @@ const PROMPT_PAGE_SIZE = 36;
 const PROMPT_VIRTUAL_THRESHOLD = 108;
 const PROMPT_VIRTUAL_BUFFER_ROWS = 5;
 const PROMPT_REPO_CACHE_LIMIT = 24;
-const HOMEPAGE_ASSET_VERSION = 'home-v3-20260724-mask-editor-r198';
+const HOMEPAGE_ASSET_VERSION = 'home-v3-20260725-reference-editor-r199';
 const PROMPT_FAST_VERSION = 'home-v3-20260721-profile-header-r197';
 const PROMPT_FAST_BOOTSTRAP_URL = `/prompts_fast/bootstrap.json?v=${PROMPT_FAST_VERSION}`;
 const PROMPT_FAST_PREVIEWS_URL = `/prompts_fast/category_previews.json?v=${PROMPT_FAST_VERSION}`;
@@ -96,6 +96,7 @@ const BRUSH_COLORS = [
   { name: '深灰', value: '#374151' },
   { name: '白', value: '#ffffff' }
 ];
+const MASK_DERIVED_OVERLAY_ALPHA = 220;
 const MASK_EDIT_INSTRUCTION_MAX_LENGTH = 1000;
 
 const HOMEPAGE_V3_TEST_HOOKS = typeof window !== 'undefined' ? (window.__homepageV3TestHooks = window.__homepageV3TestHooks || {}) : null;
@@ -107,6 +108,9 @@ const STREAM_PARTIAL_TASK_LIMIT = 8;
 const STREAM_PARTIAL_PERSIST_DELAY_MS = 180;
 const STREAM_INPUT_FILE_LIMIT = 50 * 1024 * 1024;
 const STREAM_INPUT_TOTAL_LIMIT = 512 * 1024 * 1024;
+// Keep OpenAI mask uploads below the proxy request ceiling and fail with a mask-specific code.
+const OPENAI_MASK_FILE_LIMIT = 16 * 1024 * 1024;
+const OPENAI_MASK_REQUEST_LIMIT = 64 * 1024 * 1024;
 const REFERENCE_MISSING_PLACEHOLDER = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
 const OPENAI_MASK_FORMAT = 'openai-alpha-v1';
 const streamPartialPersistChains = new Map();
@@ -643,6 +647,69 @@ function touchObjectUrl(map, key) {
   map.delete(key);
   map.set(key, url);
   return url;
+}
+function agentAttachmentDisplayBlobId(item) {
+  return String(item?.compositedBlobId || item?.blobId || item?.originalBlobId || '').trim();
+}
+function agentAttachmentPreviewKey(itemOrId, displayBlobId = '') {
+  const id = typeof itemOrId === 'object' ? itemOrId?.id : itemOrId;
+  const attachmentId = String(id || '').trim();
+  if (!attachmentId) return '';
+  const blobId = String(displayBlobId || (typeof itemOrId === 'object' ? agentAttachmentDisplayBlobId(itemOrId) : '') || '').trim();
+  return blobId ? `agent:${attachmentId}:${blobId}` : `agent:${attachmentId}`;
+}
+function agentAttachmentLegacyPreviewKey(itemOrId) {
+  const id = typeof itemOrId === 'object' ? itemOrId?.id : itemOrId;
+  return id ? `agent:${String(id).trim()}` : '';
+}
+function moveObjectUrlKey(map, fromKey, toKey, limit = REFERENCE_OBJECT_URL_CACHE_LIMIT) {
+  if (!map || !fromKey || !toKey || fromKey === toKey || !map.has(fromKey)) return '';
+  const url = map.get(fromKey);
+  map.delete(fromKey);
+  if (!url) return '';
+  return rememberObjectUrl(map, toKey, url, limit);
+}
+function agentAttachmentObjectUrl(item) {
+  const key = agentAttachmentPreviewKey(item);
+  if (!key || !state.refUrls) return '';
+  let url = touchObjectUrl(state.refUrls, key);
+  if (url) return url;
+  const legacyKey = agentAttachmentLegacyPreviewKey(item);
+  if (legacyKey && legacyKey !== key) {
+    const legacyUrl = touchObjectUrl(state.refUrls, legacyKey);
+    if (legacyUrl) url = moveObjectUrlKey(state.refUrls, legacyKey, key) || legacyUrl;
+  }
+  return url || '';
+}
+function revokeAgentAttachmentObjectUrls(itemOrId, preserveKey = '') {
+  const id = typeof itemOrId === 'object' ? itemOrId?.id : itemOrId;
+  const keep = String(preserveKey || '').trim();
+  const prefix = id ? `agent:${String(id).trim()}:` : '';
+  if (state.refUrls && prefix) {
+    for (const key of [...state.refUrls.keys()]) {
+      if (key.startsWith(prefix) && key !== keep) revokeMapEntry(state.refUrls, key);
+    }
+  }
+  const legacyKey = agentAttachmentLegacyPreviewKey(itemOrId);
+  if (legacyKey && legacyKey !== keep) revokeMapEntry(state.refUrls, legacyKey);
+}
+function referencePreviewKey(itemOrId, displayBlobId = '') {
+  const id = typeof itemOrId === 'object' ? itemOrId?.id : itemOrId;
+  const referenceId = String(id || '').trim();
+  if (!referenceId) return '';
+  const blobId = String(displayBlobId || (typeof itemOrId === 'object' ? itemOrId?.blobId || itemOrId?.compositedBlobId || '' : '') || '').trim();
+  return blobId ? `ref:${referenceId}:${blobId}` : `ref:${referenceId}`;
+}
+function revokeReferenceObjectUrls(itemOrId, preserveKey = '') {
+  const id = typeof itemOrId === 'object' ? itemOrId?.id : itemOrId;
+  const referenceId = String(id || '').trim();
+  if (!referenceId || !state.refUrls) return;
+  const keep = String(preserveKey || '').trim();
+  const prefix = `ref:${referenceId}:`;
+  const legacyKey = referenceId;
+  for (const key of [...state.refUrls.keys()]) {
+    if ((key === legacyKey || key.startsWith(prefix)) && key !== keep) revokeMapEntry(state.refUrls, key);
+  }
 }
 function revokeAllObjectUrls(options = {}) {
   const preserveUrls = options.preserveUrls instanceof Set ? options.preserveUrls : new Set();
@@ -4928,11 +4995,14 @@ function taskReferenceDisplayBlobId(ref) {
 function taskReferenceOriginalBlobId(ref) {
   return ref?.originalBlobId || ref?.blobId || ref?.compositedBlobId || '';
 }
+function taskReferencePreviewBlobId(ref) {
+  return taskReferenceDisplayBlobId(ref) || taskReferenceOriginalBlobId(ref) || '';
+}
 function renderReferenceBadge(task, context = 'card') {
   const refs = taskReferenceSnapshots(task);
   if (!refs.length) return '';
   const extra = refs.length > 1 ? `<span class="task-ref-count">+${esc(refs.length - 1)}</span>` : '';
-  return `<button class="task-reference-badge ${context === 'detail' ? 'detail-ref-badge' : ''}" data-action="open-task-reference-viewer" data-task-id="${esc(task.id)}" data-ref-index="0" title="查看参考图原图"><img data-image-kind="task-reference" data-task-ref-task-id="${esc(task.id)}" data-task-ref-index="0" alt=""><span class="reference-missing-label">参考图已丢失</span>${extra}</button>`;
+  return `<button class="task-reference-badge ${context === 'detail' ? 'detail-ref-badge' : ''}" data-action="open-task-reference-viewer" data-task-id="${esc(task.id)}" data-ref-index="0" title="查看参考图原图"><img data-image-kind="task-reference" data-task-ref-task-id="${esc(task.id)}" data-task-ref-index="0" data-task-ref-blob-id="${esc(taskReferencePreviewBlobId(refs[0]))}" alt=""><span class="reference-missing-label">参考图已丢失</span>${extra}</button>`;
 }
 function renderTaskReferenceStrip(task) {
   const refs = taskReferenceSnapshots(task);
@@ -4940,7 +5010,7 @@ function renderTaskReferenceStrip(task) {
   return `
     <div class="detail-section-label">参考图</div>
     <div class="detail-reference-strip">
-      ${refs.map((ref, index) => `<button class="detail-reference-thumb" data-action="open-task-reference-viewer" data-task-id="${esc(task.id)}" data-ref-index="${esc(index)}" title="查看参考图原图"><img data-image-kind="task-reference" data-task-ref-task-id="${esc(task.id)}" data-task-ref-index="${esc(index)}" alt="${esc(ref.name || 'reference')}"><span class="reference-missing-label">参考图已丢失</span><span class="reference-number">图${esc(index + 1)}</span></button>`).join('')}
+      ${refs.map((ref, index) => `<button class="detail-reference-thumb" data-action="open-task-reference-viewer" data-task-id="${esc(task.id)}" data-ref-index="${esc(index)}" title="查看参考图原图"><img data-image-kind="task-reference" data-task-ref-task-id="${esc(task.id)}" data-task-ref-index="${esc(index)}" data-task-ref-blob-id="${esc(taskReferencePreviewBlobId(ref))}" alt="${esc(ref.name || 'reference')}"><span class="reference-missing-label">参考图已丢失</span><span class="reference-number">图${esc(index + 1)}</span></button>`).join('')}
     </div>
   `;
 }
@@ -6136,7 +6206,8 @@ function handleAgentMentionKeydown(event, input) {
   return false;
 }
 function renderReferenceThumb(ref, index = 0) {
-  const cachedUrl = ref?.id && state.refUrls?.has(ref.id) ? touchObjectUrl(state.refUrls, ref.id) : '';
+  const previewKey = referencePreviewKey(ref);
+  const cachedUrl = previewKey && state.refUrls?.has(previewKey) ? touchObjectUrl(state.refUrls, previewKey) : '';
   return `
     <div class="ref-thumb" title="${esc(ref.name || '参考图')}" data-reference-id="${esc(ref.id)}">
       <img data-ref-id="${esc(ref.id)}" ${cachedUrl ? `src="${esc(cachedUrl)}"` : ''} alt="" data-action="open-mask-editor" data-ref-id-open="${esc(ref.id)}">
@@ -6446,15 +6517,10 @@ function renderAgentAttachmentTray(attachments, removable = false) {
   const imageItems = items.filter(isAgentImageAttachment);
   const imageIndexes = new Map(imageItems.map((item, index) => [item.id, index]));
   const maskedCount = imageItems.filter((item) => item?.maskBlobId || item?.annotationBlobId).length;
-  const attachmentObjectUrl = (item) => {
-    const displayBlobId = item?.compositedBlobId || item?.blobId || item?.originalBlobId || '';
-    const key = `agent:${item?.id || ''}:${displayBlobId}`;
-    return state.refUrls?.has(key) ? touchObjectUrl(state.refUrls, key) : '';
-  };
   return `<div class="agent-attachment-tray" aria-label="当前附件 ${items.length} 个">
     ${items.map((item) => isAgentImageAttachment(item)
       ? `<div class="agent-image-attachment-thumb ${(item.maskBlobId || item.annotationBlobId) ? 'has-mask' : ''}" title="图${Number(imageIndexes.get(item.id) || 0) + 1} · ${esc(item.name || '图片附件')} · 点击编辑遮罩">
-          <img data-agent-attachment-id="${esc(item.id)}" data-action="open-agent-attachment-mask-editor" data-agent-attachment-open-id="${esc(item.id)}" ${attachmentObjectUrl(item) ? `src="${esc(attachmentObjectUrl(item))}"` : ''} alt="${esc(item.name || '图片附件')}">
+          <img data-agent-attachment-id="${esc(item.id)}" data-action="open-agent-attachment-mask-editor" data-agent-attachment-open-id="${esc(item.id)}" ${agentAttachmentObjectUrl(item) ? `src="${esc(agentAttachmentObjectUrl(item))}"` : ''} alt="${esc(item.name || '图片附件')}">
           <b class="agent-image-attachment-number">图${Number(imageIndexes.get(item.id) || 0) + 1}</b>
           <span>${esc(item.name || '图片')}</span>
           ${(item.maskBlobId || item.annotationBlobId) ? '<small class="agent-image-attachment-mask">已标注</small>' : ''}
@@ -6529,7 +6595,7 @@ async function addAgentAttachments(files = []) {
     if (type.startsWith('image/')) {
       attachment.width = normalizedImage?.width;
       attachment.height = normalizedImage?.height;
-      rememberObjectUrl(state.refUrls, `agent:${attachmentId}`, URL.createObjectURL(sourceFile), REFERENCE_OBJECT_URL_CACHE_LIMIT);
+      rememberObjectUrl(state.refUrls, agentAttachmentPreviewKey(attachment, blobId), URL.createObjectURL(sourceFile), REFERENCE_OBJECT_URL_CACHE_LIMIT);
     }
     state.agent.attachments.push(attachment);
     added += 1;
@@ -6552,7 +6618,7 @@ async function removeAgentAttachment(id) {
     }
   }
   state.agent.attachments = attachments.filter((attachment) => attachment.id !== id);
-  revokeMapEntry(state.refUrls, `agent:${id}`);
+  revokeAgentAttachmentObjectUrls(id);
   const persisted = persistRender();
   const blobIds = [item?.blobId, item?.originalBlobId, item?.compositedBlobId, item?.maskBlobId, item?.annotationBlobId].filter(Boolean);
   if (blobIds.length) {
@@ -7520,7 +7586,7 @@ function renderViewer(viewer) {
         <button class="viewer-close" aria-label="关闭大图" data-modal-autofocus data-action="close-viewer">×</button>
         <div class="viewer-index">${esc(viewer.name || '参考图原图')}</div>
         <div class="viewer-stage" data-action="viewer-stage">
-          <img class="viewer-image" data-action="viewer-image" data-image-kind="task-reference-original" data-task-ref-task-id="${esc(viewer.taskId || '')}" data-task-ref-index="${esc(viewer.refIndex || 0)}" data-blob-id="${esc(viewer.blobId || '')}" alt="${esc(viewer.name || '参考图原图')}">
+          <img class="viewer-image" data-action="viewer-image" data-image-kind="task-reference-original" data-task-ref-original="1" data-task-ref-task-id="${esc(viewer.taskId || '')}" data-task-ref-index="${esc(viewer.refIndex || 0)}" data-blob-id="${esc(viewer.blobId || '')}" alt="${esc(viewer.name || '参考图原图')}">
         </div>
       </div>
     `;
@@ -9023,11 +9089,19 @@ function renderMaskEditor() {
   const ratioButtons = ['free', ...ratioValues.filter((value) => value !== 'auto')]
     .filter((value, index, values) => values.indexOf(value) === index)
     .map((value) => `<button type="button" class="mask-crop-ratio ${String(editor.cropRatio || 'free') === value ? 'active' : ''}" data-action="mask-crop-ratio" data-value="${esc(value)}"${disabled}>${esc(value === 'free' ? '自由' : value)}</button>`).join('');
-  const drawOptions = tool === 'brush' ? `<div class="mask-draw-options" role="group" aria-label="画笔设置">
-    <div class="mask-draw-colors">${BRUSH_COLORS.map((color) => `<button type="button" class="color-button ${editor.color === color.value ? 'active' : ''}" title="${esc(color.name)}" aria-label="${esc(color.name)}" data-tooltip="${esc(color.name)}" style="background:${color.value}" data-action="mask-color" data-color="${color.value}"${disabled}></button>`).join('')}</div>
-    <span class="mask-tool-divider" role="separator" aria-hidden="true"></span>
-    <label class="mask-size-control" title="画笔大小（原图像素）"><span>大小</span><input class="mask-size-slider" type="range" min="1" max="100" step="1" value="${esc(editor.brushSize || 64)}" data-action="mask-size" aria-label="画笔大小（原图像像素）"${disabled}><output>${esc(editor.brushSize || 64)}</output></label>
-  </div>` : '';
+  const panelTools = [
+    ['brush', '画笔设置'], ['rect', '矩形设置'], ['ellipse', '圆形设置'],
+    ['line', '直线设置'], ['arrow', '箭头设置'], ['polygon', '多边形设置']
+  ];
+  const drawOptions = panelTools.map(([panelTool, panelLabel]) => {
+    const activePanel = tool === panelTool;
+    const sizeLabel = panelTool === 'brush' ? '画笔大小' : '线条粗细';
+    return `<div class="mask-tool-options ${panelTool === 'brush' ? 'mask-draw-options' : ''}" data-mask-panel="${panelTool}" role="group" aria-label="${esc(panelLabel)}"${activePanel ? '' : ' style="display:none"'}>
+      <div class="mask-draw-colors">${BRUSH_COLORS.map((color) => `<button type="button" class="color-button ${editor.color === color.value ? 'active' : ''}" title="${esc(color.name)}" aria-label="${esc(color.name)}" data-tooltip="${esc(color.name)}" style="background:${color.value}" data-action="mask-color" data-color="${color.value}"${disabled}></button>`).join('')}</div>
+      <span class="mask-tool-divider" role="separator" aria-hidden="true"></span>
+      <label class="mask-size-control" title="${esc(sizeLabel)}（原图像素）"><span>${esc(sizeLabel)}</span><input class="mask-size-slider" type="range" min="1" max="100" step="1" value="${esc(editor.brushSize || 64)}" data-action="mask-size" aria-label="${esc(sizeLabel)}（原图像素）"${disabled}><output>${esc(editor.brushSize || 64)}</output></label>
+    </div>`;
+  }).join('');
   const cropActions = tool === 'crop' ? `<div class="mask-crop-actions" role="group" aria-label="裁切操作"><span class="mask-crop-label">比例</span><div class="mask-crop-ratios">${ratioButtons}</div><button type="button" data-action="mask-crop-cancel"${disabled}>取消裁切</button><button type="button" data-action="mask-crop-confirm"${disabled}>确认裁切</button></div>` : '';
   const inlineText = editor.pendingText ? `<div class="mask-text-inline" role="group" aria-label="文字标注输入"><input id="maskTextInput" data-action="mask-text-input" data-modal-autofocus maxlength="120" value="${esc(editor.pendingText.value || '')}" placeholder="输入文字" aria-label="文字标注"${disabled}><button type="button" data-action="confirm-mask-text" aria-label="提交文字" title="提交文字"${disabled}><span class="mask-tool-icon" aria-hidden="true">${maskSvg('confirm')}</span></button><button type="button" data-action="cancel-mask-text" aria-label="取消文字" title="取消文字"${disabled}><span class="mask-tool-icon" aria-hidden="true">${maskSvg('cancel')}</span></button></div>` : '';
   const toolbarButtons = [
@@ -9055,13 +9129,13 @@ function renderMaskEditor() {
         <div class="mask-canvas-wrap">
           ${cropActions}
           <div class="mask-load-status" data-mask-load-status data-state="${esc(editor.loadStatus || 'loading')}" role="status" aria-live="polite">${esc(loadingMessage)}</div>
-          <div class="mask-canvas-shell ${tool === 'eraser' ? 'is-eraser' : ['brush', 'eraser'].includes(tool) ? 'is-brush' : ''}" data-cropped="${editor.cropped ? '1' : '0'}" data-mask-status="${esc(editor.loadStatus || 'loading')}" data-mask-ready="${editorReady ? '1' : '0'}" style="transform-origin:top left;--mask-cursor-size:${esc(editor.brushSize || 64)}px;--mask-cursor-color:${esc(editor.color || BRUSH_COLORS[0].value)}"><canvas id="maskBaseCanvas"></canvas><canvas id="maskCanvas"></canvas><canvas id="maskAnnotationCanvas" aria-hidden="true" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;background:transparent"></canvas><div class="mask-crop-guide" id="maskCropGuide" aria-hidden="true" style="display:none;position:absolute;z-index:4;pointer-events:none;border:2px dashed #f59e0b;box-sizing:border-box"></div><div class="mask-cursor" id="maskCursor"></div>${inlineText}</div>
+          <div class="mask-canvas-shell ${tool === 'eraser' ? 'is-eraser' : ['brush', 'eraser'].includes(tool) ? 'is-brush' : ''}" data-cropped="${editor.cropped ? '1' : '0'}" data-mask-status="${esc(editor.loadStatus || 'loading')}" data-mask-ready="${editorReady ? '1' : '0'}" data-mask-tool="${esc(tool)}" style="transform-origin:top left;--mask-cursor-size:${esc(editor.brushSize || 64)}px;--mask-cursor-color:${esc(editor.color || BRUSH_COLORS[0].value)}"><canvas id="maskBaseCanvas" data-mask-layer="interaction"></canvas><canvas id="maskCanvas" data-mask-layer="target" aria-hidden="true" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;opacity:0"></canvas><canvas id="maskAnnotationCanvas" data-mask-layer="annotation" aria-hidden="true" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;background:transparent"></canvas><canvas id="maskPreviewCanvas" data-mask-layer="preview" aria-hidden="true" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;background:transparent"></canvas><div class="mask-crop-guide" id="maskCropGuide" aria-hidden="true" style="display:none;position:absolute;z-index:4;pointer-events:none;border:2px dashed #f59e0b;box-sizing:border-box"></div><div class="mask-cursor" id="maskCursor"></div>${inlineText}</div>
         </div>
       </div>
       <div class="mask-toolbar-compose">
         ${drawOptions}
         <div class="mask-tool-row">${toolbarButtons}</div>
-        <textarea class="mask-editor-prompt" data-action="mask-edit-instruction" maxlength="${MASK_EDIT_INSTRUCTION_MAX_LENGTH}" placeholder="输入本张参考图编辑说明" aria-label="本张参考图编辑说明"${disabled}>${esc(editInstruction)}</textarea>
+        <div class="mask-editor-input-wrap mask-input-shell" data-mask-input-shell><textarea class="mask-editor-prompt" data-action="mask-edit-instruction" maxlength="${MASK_EDIT_INSTRUCTION_MAX_LENGTH}" placeholder="输入本张参考图编辑说明" aria-label="本张参考图编辑说明"${disabled}>${esc(editInstruction)}</textarea><button type="button" class="mask-editor-resize-handle" data-action="mask-editor-resize" data-mask-resize-handle aria-label="调整编辑说明输入框大小" title="调整编辑说明输入框大小"></button></div>
       </div>
     </section>
   `;
@@ -9211,6 +9285,7 @@ function bindTransientEvents() {
   }
   if (state.maskEditor) {
     setupMaskCanvas();
+    bindMaskEditorResizeHandle();
     syncMaskDrawOptionsPosition();
     if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(syncMaskDrawOptionsPosition);
   }
@@ -9889,6 +9964,7 @@ document.addEventListener('focusin', (event) => {
 document.addEventListener('keydown', (event) => {
   markUserInteractionRender();
   if (event.key === 'Escape') {
+    if (state.maskEditor?.saving) return;
     event.preventDefault();
     if (state.imageContextMenu) { closeImageContextMenu(); return; }
     if (state.viewer) { state.viewer = null; render(); return; }
@@ -9899,8 +9975,17 @@ document.addEventListener('keydown', (event) => {
     if (state.workflowInvoke) { state.workflowInvoke = null; render(); return; }
     if (state.workflowDraft) { state.workflowDraft = null; render(); return; }
     if (state.entryAdvancedModal) { state.entryAdvancedModal = null; render(); return; }
+    if (state.maskEditor?.pendingPolygon) {
+      cancelPendingMaskPolygon();
+      return;
+    }
     if (state.maskEditor) { cancelMaskEditor(); return; }
     if (state.promptRepo.open) { state.promptRepo.open = false; render(); return; }
+  }
+  if (event.key === 'Enter' && state.maskEditor?.pendingPolygon && !state.maskEditor.saving) {
+    event.preventDefault();
+    finishPendingMaskPolygon();
+    return;
   }
   if (state.imageContextMenu && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
     event.preventDefault();
@@ -11134,17 +11219,20 @@ function observeGalleryImage(img) {
 }
 async function hydrateAgentAttachmentImage(img) {
   const attachment = findAgentAttachment(img?.dataset?.agentAttachmentId);
-  const displayBlobId = attachment?.compositedBlobId || attachment?.blobId || attachment?.originalBlobId;
+  const displayBlobId = agentAttachmentDisplayBlobId(attachment);
   if (!displayBlobId) return;
-  const stableKey = `agent:${attachment.id}`;
-  const key = `${stableKey}:${displayBlobId}`;
-  const stale = state.refUrls.get(stableKey);
-  if (stale && stale !== key) revokeMapEntry(state.refUrls, stableKey);
+  const key = agentAttachmentPreviewKey(attachment, displayBlobId);
+  const legacyKey = agentAttachmentLegacyPreviewKey(attachment);
+  const legacyUrl = legacyKey && legacyKey !== key ? touchObjectUrl(state.refUrls, legacyKey) : '';
+  if (legacyUrl && !state.refUrls.has(key)) moveObjectUrlKey(state.refUrls, legacyKey, key);
   if (!state.refUrls.has(key)) {
     const blob = await getBlob(displayBlobId).catch(() => null);
     if (blob) rememberObjectUrl(state.refUrls, key, URL.createObjectURL(blob), REFERENCE_OBJECT_URL_CACHE_LIMIT);
   }
-  if (state.refUrls.has(key) && img?.isConnected !== false) img.src = touchObjectUrl(state.refUrls, key);
+  if (state.refUrls.has(key) && img?.isConnected !== false) {
+    clearImageCacheMissing(img);
+    img.src = touchObjectUrl(state.refUrls, key);
+  }
 }
 async function getReferenceBlobWithFallback(ref) {
   for (const blobId of referenceBlobIdCandidates(ref)) {
@@ -11165,13 +11253,19 @@ async function hydrateTaskReferenceImage(img, task, index) {
   const refs = task ? taskReferenceSnapshots(task) : [];
   const ref = refs[Number(index) || 0];
   if (!ref || !img) return false;
-  const fallback = await getReferenceBlobWithFallback(ref);
-  const key = `taskref:${task.id}:${ref.id}:${fallback.blobId || referenceBlobIdCandidates(ref).join('|')}`;
+  const preferOriginal = img.dataset.imageKind === 'task-reference-original' || img.dataset.taskRefOriginal === '1';
+  const candidateIds = preferOriginal
+    ? [...new Set([taskReferenceOriginalBlobId(ref), taskReferenceDisplayBlobId(ref), ref?.blobId].filter(Boolean))]
+    : [...new Set([taskReferencePreviewBlobId(ref), taskReferenceOriginalBlobId(ref), ref?.blobId].filter(Boolean))];
+  const fallback = await getReferenceBlobWithFallback({ ...ref, compositedBlobId: candidateIds[0], blobId: candidateIds[1] || ref?.blobId, originalBlobId: candidateIds[2] || ref?.originalBlobId });
+  const key = `taskref:${task.id}:${ref.id}:${fallback.blobId || candidateIds.join('|')}`;
   if (fallback.blob && !state.refUrls.has(key)) {
     rememberObjectUrl(state.refUrls, key, URL.createObjectURL(fallback.blob), REFERENCE_OBJECT_URL_CACHE_LIMIT);
   }
   const url = state.refUrls.has(key) ? touchObjectUrl(state.refUrls, key) : '';
   if (url) {
+    img.dataset.taskRefResolvedBlobId = fallback.blobId || '';
+    img.dataset.blobId = fallback.blobId || '';
     img.removeAttribute('data-reference-missing');
     img.closest?.('.ref-thumb, .detail-reference-thumb, .task-reference-badge')?.classList?.remove('is-reference-missing');
     if (img.isConnected !== false) img.src = url;
@@ -11209,13 +11303,22 @@ async function hydrateImages(options = {}) {
     immediateHydrations.push((img.dataset.galleryPreview === '1' ? hydrateGalleryPreviewImage : hydrateBlobImage)(img, blobId, img.dataset.remoteUrl));
   }
   if (immediateHydrations.length) await Promise.all(immediateHydrations);
-  if (galleryOnly && skipReferenceImages) return;
   if (galleryOnly) {
-    for (const img of $$('img[data-task-ref-task-id]:not([src])')) {
+    const galleryTaskReferenceImages = [...new Set([
+      ...$$('img[data-task-ref-task-id]:not([src])'),
+      ...$$('img[data-task-ref-task-id]')
+    ])];
+    for (const img of galleryTaskReferenceImages) {
       const task = state.tasks.find((item) => item.id === img.dataset.taskRefTaskId);
       const refs = task ? taskReferenceSnapshots(task) : [];
       const ref = refs[Number(img.dataset.taskRefIndex) || 0];
       if (!ref) continue;
+      if (img.dataset.taskRefResolvedBlobId && img.getAttribute('src')) {
+        const expected = img.dataset.imageKind === 'task-reference-original'
+          ? taskReferenceOriginalBlobId(ref)
+          : taskReferencePreviewBlobId(ref);
+        if (String(img.dataset.taskRefResolvedBlobId) === String(expected || '')) continue;
+      }
       await hydrateTaskReferenceImage(img, task, Number(img.dataset.taskRefIndex) || 0);
     }
     return;
@@ -11223,11 +11326,23 @@ async function hydrateImages(options = {}) {
   for (const img of $$('img[data-ref-id]:not([src])')) {
     const ref = state.references.find((r) => r.id === img.dataset.refId);
     if (!ref) continue;
-    if (!state.refUrls.has(ref.id)) {
-      const blob = await getBlob(ref.blobId).catch(() => null);
-      if (blob) rememberObjectUrl(state.refUrls, ref.id, URL.createObjectURL(blob), REFERENCE_OBJECT_URL_CACHE_LIMIT);
+    const refId = String(ref.id || '');
+    const expectedBlobId = String(ref.blobId || '');
+    const expectedKey = referencePreviewKey(refId, expectedBlobId);
+    const targetMatches = () => img?.isConnected !== false
+      && String(img?.dataset?.refId || '') === refId
+      && String(state.references.find((item) => String(item?.id || '') === refId)?.blobId || '') === expectedBlobId;
+    revokeReferenceObjectUrls(ref, expectedKey);
+    let cachedUrl = touchObjectUrl(state.refUrls, expectedKey);
+    if (!cachedUrl) {
+      const blob = await getBlob(expectedBlobId).catch(() => null);
+      if (!targetMatches()) continue;
+      cachedUrl = touchObjectUrl(state.refUrls, expectedKey);
+      if (!cachedUrl && blob) {
+        cachedUrl = rememberObjectUrl(state.refUrls, expectedKey, URL.createObjectURL(blob), REFERENCE_OBJECT_URL_CACHE_LIMIT);
+      }
     }
-    if (state.refUrls.has(ref.id)) img.src = touchObjectUrl(state.refUrls, ref.id);
+    if (cachedUrl && targetMatches()) img.src = cachedUrl;
   }
   for (const img of $$('img[data-pro-ref-id]:not([src])')) {
     const ref = (state.pro.refs || []).find((r) => r.id === img.dataset.proRefId);
@@ -11257,11 +11372,21 @@ async function hydrateImages(options = {}) {
     await hydrateAgentAttachmentImage(img);
   }
   if (galleryDeferredHydrations.size) scheduleGalleryHydrationFlush();
-  for (const img of $$('img[data-task-ref-task-id]:not([src])')) {
+  const taskReferenceImages = [...new Set([
+    ...$$('img[data-task-ref-task-id]:not([src])'),
+    ...$$('img[data-task-ref-task-id]')
+  ])];
+  for (const img of taskReferenceImages) {
     const task = state.tasks.find((item) => item.id === img.dataset.taskRefTaskId);
     const refs = task ? taskReferenceSnapshots(task) : [];
     const ref = refs[Number(img.dataset.taskRefIndex) || 0];
     if (!ref) continue;
+    if (img.dataset.taskRefResolvedBlobId && img.getAttribute('src')) {
+      const expected = img.dataset.imageKind === 'task-reference-original'
+        ? taskReferenceOriginalBlobId(ref)
+        : taskReferencePreviewBlobId(ref);
+      if (String(img.dataset.taskRefResolvedBlobId) === String(expected || '')) continue;
+    }
     await hydrateTaskReferenceImage(img, task, Number(img.dataset.taskRefIndex) || 0);
   }
 }
@@ -11320,7 +11445,7 @@ async function addFilesAsReferences(files) {
     }
     const blobId = await putBlob(normalized.blob);
     const ref = { id: uid('ref'), blobId, originalBlobId: blobId, name: normalized.name, type: normalized.type, width: normalized.width, height: normalized.height };
-    rememberObjectUrl(state.refUrls, ref.id, URL.createObjectURL(normalized.blob), REFERENCE_OBJECT_URL_CACHE_LIMIT);
+    rememberObjectUrl(state.refUrls, referencePreviewKey(ref), URL.createObjectURL(normalized.blob), REFERENCE_OBJECT_URL_CACHE_LIMIT);
     state.references.push(ref);
     added += 1;
   }
@@ -11355,7 +11480,7 @@ async function removeReference(id) {
     }
   }
   state.references = state.references.filter((r) => r.id !== id);
-  revokeMapEntry(state.refUrls, id);
+  revokeReferenceObjectUrls(id);
   // Reference deletion changes the request route from edits to generations. It
   // must reach local storage immediately, even while gallery scrolling is active.
   const persisted = writeStore({ forceTaskPersistence: true });
@@ -12098,6 +12223,12 @@ async function sendGenerationRequest(prompt, params = {}, options = {}) {
       ? await prepareEditReferenceFiles(validRefs)
       : { refs: validRefs, mask: null };
     const totalBytes = prepared.refs.reduce((sum, item) => sum + Number(item.blob?.size || 0), 0) + Number(prepared.mask?.size || 0);
+    if (prepared.mask && Number(prepared.mask.size || 0) > OPENAI_MASK_FILE_LIMIT) {
+      throw imageResponseError('OpenAI 遮罩超过专用文件大小上限', 'IMAGE_EDIT_MASK_TOO_LARGE', 'request-validation');
+    }
+    if (prepared.mask && totalBytes > OPENAI_MASK_REQUEST_LIMIT) {
+      throw imageResponseError('OpenAI 遮罩请求超过代理请求大小上限', 'IMAGE_EDIT_MASK_TOO_LARGE', 'request-validation');
+    }
     if (prepared.refs.some((item) => Number(item.blob?.size || 0) > STREAM_INPUT_FILE_LIMIT)
       || Number(prepared.mask?.size || 0) > STREAM_INPUT_FILE_LIMIT) {
       throw imageResponseError('单张参考图或遮罩超过 50MB 安全上限', 'IMAGE_EDIT_INPUT_TOO_LARGE', 'request-validation');
@@ -12336,6 +12467,16 @@ function maskWorkingSize(width, height) {
   const floorToMultiple = (value) => Math.max(multiple, Math.floor(value / multiple) * multiple);
   return { width: floorToMultiple(width * scale), height: floorToMultiple(height * scale) };
 }
+function assertOpenAiMaskBlobSize(blob, label = '遮罩') {
+  if (blob && Number(blob.size || 0) > OPENAI_MASK_FILE_LIMIT) {
+    throw imageResponseError(
+      `${label}超过 OpenAI 遮罩文件大小上限（${Math.round(OPENAI_MASK_FILE_LIMIT / 1024 / 1024)}MB）`,
+      'IMAGE_EDIT_MASK_TOO_LARGE',
+      'request-validation'
+    );
+  }
+  return blob;
+}
 async function resizeMaskImageBlobToPng(blob, width, height, label) {
   if (!blob?.size || !width || !height) {
     throw imageResponseError(`${label}无法读取工作尺寸`, 'IMAGE_EDIT_INPUT_DIMENSIONS', 'request-validation');
@@ -12415,6 +12556,8 @@ async function prepareEditReferenceFiles(validRefs = []) {
       blob = normalizedOriginal.blob;
       const maskBlob = first.ref.maskBlobId ? await getBlob(first.ref.maskBlobId).catch(() => null) : null;
       const annotationBlob = first.ref.annotationBlobId ? await getBlob(first.ref.annotationBlobId).catch(() => null) : null;
+      assertOpenAiMaskBlobSize(maskBlob, '遮罩');
+      assertOpenAiMaskBlobSize(annotationBlob, '彩色标注');
       const normalizedMask = maskBlob ? await normalizeEditImageBlob(maskBlob, '遮罩') : null;
       const normalizedAnnotation = annotationBlob ? await normalizeEditImageBlob(annotationBlob, '彩色标注') : null;
       for (const normalizedLayer of [normalizedMask, normalizedAnnotation].filter(Boolean)) {
@@ -12469,6 +12612,7 @@ async function prepareEditReferenceFiles(validRefs = []) {
       }
       if (requestMask && annotationMask) requestMask = await mergeOpenAiMaskBlobs(requestMask, annotationMask, normalizedOriginal.info.width, normalizedOriginal.info.height);
       else requestMask = requestMask || annotationMask;
+      assertOpenAiMaskBlobSize(requestMask, 'OpenAI 遮罩');
       const workingSize = maskWorkingSize(normalizedOriginal.info.width, normalizedOriginal.info.height);
       if (workingSize.width !== normalizedOriginal.info.width || workingSize.height !== normalizedOriginal.info.height) {
         const [workingOriginal, workingMask] = await Promise.all([
@@ -13548,6 +13692,10 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     measurePromptRepoVirtualLayout,
     maskCanvasHasPaint,
     maskEditorIsReady,
+    drawVisibleMaskOverlayFromTarget,
+    syncVisibleTargetOverlay,
+    rebuildDerivedTargetOverlay,
+    fillMaskRegion,
     setupMaskCanvas,
     captureMaskDraft,
     openMaskEditor,
@@ -13611,6 +13759,7 @@ if (HOMEPAGE_V3_TEST_HOOKS) {
     rememberObjectUrl,
     revokeAllObjectUrls,
     hydrateBlobImage,
+    hydrateImages,
     buildGalleryPreviewBlob,
     hydrateGalleryPreviewImage,
     readBlobReservations,
@@ -16241,6 +16390,10 @@ function createMaskEditorState(mode, activeRefId, agentAttachmentId = '') {
     history: {},
     redo: {},
     drafts: {},
+    viewports: {},
+    operationEpochs: {},
+    historyQueue: Promise.resolve(),
+    pendingPolygon: null,
     crop: null,
     cropRatio: 'free',
     cropSource: null,
@@ -16254,6 +16407,7 @@ function createMaskEditorState(mode, activeRefId, agentAttachmentId = '') {
     panX: 0,
     panY: 0,
     zoom: 1,
+    derivedTargetOverlay: null,
     pendingText: null,
     saving: false,
     loadStatus: 'loading',
@@ -16264,6 +16418,26 @@ function createMaskEditorState(mode, activeRefId, agentAttachmentId = '') {
     loadToken: 0,
     fullscreen: false
   };
+}
+function ensureMaskEditorRefState(editor, refId = editor?.activeRefId) {
+  const id = String(refId || '').trim();
+  if (!editor || !id) return null;
+  editor.history = editor.history && typeof editor.history === 'object' ? editor.history : {};
+  editor.redo = editor.redo && typeof editor.redo === 'object' ? editor.redo : {};
+  editor.drafts = editor.drafts && typeof editor.drafts === 'object' ? editor.drafts : {};
+  editor.viewports = editor.viewports && typeof editor.viewports === 'object' ? editor.viewports : {};
+  editor.operationEpochs = editor.operationEpochs && typeof editor.operationEpochs === 'object' ? editor.operationEpochs : {};
+  if (!Array.isArray(editor.history[id])) editor.history[id] = [];
+  if (!Array.isArray(editor.redo[id])) editor.redo[id] = [];
+  if (!editor.viewports[id] || typeof editor.viewports[id] !== 'object') editor.viewports[id] = {};
+  if (!Number.isFinite(Number(editor.operationEpochs[id]))) editor.operationEpochs[id] = 0;
+  return id;
+}
+function bumpMaskEditorOperationEpoch(editor, refId = editor?.activeRefId) {
+  const id = ensureMaskEditorRefState(editor, refId);
+  if (!id) return 0;
+  editor.operationEpochs[id] = Number(editor.operationEpochs[id] || 0) + 1;
+  return editor.operationEpochs[id];
 }
 function openMaskEditor(refId) {
   const refs = (Array.isArray(state.references) ? state.references : []).filter((ref) => ref?.id);
@@ -16281,15 +16455,111 @@ function openAgentAttachmentMaskEditor(attachmentId) {
   state.maskEditor.editInstruction = normalizeEditInstruction(attachment.editInstruction);
   render();
 }
+function syncMaskTextInput() {
+  const editor = state.maskEditor;
+  const shell = $('.mask-canvas-shell');
+  if (!editor || !shell) return;
+  const existing = $('.mask-text-inline', shell);
+  if (!editor.pendingText) {
+    existing?.remove?.();
+    return;
+  }
+  const value = esc(String(editor.pendingText.value || '').slice(0, 120));
+  if (!existing) {
+    shell.insertAdjacentHTML?.('beforeend', `<div class="mask-text-inline" role="group" aria-label="文字标注输入"><input id="maskTextInput" data-action="mask-text-input" data-modal-autofocus maxlength="120" value="${value}" placeholder="输入文字" aria-label="文字标注"><button type="button" data-action="confirm-mask-text" aria-label="提交文字" title="提交文字"><span class="mask-tool-icon" aria-hidden="true">✓</span></button><button type="button" data-action="cancel-mask-text" aria-label="取消文字" title="取消文字"><span class="mask-tool-icon" aria-hidden="true">×</span></button></div>`);
+  } else {
+    const input = $('#maskTextInput', existing);
+    if (input && input.value !== String(editor.pendingText.value || '')) input.value = String(editor.pendingText.value || '');
+  }
+  const input = $('#maskTextInput', shell);
+  if (input && document.activeElement !== input) {
+    try { input.focus({ preventScroll: true }); } catch { input.focus(); }
+  }
+}
+function syncMaskToolPanels() {
+  const editor = state.maskEditor;
+  const compose = $('.mask-toolbar-compose');
+  const canvasWrap = $('.mask-canvas-wrap');
+  if (!editor || !compose || !canvasWrap) return;
+  const disabled = !maskEditorIsReady(editor) || editor.saving ? ' disabled aria-disabled="true"' : '';
+  const drawOptions = $$('.mask-tool-options', compose);
+  const cropActions = $('.mask-crop-actions', canvasWrap);
+  drawOptions.forEach((panel) => {
+    panel.style.display = panel.dataset.maskPanel === editor.tool ? '' : 'none';
+    $$('button,input', panel).forEach((node) => {
+      node.disabled = !!disabled;
+      if (node.disabled) node.setAttribute('aria-disabled', 'true');
+      else node.removeAttribute('aria-disabled');
+    });
+  });
+  if (cropActions) {
+    cropActions.style.display = editor.tool === 'crop' ? '' : 'none';
+    $$("[data-action=\"mask-crop-ratio\"], [data-action=\"mask-crop-cancel\"], [data-action=\"mask-crop-confirm\"]", cropActions).forEach((node) => {
+      node.disabled = !!disabled;
+      if (node.disabled) node.setAttribute('aria-disabled', 'true');
+      else node.removeAttribute('aria-disabled');
+    });
+    $$('[data-action="mask-crop-ratio"]', cropActions).forEach((node) => node.classList.toggle('active', String(node.dataset.value || '') === String(editor.cropRatio || 'free')));
+  }
+  const shell = $('.mask-canvas-shell');
+  if (shell) {
+    shell.dataset.maskTool = editor.tool || 'brush';
+    shell.classList.toggle('is-eraser', editor.tool === 'eraser');
+    shell.classList.toggle('is-brush', editor.tool === 'brush' || editor.tool === 'eraser');
+  }
+  syncMaskTextInput();
+  syncMaskDrawOptionsPosition();
+}
+function syncMaskReferenceRail() {
+  const editor = state.maskEditor;
+  if (!editor) return;
+  const activeId = String(editor.activeRefId || '');
+  $$('[data-action="switch-mask-ref"]').forEach((button) => {
+    const active = String(button.dataset.id || '') === activeId;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
+}
+function bindMaskEditorResizeHandle() {
+  const handle = $('[data-mask-resize-handle]');
+  const wrap = handle?.closest?.('[data-mask-input-shell]');
+  const textarea = wrap?.querySelector?.('textarea');
+  if (!handle || !wrap || !textarea || handle.dataset.boundMaskResize === '1') return;
+  handle.dataset.boundMaskResize = '1';
+  let startY = 0;
+  let startHeight = 0;
+  const move = (event) => {
+    const next = Math.max(64, Math.min(360, startHeight + (event.clientY - startY)));
+    wrap.style.height = `${next}px`;
+    textarea.style.height = '100%';
+  };
+  const end = (event) => {
+    handle.releasePointerCapture?.(event.pointerId);
+    handle.removeEventListener('pointermove', move);
+    handle.removeEventListener('pointerup', end);
+    handle.removeEventListener('pointercancel', end);
+  };
+  handle.addEventListener('pointerdown', (event) => {
+    event.preventDefault();
+    startY = event.clientY;
+    startHeight = Number(wrap.getBoundingClientRect?.().height || wrap.offsetHeight || 120);
+    handle.setPointerCapture?.(event.pointerId);
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', end);
+    handle.addEventListener('pointercancel', end);
+  });
+}
 function cancelMaskEditor() {
-  if (!state.maskEditor) return;
-  state.maskEditor.loadEpoch = Number(state.maskEditor.loadEpoch || 0) + 1;
-  state.maskEditor.loadToken = Number(state.maskEditor.loadToken || 0) + 1;
-  state.maskEditor.canvasReady = false;
-  state.maskEditor.loadStatus = 'cancelled';
+  const editor = state.maskEditor;
+  if (!editor || editor.saving) return false;
+  editor.loadEpoch = Number(editor.loadEpoch || 0) + 1;
+  editor.loadToken = Number(editor.loadToken || 0) + 1;
+  editor.canvasReady = false;
+  editor.loadStatus = 'cancelled';
   if (document.fullscreenElement && document.exitFullscreen) void document.exitFullscreen().catch(() => {});
   state.maskEditor = null;
   render();
+  return true;
 }
 async function switchMaskRef(id) {
   if (!state.maskEditor || state.maskEditor.saving || !maskEditorIsReady(state.maskEditor) || !maskEditorReference(id)) return;
@@ -16315,14 +16585,21 @@ async function switchMaskRef(id) {
   state.maskEditor.panX = Number(draft.panX || 0);
   state.maskEditor.panY = Number(draft.panY || 0);
   state.maskEditor.zoom = Number(draft.zoom || 1);
-  render();
+  state.maskEditor.pendingPolygon = draft.pendingPolygon?.refId === id && Array.isArray(draft.pendingPolygon.points)
+    ? { refId: id, points: draft.pendingPolygon.points.map((point) => clampMaskPoint(point, $('#maskCanvas'))) }
+    : null;
+  ensureMaskEditorRefState(state.maskEditor, id);
+  syncMaskReferenceRail();
+  syncMaskEditorLoadUi(state.maskEditor);
+  void setupMaskCanvas();
 }
 const MASK_TOOLS = new Set(['move', 'brush', 'rect', 'ellipse', 'line', 'arrow', 'polygon', 'text', 'fill', 'crop', 'eraser']);
 function setMaskTool(tool) {
   if (!state.maskEditor || state.maskEditor.saving || !maskEditorIsReady(state.maskEditor) || !MASK_TOOLS.has(tool)) return;
   captureMaskDraft();
   state.maskEditor.tool = tool;
-  render();
+  syncMaskToolPanels();
+  updateMaskToolUi();
 }
 function setMaskColor(color) {
   if (!state.maskEditor || state.maskEditor.saving || !maskEditorIsReady(state.maskEditor) || !BRUSH_COLORS.some((item) => item.value === color)) return;
@@ -16347,7 +16624,8 @@ function setMaskCropRatio(ratio) {
     state.maskEditor.crop = next.width > 2 && next.height > 2 ? next : null;
   }
   captureMaskDraft();
-  render();
+  syncMaskToolPanels();
+  syncMaskCropGuide();
 }
 function confirmMaskText() {
   const editor = state.maskEditor;
@@ -16366,39 +16644,42 @@ function confirmMaskText() {
   annotationContext.restore();
   editor.pendingText = null;
   captureMaskDraft();
-  render();
+  syncMaskTextInput();
+  bumpMaskEditorOperationEpoch(editor, editor.activeRefId);
+  updateMaskToolUi();
   return true;
 }
 function cancelMaskText() {
   if (!state.maskEditor?.pendingText) return false;
   state.maskEditor.pendingText = null;
-  render();
+  syncMaskTextInput();
   return true;
 }
 function syncMaskDrawOptionsPosition() {
   const compose = $('.mask-toolbar-compose');
-  const options = $('.mask-draw-options');
-  const brush = $('[data-action="mask-tool"][data-tool="brush"]');
-  if (!compose || !options || !brush || !compose.getBoundingClientRect || !brush.getBoundingClientRect) return;
+  const editor = state.maskEditor;
+  const options = $$('.mask-tool-options', compose).find((node) => node.dataset.maskPanel === editor?.tool && node.style.display !== 'none');
+  const activeTool = editor?.tool || 'brush';
+  const toolButton = $(`[data-action="mask-tool"][data-tool="${activeTool}"]`, compose);
+  if (!compose || !options || !toolButton || !compose.getBoundingClientRect || !toolButton.getBoundingClientRect) return;
   const composeRect = compose.getBoundingClientRect();
-  const brushRect = brush.getBoundingClientRect();
+  const toolRect = toolButton.getBoundingClientRect();
   const composeWidth = Math.max(Number(compose.clientWidth || 0), Number(composeRect.width || 0));
   const optionsRect = options.getBoundingClientRect();
   const optionsWidth = Math.max(Number(options.clientWidth || 0), Number(optionsRect.width || 0));
   if (!composeWidth) return;
-  // The CSS caret is 38px from the popover's left edge. Keep that caret over the brush center.
-  const brushLeft = Number(brushRect.left || 0);
-  const brushRight = Number(brushRect.right ?? (brushLeft + Number(brushRect.width || 0)));
-  const brushCenter = ((brushLeft + brushRight) / 2) - Number(composeRect.left || 0);
+  // The CSS caret is 38px from the popover's left edge. Keep it over the active tool center.
+  const toolLeft = Number(toolRect.left || 0);
+  const toolRight = Number(toolRect.right ?? (toolLeft + Number(toolRect.width || 0)));
+  const toolCenter = ((toolLeft + toolRight) / 2) - Number(composeRect.left || 0);
   const maxLeft = Math.max(0, composeWidth - optionsWidth);
-  const left = Math.max(0, Math.min(maxLeft, brushCenter - 38));
+  const left = Math.max(0, Math.min(maxLeft, toolCenter - 38));
   compose.style.setProperty('--mask-draw-options-left', `${left}px`);
 }
 function maskCanvasScale() {
   const canvas = $('#maskCanvas');
   if (!canvas) return 1;
-  const rect = canvas.getBoundingClientRect();
-  return Math.max(.01, Number(rect.width || 0) / Math.max(1, Number(canvas.width || 0)));
+  return Math.max(.01, maskCanvasGeometry(canvas).scale);
 }
 function maskCanvasFitScale() {
   const editor = state.maskEditor;
@@ -16409,7 +16690,10 @@ function syncMaskViewport() {
   const editor = state.maskEditor;
   const shell = $('.mask-canvas-shell');
   if (!editor || !shell) return;
-  shell.style.transform = `translate(${Number(editor.panX || 0)}px, ${Number(editor.panY || 0)}px) scale(${Math.max(.1, Math.min(8, Number(editor.zoom) || 1))})`;
+  const zoom = Math.max(.1, Math.min(8, Number(editor.zoom) || 1));
+  shell.style.transform = `translate(${Number(editor.panX || 0)}px, ${Number(editor.panY || 0)}px) scale(${zoom})`;
+  ensureMaskEditorRefState(editor, editor.activeRefId);
+  editor.viewports[editor.activeRefId] = { panX: Number(editor.panX || 0), panY: Number(editor.panY || 0), zoom };
   const cursor = $('#maskCursor');
   if (cursor) {
     const imageScale = Math.max(.01, Number(editor.imageScale) || 1);
@@ -16419,11 +16703,19 @@ function syncMaskViewport() {
   }
   syncMaskCropGuide();
   syncMaskDrawOptionsPosition();
+  drawMaskPendingPolygonPreview();
 }
 function centerMaskCanvas() {
   if (!maskEditorIsReady()) return;
-  state.maskEditor.panX = 0;
-  state.maskEditor.panY = 0;
+  const editor = state.maskEditor;
+  const shell = $('.mask-canvas-shell');
+  const zoom = Math.max(.1, Math.min(8, Number(editor.zoom) || 1));
+  const width = Number(shell?.offsetWidth || shell?.clientWidth || shell?.getBoundingClientRect?.().width || 0);
+  const height = Number(shell?.offsetHeight || shell?.clientHeight || shell?.getBoundingClientRect?.().height || 0);
+  if (!width || !height) return;
+  editor.panX = -((width * zoom) - width) / 2;
+  editor.panY = -((height * zoom) - height) / 2;
+  editor.viewports[editor.activeRefId] = { panX: editor.panX, panY: editor.panY, zoom };
   syncMaskViewport();
 }
 async function toggleMaskFullscreen() {
@@ -16561,6 +16853,101 @@ function drawMaskOverlayFromOpenAiMask(context, maskImage, width, height, color 
   maskContext.putImageData(imageDataForPixels(maskContext, overlayPixelsFromOpenAiMask(maskPixels, width, height, color), width, height), 0, 0);
   context.drawImage(canvas, 0, 0, width, height);
 }
+function setDerivedTargetOverlay(editor, width, height, pixels) {
+  if (!editor || !(pixels instanceof Uint8ClampedArray)) return;
+  editor.derivedTargetOverlay = { width, height, pixels: new Uint8ClampedArray(pixels) };
+}
+function rebuildDerivedTargetOverlay(editor = state.maskEditor, annotationCanvas = $('#maskAnnotationCanvas'), targetCanvas = $('#maskCanvas')) {
+  const targetContext = targetCanvas?.getContext?.('2d');
+  const annotationContext = annotationCanvas?.getContext?.('2d');
+  const width = Math.max(1, Number(targetCanvas?.width || 0));
+  const height = Math.max(1, Number(targetCanvas?.height || 0));
+  if (!editor || !targetContext?.getImageData || !annotationContext?.getImageData) return null;
+  const targetPixels = targetContext.getImageData(0, 0, width, height).data;
+  const annotationPixels = annotationContext.getImageData(0, 0, width, height).data;
+  const derived = new Uint8ClampedArray(targetPixels.length);
+  for (let offset = 0; offset < derived.length; offset += 4) {
+    if (Number(targetPixels[offset + 3] || 0) > 0 && Number(annotationPixels[offset + 3] || 0) === MASK_DERIVED_OVERLAY_ALPHA) {
+      derived[offset] = annotationPixels[offset];
+      derived[offset + 1] = annotationPixels[offset + 1];
+      derived[offset + 2] = annotationPixels[offset + 2];
+      derived[offset + 3] = MASK_DERIVED_OVERLAY_ALPHA;
+    }
+  }
+  setDerivedTargetOverlay(editor, width, height, derived);
+  return editor.derivedTargetOverlay;
+}
+function drawVisibleMaskOverlayFromTarget(context, targetCanvas, width, height, color = BRUSH_COLORS[0].value) {
+  if (!context?.putImageData || !targetCanvas?.getContext) return false;
+  const targetContext = targetCanvas.getContext('2d');
+  const pixels = targetContext?.getImageData?.(0, 0, width, height)?.data;
+  if (!pixels) return false;
+  const [red, green, blue] = maskColorRgb(color);
+  const output = new Uint8ClampedArray(width * height * 4);
+  for (let offset = 0; offset < output.length; offset += 4) {
+    const selected = Number(pixels[offset + 3] || 0) > 0;
+    output[offset] = red;
+    output[offset + 1] = green;
+    output[offset + 2] = blue;
+    output[offset + 3] = selected ? MASK_DERIVED_OVERLAY_ALPHA : 0;
+  }
+  context.putImageData(imageDataForPixels(context, output, width, height), 0, 0);
+  setDerivedTargetOverlay(state.maskEditor, width, height, output);
+  return true;
+}
+function syncVisibleTargetOverlay(annotationCanvas, targetCanvas, color = state.maskEditor?.color || BRUSH_COLORS[0].value) {
+  const annotationContext = annotationCanvas?.getContext?.('2d');
+  const targetContext = targetCanvas?.getContext?.('2d');
+  const width = Math.max(1, Number(targetCanvas?.width || 0));
+  const height = Math.max(1, Number(targetCanvas?.height || 0));
+  if (!annotationContext?.getImageData || !targetContext?.getImageData || !annotationContext?.putImageData) return false;
+  const targetPixels = targetContext.getImageData(0, 0, width, height).data;
+  const image = annotationContext.getImageData(0, 0, width, height);
+  const output = image.data;
+  const editor = state.maskEditor;
+  const previous = editor?.derivedTargetOverlay;
+  const previousPixels = previous?.width === width && previous?.height === height ? previous.pixels : null;
+  const nextDerived = new Uint8ClampedArray(output.length);
+  const [red, green, blue] = maskColorRgb(color);
+  for (let offset = 0; offset < output.length; offset += 4) {
+    const targetSelected = Number(targetPixels[offset + 3] || 0) > 0;
+    const previousAlpha = Number(previousPixels?.[offset + 3] || 0);
+    const matchesDerived = previousAlpha > 0
+      && output[offset] === previousPixels[offset]
+      && output[offset + 1] === previousPixels[offset + 1]
+      && output[offset + 2] === previousPixels[offset + 2]
+      && output[offset + 3] === previousAlpha;
+    if (matchesDerived) {
+      if (targetSelected) {
+        output[offset] = red;
+        output[offset + 1] = green;
+        output[offset + 2] = blue;
+        output[offset + 3] = MASK_DERIVED_OVERLAY_ALPHA;
+        nextDerived[offset] = red;
+        nextDerived[offset + 1] = green;
+        nextDerived[offset + 2] = blue;
+        nextDerived[offset + 3] = MASK_DERIVED_OVERLAY_ALPHA;
+      } else {
+        output[offset] = 0;
+        output[offset + 1] = 0;
+        output[offset + 2] = 0;
+        output[offset + 3] = 0;
+      }
+    } else if (targetSelected && Number(output[offset + 3] || 0) === 0) {
+      output[offset] = red;
+      output[offset + 1] = green;
+      output[offset + 2] = blue;
+      output[offset + 3] = MASK_DERIVED_OVERLAY_ALPHA;
+      nextDerived[offset] = red;
+      nextDerived[offset + 1] = green;
+      nextDerived[offset + 2] = blue;
+      nextDerived[offset + 3] = MASK_DERIVED_OVERLAY_ALPHA;
+    }
+  }
+  annotationContext.putImageData(image, 0, 0);
+  setDerivedTargetOverlay(editor, width, height, nextDerived);
+  return true;
+}
 function drawDataUrlIntoCanvas(canvas, dataUrl, isCurrent = () => true) {
   if (!canvas || !dataUrl || !isCurrent()) return Promise.resolve(false);
   return new Promise((resolve) => {
@@ -16641,61 +17028,102 @@ function captureMaskDraft() {
     panX: Number(editor.panX || 0),
     panY: Number(editor.panY || 0),
     zoom: Number(editor.zoom || 1),
+    viewport: { panX: Number(editor.panX || 0), panY: Number(editor.panY || 0), zoom: Number(editor.zoom || 1) },
+    pendingPolygon: editor.pendingPolygon?.refId === id && Array.isArray(editor.pendingPolygon.points)
+      ? { refId: id, points: editor.pendingPolygon.points.map((point) => ({ x: Number(point.x) || 0, y: Number(point.y) || 0 })) }
+      : null,
     width: canvas.width,
     height: canvas.height
   };
   editor.drafts[id] = draft;
   return draft;
 }
+async function decodeMaskDataUrl(dataUrl, isCurrent = () => true) {
+  if (!dataUrl) return { ok: true, image: null };
+  if (typeof Image === 'undefined') return { ok: false, image: null };
+  if (!isCurrent()) return { ok: false, image: null };
+  const image = new Image();
+  image.decoding = 'async';
+  const loaded = new Promise((resolve) => {
+    image.onload = () => resolve(true);
+    image.onerror = () => resolve(false);
+  });
+  image.src = dataUrl;
+  let ok = await loaded;
+  if (ok && typeof image.decode === 'function') {
+    try { await image.decode(); } catch { if (!image.complete) ok = false; }
+  }
+  return { ok: !!ok && isCurrent(), image: ok ? image : null };
+}
 function restoreMaskSnapshot(snapshot, isCurrent = () => true) {
   const base = $('#maskBaseCanvas');
   const canvas = $('#maskCanvas');
   const annotation = $('#maskAnnotationCanvas');
+  const preview = $('#maskPreviewCanvas');
   if (!base || !canvas || !annotation || !snapshot || !isCurrent()) return Promise.resolve(false);
+  const expectedRefId = String(snapshot.activeRefId || snapshot.refId || '');
+  if (expectedRefId && expectedRefId !== String(state.maskEditor?.activeRefId || '')) return Promise.resolve(false);
+  const snapshotReferenceEpoch = Number(snapshot.referenceEpoch);
+  const currentReferenceEpoch = Number(state.maskEditor?.operationEpochs?.[expectedRefId] || 0);
+  if (expectedRefId && Number.isFinite(snapshotReferenceEpoch) && snapshotReferenceEpoch > currentReferenceEpoch) return Promise.resolve(false);
   const width = Math.max(1, Number(snapshot.width || canvas.width || 1));
   const height = Math.max(1, Number(snapshot.height || canvas.height || 1));
-  [base, canvas, annotation].forEach((node) => {
-    if (node.width !== width) node.width = width;
-    if (node.height !== height) node.height = height;
-  });
-  const shell = $('.mask-canvas-shell');
-  if (shell) { shell.style.width = `${width}px`; shell.style.height = `${height}px`; }
-  if (!isCurrent()) return Promise.resolve(false);
-  if (state.maskEditor) {
-    state.maskEditor.cropped = !!snapshot.cropped;
-    state.maskEditor.cropSource = snapshot.cropSource ? { ...snapshot.cropSource } : null;
-    state.maskEditor.sourceWidth = Number(snapshot.sourceWidth || width);
-    state.maskEditor.sourceHeight = Number(snapshot.sourceHeight || height);
-    state.maskEditor.originalSourceWidth = Number(snapshot.originalSourceWidth || state.maskEditor.sourceWidth);
-    state.maskEditor.originalSourceHeight = Number(snapshot.originalSourceHeight || state.maskEditor.sourceHeight);
-    state.maskEditor.imageScale = Number(snapshot.imageScale || state.maskEditor.imageScale || 1);
-    state.maskEditor.editInstruction = normalizeEditInstruction(snapshot.editInstruction ?? state.maskEditor.editInstruction);
-  }
-  const baseCtx = base.getContext('2d');
-  const ctx = canvas.getContext('2d');
-  const annotationCtx = annotation?.getContext('2d');
-  if (snapshot.baseDataUrl) baseCtx?.clearRect(0, 0, width, height);
-  ctx?.clearRect(0, 0, canvas.width, canvas.height);
-  annotationCtx?.clearRect(0, 0, annotation.width, annotation.height);
-  return Promise.all([
-    snapshot.baseDataUrl ? drawDataUrlIntoCanvas(base, snapshot.baseDataUrl, isCurrent) : Promise.resolve(true),
-    drawDataUrlIntoCanvas(canvas, snapshot.maskDataUrl, isCurrent),
-    drawDataUrlIntoCanvas(annotation, snapshot.annotationDataUrl, isCurrent)
-  ]).then(() => {
+  const decode = async () => {
+    const layers = await Promise.all([
+      decodeMaskDataUrl(snapshot.baseDataUrl, isCurrent),
+      decodeMaskDataUrl(snapshot.maskDataUrl, isCurrent),
+      decodeMaskDataUrl(snapshot.annotationDataUrl, isCurrent)
+    ]);
+    if (!isCurrent() || layers.some((layer) => !layer.ok)) return false;
+    [base, canvas, annotation, preview].filter(Boolean).forEach((node) => {
+      if (node.width !== width) node.width = width;
+      if (node.height !== height) node.height = height;
+    });
+    const shell = $('.mask-canvas-shell');
+    if (shell) { shell.style.width = `${width}px`; shell.style.height = `${height}px`; }
+    const baseCtx = base.getContext('2d');
+    const ctx = canvas.getContext('2d');
+    const annotationCtx = annotation.getContext('2d');
+    const previewCtx = preview?.getContext?.('2d');
+    baseCtx?.clearRect(0, 0, width, height);
+    ctx?.clearRect(0, 0, width, height);
+    annotationCtx?.clearRect(0, 0, width, height);
+    previewCtx?.clearRect(0, 0, width, height);
+    if (layers[0].image) baseCtx?.drawImage(layers[0].image, 0, 0, width, height);
+    if (layers[1].image) ctx?.drawImage(layers[1].image, 0, 0, width, height);
+    if (layers[2].image) annotationCtx?.drawImage(layers[2].image, 0, 0, width, height);
     if (!isCurrent()) return false;
-    if (state.maskEditor) {
-      state.maskEditor.crop = snapshot.crop ? { ...snapshot.crop } : null;
-      state.maskEditor.cropRatio = snapshot.cropRatio || 'free';
-      state.maskEditor.editInstruction = normalizeEditInstruction(snapshot.editInstruction ?? state.maskEditor.editInstruction);
-      updateMaskToolUi();
-    }
+    const currentEditor = state.maskEditor;
+    if (!currentEditor || (expectedRefId && expectedRefId !== String(currentEditor.activeRefId || ''))) return false;
+    currentEditor.cropped = !!snapshot.cropped;
+    currentEditor.cropSource = snapshot.cropSource ? { ...snapshot.cropSource } : null;
+    currentEditor.sourceWidth = Number(snapshot.sourceWidth || width);
+    currentEditor.sourceHeight = Number(snapshot.sourceHeight || height);
+    currentEditor.originalSourceWidth = Number(snapshot.originalSourceWidth || currentEditor.sourceWidth);
+    currentEditor.originalSourceHeight = Number(snapshot.originalSourceHeight || currentEditor.sourceHeight);
+    currentEditor.imageScale = Number(snapshot.imageScale || currentEditor.imageScale || 1);
+    currentEditor.editInstruction = normalizeEditInstruction(snapshot.editInstruction ?? currentEditor.editInstruction);
+    currentEditor.panX = Number(snapshot.viewport?.panX ?? snapshot.panX ?? currentEditor.panX ?? 0);
+    currentEditor.panY = Number(snapshot.viewport?.panY ?? snapshot.panY ?? currentEditor.panY ?? 0);
+    currentEditor.zoom = Number(snapshot.viewport?.zoom ?? snapshot.zoom ?? currentEditor.zoom ?? 1);
+    currentEditor.pendingPolygon = snapshot.pendingPolygon?.refId === currentEditor.activeRefId && Array.isArray(snapshot.pendingPolygon.points)
+      ? { refId: currentEditor.activeRefId, points: snapshot.pendingPolygon.points.map((point) => ({ x: Number(point.x) || 0, y: Number(point.y) || 0 })) }
+      : null;
+    currentEditor.crop = snapshot.crop ? { ...snapshot.crop } : null;
+    currentEditor.cropRatio = snapshot.cropRatio || 'free';
+    rebuildDerivedTargetOverlay(currentEditor, annotation, canvas);
+    syncMaskToolPanels();
+    drawMaskPendingPolygonPreview();
+    updateMaskToolUi();
     return true;
-  });
+  };
+  return decode().catch(() => false);
 }
 async function setupMaskCanvas() {
   const baseCanvas = $('#maskBaseCanvas');
   const canvas = $('#maskCanvas');
   const annotationCanvas = $('#maskAnnotationCanvas');
+  const previewCanvas = $('#maskPreviewCanvas');
   const editor = state.maskEditor;
   if (!baseCanvas || !canvas || !annotationCanvas || !editor) return;
   const ref = maskEditorReference();
@@ -16755,8 +17183,14 @@ async function setupMaskCanvas() {
     editor.cropSource = cropSource;
     editor.cropped = !!draft?.cropped;
     editor.cropRatio = draft?.cropRatio || 'free';
+    editor.panX = Number(draft?.viewport?.panX ?? draft?.panX ?? editor.panX ?? 0);
+    editor.panY = Number(draft?.viewport?.panY ?? draft?.panY ?? editor.panY ?? 0);
+    editor.zoom = Number(draft?.viewport?.zoom ?? draft?.zoom ?? editor.zoom ?? 1);
+    editor.pendingPolygon = draft?.pendingPolygon?.refId === ref.id && Array.isArray(draft.pendingPolygon.points)
+      ? { refId: ref.id, points: draft.pendingPolygon.points.map((point) => clampMaskPoint(point, canvas)) }
+      : null;
     if (!isCurrent()) return false;
-    [baseCanvas, canvas, annotationCanvas].forEach((node) => { node.width = width; node.height = height; });
+    [baseCanvas, canvas, annotationCanvas, previewCanvas].filter(Boolean).forEach((node) => { node.width = width; node.height = height; });
     const shell = $('.mask-canvas-shell');
     if (shell) { shell.style.width = `${width}px`; shell.style.height = `${height}px`; }
     if (draft?.cropped && draft.baseDataUrl) {
@@ -16770,6 +17204,8 @@ async function setupMaskCanvas() {
     if (!isCurrent()) return false;
     canvas.getContext('2d')?.clearRect(0, 0, width, height);
     annotationCanvas.getContext('2d')?.clearRect(0, 0, width, height);
+    previewCanvas?.getContext('2d')?.clearRect(0, 0, width, height);
+    editor.derivedTargetOverlay = null;
     if (draft) {
       const restored = await restoreMaskSnapshot(draft, isCurrent);
       if (!restored || !isCurrent()) return false;
@@ -16789,6 +17225,9 @@ async function setupMaskCanvas() {
         if (!isCurrent() || !annotationImg) return false;
         annotationCanvas.getContext('2d')?.drawImage(annotationImg, 0, 0, width, height);
       }
+    }
+    if (!canvasHasPixels(annotationCanvas)) {
+      drawVisibleMaskOverlayFromTarget(annotationCanvas.getContext('2d'), canvas, width, height, editor.color || BRUSH_COLORS[0].value);
     }
     if (!isCurrent()) return false;
     installCanvasDrawing(canvas, canvas.getContext('2d'));
@@ -16813,8 +17252,14 @@ function withMaskCropClip(context, fn) {
   const crop = state.maskEditor?.crop;
   context.save();
   if (crop?.width > 0 && crop?.height > 0) {
+    const width = Number(context.canvas?.width || $('#maskCanvas')?.width || 0);
+    const height = Number(context.canvas?.height || $('#maskCanvas')?.height || 0);
+    const x = Math.max(0, Math.min(width, Number(crop.x || 0)));
+    const y = Math.max(0, Math.min(height, Number(crop.y || 0)));
+    const right = Math.max(x, Math.min(width, Number(crop.x || 0) + Number(crop.width || 0)));
+    const bottom = Math.max(y, Math.min(height, Number(crop.y || 0) + Number(crop.height || 0)));
     context.beginPath();
-    context.rect(crop.x, crop.y, crop.width, crop.height);
+    context.rect(x, y, Math.max(0, right - x), Math.max(0, bottom - y));
     context.clip();
   }
   try { fn(); } finally { context.restore(); }
@@ -16850,7 +17295,7 @@ function drawMaskShape(context, tool, start, end, points = []) {
   }
   context.restore();
 }
-function drawAnnotationShape(context, tool, start, end) {
+function drawAnnotationShape(context, tool, start, end, points = []) {
   const color = state.maskEditor?.color || BRUSH_COLORS[0].value;
   const imageScale = Math.max(.01, Number(state.maskEditor?.imageScale) || 1);
   context.save();
@@ -16859,6 +17304,24 @@ function drawAnnotationShape(context, tool, start, end) {
   context.lineWidth = Math.max(2, (Number(state.maskEditor?.brushSize) / 4 || 12) * imageScale);
   context.lineCap = 'round';
   context.lineJoin = 'round';
+  if (tool === 'rect' || tool === 'ellipse') {
+    const rect = normalizedMaskRect(start, end);
+    context.beginPath();
+    if (tool === 'rect') context.rect(rect.x, rect.y, rect.width, rect.height);
+    else context.ellipse(rect.x + rect.width / 2, rect.y + rect.height / 2, Math.max(1, rect.width / 2), Math.max(1, rect.height / 2), 0, 0, Math.PI * 2);
+    context.stroke();
+    context.restore();
+    return;
+  }
+  if (tool === 'polygon' && points.length >= 2) {
+    context.beginPath();
+    context.moveTo(points[0].x, points[0].y);
+    points.slice(1).forEach((point) => context.lineTo(point.x, point.y));
+    if (points.length >= 3) context.closePath();
+    context.stroke();
+    context.restore();
+    return;
+  }
   context.beginPath();
   context.moveTo(start.x, start.y);
   context.lineTo(end.x, end.y);
@@ -16888,7 +17351,9 @@ function fillMaskRegion(canvas, point) {
   const filled = pixels[startIndex + 3] > 0;
   const nextAlpha = filled ? 0 : 220;
   const visited = new Uint8Array(width * height);
-  const queue = [[startX, startY]];
+  const queue = new Int32Array(Math.max(1, width * height));
+  queue[0] = startY * width + startX;
+  let queueLength = 1;
   let queueHead = 0;
   const [red, green, blue] = maskColorRgb(state.maskEditor?.color || BRUSH_COLORS[0].value);
   const crop = state.maskEditor?.crop;
@@ -16900,11 +17365,15 @@ function fillMaskRegion(canvas, point) {
     visited[index] = 1;
     return (pixels[index * 4 + 3] > 0) === filled;
   };
-  while (queueHead < queue.length) {
-    const [x, y] = queue[queueHead++];
+  while (queueHead < queueLength) {
+    const packed = queue[queueHead++];
+    const x = packed % width;
+    const y = Math.floor(packed / width);
     const index = (y * width + x) * 4;
     pixels[index] = red; pixels[index + 1] = green; pixels[index + 2] = blue; pixels[index + 3] = nextAlpha;
-    [[x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]].forEach(([nx, ny]) => { if (same(nx, ny)) queue.push([nx, ny]); });
+    [[x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]].forEach(([nx, ny]) => {
+      if (same(nx, ny) && queueLength < queue.length) queue[queueLength++] = ny * width + nx;
+    });
   }
   context.putImageData(image, 0, 0);
 }
@@ -16936,21 +17405,99 @@ function cropCanvasRegion(source, crop) {
   target.getContext('2d')?.drawImage(source, Number(crop?.x || 0), Number(crop?.y || 0), width, height, 0, 0, width, height);
   return target;
 }
+function maskCanvasGeometry(canvas = $('#maskCanvas')) {
+  if (!canvas) return { rect: { left: 0, top: 0, width: 1, height: 1 }, scaleX: 1, scaleY: 1, scale: 1 };
+  const rect = canvas.getBoundingClientRect?.() || { left: 0, top: 0, width: canvas.width || 1, height: canvas.height || 1 };
+  const scaleX = Math.max(.01, Number(rect.width || 0) / Math.max(1, Number(canvas.width || 1)));
+  const scaleY = Math.max(.01, Number(rect.height || 0) / Math.max(1, Number(canvas.height || 1)));
+  return { rect, scaleX, scaleY, scale: Math.min(scaleX, scaleY) };
+}
+function clampMaskPoint(point, canvas = $('#maskCanvas')) {
+  const width = Math.max(1, Number(canvas?.width || 1));
+  const height = Math.max(1, Number(canvas?.height || 1));
+  return {
+    x: Math.max(0, Math.min(width, Number(point?.x || 0))),
+    y: Math.max(0, Math.min(height, Number(point?.y || 0)))
+  };
+}
+function clearMaskPreview() {
+  const preview = $('#maskPreviewCanvas');
+  preview?.getContext?.('2d')?.clearRect?.(0, 0, preview.width, preview.height);
+}
+function drawMaskPendingPolygonPreview(currentPoint = null) {
+  const editor = state.maskEditor;
+  const preview = $('#maskPreviewCanvas');
+  const context = preview?.getContext?.('2d');
+  const points = editor?.pendingPolygon?.points || [];
+  if (!editor || !context || points.length < 1) {
+    clearMaskPreview();
+    return;
+  }
+  context.clearRect(0, 0, preview.width, preview.height);
+  const current = currentPoint ? clampMaskPoint(currentPoint, preview) : points[points.length - 1];
+  const previewPoints = points.length > 1 ? [...points, current] : [points[0], current];
+  drawAnnotationShape(context, 'polygon', previewPoints[0], previewPoints.at(-1), previewPoints);
+}
+function cancelPendingMaskPolygon() {
+  const editor = state.maskEditor;
+  if (!editor?.pendingPolygon) return false;
+  editor.pendingPolygon = null;
+  clearMaskPreview();
+  return true;
+}
+function pushMaskHistorySnapshot(snapshot, editor = state.maskEditor, refId = editor?.activeRefId) {
+  const id = ensureMaskEditorRefState(editor, refId);
+  if (!editor || !maskEditorIsReady(editor) || !id || !snapshot) return false;
+  editor.history[id] = [...editor.history[id], snapshot].slice(-20);
+  editor.redo[id] = [];
+  updateMaskHistoryButtons();
+  return true;
+}
+function finishPendingMaskPolygon() {
+  const editor = state.maskEditor;
+  const pending = editor?.pendingPolygon;
+  const canvas = $('#maskCanvas');
+  const annotationCanvas = $('#maskAnnotationCanvas');
+  const targetContext = canvas?.getContext?.('2d');
+  const annotationContext = annotationCanvas?.getContext?.('2d');
+  const points = Array.isArray(pending?.points) ? pending.points.map((point) => clampMaskPoint(point, canvas)) : [];
+  if (!editor || !maskEditorIsReady(editor) || !canvas || points.length < 3 || !targetContext) return false;
+  const snapshot = maskSnapshot();
+  if (!snapshot) return false;
+  pushMaskHistorySnapshot(snapshot, editor, editor.activeRefId);
+  withMaskCropClip(targetContext, () => drawMaskShape(targetContext, 'polygon', points[0], points.at(-1), points));
+  if (annotationContext) withMaskCropClip(annotationContext, () => drawAnnotationShape(annotationContext, 'polygon', points[0], points.at(-1), points));
+  editor.pendingPolygon = null;
+  bumpMaskEditorOperationEpoch(editor, editor.activeRefId);
+  clearMaskPreview();
+  updateMaskToolUi();
+  return true;
+}
 function installCanvasDrawing(canvas, ctx) {
   if (!canvas || !ctx) return;
+  const interactionCanvas = $('#maskBaseCanvas') || canvas;
+  if (!interactionCanvas || typeof interactionCanvas.addEventListener !== 'function') return;
+  if (interactionCanvas.__maskDrawingInstalled) return;
+  interactionCanvas.__maskDrawingInstalled = true;
   const annotationCanvas = $('#maskAnnotationCanvas');
   const annotationCtx = annotationCanvas?.getContext('2d');
+  const previewCanvas = $('#maskPreviewCanvas');
+  const previewCtx = previewCanvas?.getContext('2d');
+  const editor = state.maskEditor;
+  const polygonPoints = Array.isArray(editor?.pendingPolygon?.points) ? editor.pendingPolygon.points.map((point) => clampMaskPoint(point, canvas)) : [];
+  if (editor && polygonPoints.length) editor.pendingPolygon = { refId: editor.activeRefId, points: polygonPoints };
   let drawing = false;
   let last = null;
   let start = null;
-  let polygonPoints = [];
   let moving = false;
+  let gestureMoved = false;
+  let gestureSnapshot = null;
   const point = (event) => {
-    const rect = canvas.getBoundingClientRect();
-    return {
-      x: (event.clientX - rect.left) * (canvas.width / Math.max(1, rect.width)),
-      y: (event.clientY - rect.top) * (canvas.height / Math.max(1, rect.height))
-    };
+    const geometry = maskCanvasGeometry(interactionCanvas);
+    return clampMaskPoint({
+      x: (event.clientX - geometry.rect.left) / geometry.scaleX,
+      y: (event.clientY - geometry.rect.top) / geometry.scaleY
+    }, canvas);
   };
   const updateCursor = (event, visible = true) => {
     const cursor = $('#maskCursor');
@@ -16964,100 +17511,194 @@ function installCanvasDrawing(canvas, ctx) {
     cursor.classList.add('visible');
     syncMaskViewport();
   };
-  const drawBrush = (from, to) => withMaskCropClip(ctx, () => {
-    ctx.save();
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    const imageScale = Math.max(.01, Number(state.maskEditor?.imageScale) || 1);
-    ctx.lineWidth = (Number(state.maskEditor?.brushSize) || 64) * imageScale;
-    ctx.globalCompositeOperation = state.maskEditor?.tool === 'eraser' ? 'destination-out' : 'source-over';
-    ctx.strokeStyle = state.maskEditor?.color || BRUSH_COLORS[0].value;
-    ctx.fillStyle = state.maskEditor?.color || BRUSH_COLORS[0].value;
-    ctx.beginPath(); ctx.moveTo(from.x, from.y); ctx.lineTo(to.x, to.y); ctx.stroke();
-    ctx.beginPath(); ctx.arc(to.x, to.y, ctx.lineWidth / 2, 0, Math.PI * 2); ctx.fill();
-    ctx.restore();
-  });
+  const polygonKeydown = (event) => {
+    const currentEditor = state.maskEditor;
+    if (!currentEditor || currentEditor.saving || currentEditor.tool !== 'polygon') return;
+    const polygonPoints = Array.isArray(currentEditor.pendingPolygon?.points) ? currentEditor.pendingPolygon.points : [];
+    if (event.key === 'Enter' && polygonPoints.length >= 3) {
+      event.preventDefault();
+      event.stopPropagation();
+      finishPendingMaskPolygon();
+      return;
+    }
+    if (event.key === 'Escape' && polygonPoints.length) {
+      event.preventDefault();
+      event.stopPropagation();
+      cancelPendingMaskPolygon();
+      updateMaskToolUi();
+    }
+  };
+  const clearPreview = () => {
+    previewCtx?.clearRect?.(0, 0, previewCanvas.width, previewCanvas.height);
+  };
+  const drawBrush = (from, to) => {
+    const draw = (context, visual = false) => withMaskCropClip(context, () => {
+      context.save();
+      context.lineCap = 'round';
+      context.lineJoin = 'round';
+      const imageScale = Math.max(.01, Number(state.maskEditor?.imageScale) || 1);
+      context.lineWidth = (Number(state.maskEditor?.brushSize) || 64) * imageScale;
+      context.globalCompositeOperation = state.maskEditor?.tool === 'eraser' ? 'destination-out' : 'source-over';
+      context.strokeStyle = state.maskEditor?.color || BRUSH_COLORS[0].value;
+      context.fillStyle = state.maskEditor?.color || BRUSH_COLORS[0].value;
+      context.beginPath(); context.moveTo(from.x, from.y); context.lineTo(to.x, to.y); context.stroke();
+      context.beginPath(); context.arc(to.x, to.y, context.lineWidth / 2, 0, Math.PI * 2); context.fill();
+      context.restore();
+    });
+    draw(ctx);
+    if (annotationCtx) draw(annotationCtx, true);
+  };
+  const drawPreview = (tool, from, to, points = []) => {
+    if (!previewCtx || !previewCanvas) return;
+    clearPreview();
+    if (tool === 'crop') {
+      const crop = cropRectWithRatio(from, to, state.maskEditor?.cropRatio, canvas.width, canvas.height);
+      previewCtx.save();
+      previewCtx.setLineDash?.([8, 5]);
+      previewCtx.strokeStyle = state.maskEditor?.color || '#f59e0b';
+      previewCtx.lineWidth = 2;
+      previewCtx.strokeRect(crop.x, crop.y, crop.width, crop.height);
+      previewCtx.restore();
+      return;
+    }
+    drawAnnotationShape(previewCtx, tool, from, to, points);
+  };
   const startEvent = (event) => {
     if (!maskEditorIsReady() || state.maskEditor.saving) return;
-    const tool = state.maskEditor.tool;
+    const currentEditor = state.maskEditor;
+    const tool = currentEditor.tool;
     event.preventDefault();
-    canvas.setPointerCapture?.(event.pointerId);
+    interactionCanvas.setPointerCapture?.(event.pointerId);
     const p = point(event);
     if (tool === 'move') {
       moving = true; last = { x: event.clientX, y: event.clientY }; return;
     }
     if (tool === 'polygon') {
+      const pending = currentEditor.pendingPolygon;
+      const polygonPoints = Array.isArray(pending?.points) ? pending.points : [];
+      const first = polygonPoints[0];
+      const threshold = Math.max(6, 14 / Math.max(.01, maskCanvasGeometry(interactionCanvas).scale));
+      if (polygonPoints.length >= 3 && first && Math.hypot(p.x - first.x, p.y - first.y) <= threshold) {
+        const pathContext = previewCtx || ctx;
+        pathContext.beginPath();
+        pathContext.moveTo(first.x, first.y);
+        polygonPoints.slice(1).forEach((item) => pathContext.lineTo(item.x, item.y));
+        pathContext.closePath();
+        finishPendingMaskPolygon();
+        return;
+      }
       if (!polygonPoints.length) pushMaskHistory();
       polygonPoints.push(p);
-      if (event.detail >= 2) {
-        if (polygonPoints.length >= 3) withMaskCropClip(ctx, () => drawMaskShape(ctx, 'polygon', polygonPoints[0], polygonPoints[polygonPoints.length - 1], polygonPoints));
-        polygonPoints = [];
-      }
+      currentEditor.pendingPolygon = { refId: currentEditor.activeRefId, points: polygonPoints };
+      drawMaskPendingPolygonPreview(p);
       return;
     }
-    if (tool === 'fill') { pushMaskHistory(); fillMaskRegion(canvas, p); updateMaskToolUi(); return; }
-    if (tool === 'crop') { drawing = true; start = p; return; }
+    if (tool === 'fill') {
+      pushMaskHistory();
+      fillMaskRegion(canvas, p);
+      syncVisibleTargetOverlay(annotationCanvas, canvas);
+      bumpMaskEditorOperationEpoch(currentEditor, currentEditor.activeRefId);
+      updateMaskToolUi();
+      return;
+    }
     if (tool === 'text') {
       captureMaskDraft();
-      state.maskEditor.pendingText = { x: p.x, y: p.y, value: '' };
-      render();
+      currentEditor.pendingText = { x: p.x, y: p.y, value: '' };
+      syncMaskTextInput();
       return;
     }
-    pushMaskHistory();
-    drawing = true; start = p; last = p;
-    if (tool === 'brush' || tool === 'eraser') drawBrush(p, p);
+    gestureSnapshot = maskSnapshot();
+    drawing = true;
+    start = p;
+    last = p;
+    gestureMoved = false;
+    if (tool === 'brush' || tool === 'eraser') {
+      pushMaskHistorySnapshot(gestureSnapshot, currentEditor, currentEditor.activeRefId);
+      drawBrush(p, p);
+      gestureMoved = true;
+    }
   };
   const moveEvent = (event) => {
     updateCursor(event);
     if (moving && maskEditorIsReady()) {
       state.maskEditor.panX += event.clientX - last.x;
       state.maskEditor.panY += event.clientY - last.y;
+      state.maskEditor.viewports[state.maskEditor.activeRefId] = { panX: state.maskEditor.panX, panY: state.maskEditor.panY, zoom: state.maskEditor.zoom };
       last = { x: event.clientX, y: event.clientY };
       syncMaskViewport();
+      return;
+    }
+    if (state.maskEditor?.tool === 'polygon' && state.maskEditor.pendingPolygon?.points?.length) {
+      drawMaskPendingPolygonPreview(point(event));
       return;
     }
     if (!drawing || !maskEditorIsReady()) return;
     event.preventDefault();
     const p = point(event);
-    if (state.maskEditor.tool === 'brush' || state.maskEditor.tool === 'eraser') { drawBrush(last, p); last = p; }
+    const tool = state.maskEditor.tool;
+    if (tool === 'brush' || tool === 'eraser') { drawBrush(last, p); last = p; return; }
+    if (start && Math.hypot(p.x - start.x, p.y - start.y) >= Math.max(2, 4 / Math.max(.01, maskCanvasGeometry(interactionCanvas).scale))) gestureMoved = true;
+    if (start && gestureMoved) drawPreview(tool, start, p);
   };
-  const endEvent = (event) => {
-    if (maskEditorIsReady() && drawing && start) {
+  const endEvent = (event, cancelled = false) => {
+    const currentEditor = state.maskEditor;
+    if (!cancelled && maskEditorIsReady(currentEditor) && drawing && start && gestureMoved) {
       const p = point(event);
-      const tool = state.maskEditor.tool;
+      const tool = currentEditor.tool;
       if (tool === 'crop') {
-        const crop = cropRectWithRatio(start, p, state.maskEditor.cropRatio, canvas.width, canvas.height);
-        state.maskEditor.crop = crop.width > 2 && crop.height > 2 ? crop : null;
-      } else if (tool === 'rect' || tool === 'ellipse') withMaskCropClip(ctx, () => drawMaskShape(ctx, tool, start, p));
-      else if ((tool === 'line' || tool === 'arrow') && annotationCtx) drawAnnotationShape(annotationCtx, tool, start, p);
+        const crop = cropRectWithRatio(start, p, currentEditor.cropRatio, canvas.width, canvas.height);
+        currentEditor.crop = crop.width > 2 && crop.height > 2 ? crop : null;
+      } else if (tool === 'rect' || tool === 'ellipse') {
+        pushMaskHistorySnapshot(gestureSnapshot, currentEditor, currentEditor.activeRefId);
+        withMaskCropClip(ctx, () => drawMaskShape(ctx, tool, start, p));
+        if (annotationCtx) withMaskCropClip(annotationCtx, () => drawAnnotationShape(annotationCtx, tool, start, p));
+      } else if ((tool === 'line' || tool === 'arrow') && annotationCtx) {
+        pushMaskHistorySnapshot(gestureSnapshot, currentEditor, currentEditor.activeRefId);
+        withMaskCropClip(annotationCtx, () => drawAnnotationShape(annotationCtx, tool, start, p));
+      }
+      bumpMaskEditorOperationEpoch(currentEditor, currentEditor.activeRefId);
     }
-    drawing = false; moving = false; start = null; last = null;
-    if (event?.pointerId !== undefined) canvas.releasePointerCapture?.(event.pointerId);
+    drawing = false; moving = false; start = null; last = null; gestureMoved = false; gestureSnapshot = null;
+    clearPreview();
+    if (event?.pointerId !== undefined) interactionCanvas.releasePointerCapture?.(event.pointerId);
     updateMaskToolUi();
   };
+  const cancelEvent = (event) => endEvent(event, true);
   const wheel = (event) => {
     if (!maskEditorIsReady() || state.maskEditor.saving) return;
     event.preventDefault();
-    const editor = state.maskEditor;
-    const oldZoom = Math.max(.1, Number(editor.zoom) || 1);
+    const currentEditor = state.maskEditor;
+    const oldZoom = Math.max(.1, Number(currentEditor.zoom) || 1);
     const nextZoom = Math.max(.25, Math.min(8, oldZoom * (event.deltaY < 0 ? 1.1 : .9)));
     const shell = $('.mask-canvas-shell');
     const rect = shell?.getBoundingClientRect();
     if (rect) {
       const localX = (event.clientX - rect.left) / oldZoom;
       const localY = (event.clientY - rect.top) / oldZoom;
-      editor.panX -= localX * (nextZoom - oldZoom);
-      editor.panY -= localY * (nextZoom - oldZoom);
+      currentEditor.panX -= localX * (nextZoom - oldZoom);
+      currentEditor.panY -= localY * (nextZoom - oldZoom);
     }
-    editor.zoom = nextZoom;
+    currentEditor.zoom = nextZoom;
+    currentEditor.viewports[currentEditor.activeRefId] = { panX: currentEditor.panX, panY: currentEditor.panY, zoom: nextZoom };
     syncMaskViewport();
+    updateCursor(event);
   };
-  canvas.addEventListener('pointerdown', startEvent);
-  canvas.addEventListener('pointermove', moveEvent);
-  canvas.addEventListener('pointerup', endEvent);
-  canvas.addEventListener('pointercancel', endEvent);
-  canvas.addEventListener('pointerleave', (event) => { if (!drawing && !moving) updateCursor(event, false); });
-  canvas.addEventListener('wheel', wheel, { passive: false });
+  interactionCanvas.addEventListener('pointerdown', startEvent);
+  interactionCanvas.addEventListener('pointermove', moveEvent);
+  interactionCanvas.addEventListener('pointerup', endEvent);
+  interactionCanvas.addEventListener('pointercancel', (event) => {
+    const currentEditor = state.maskEditor;
+    const polygonPoints = currentEditor?.pendingPolygon?.points;
+    if (Array.isArray(polygonPoints)) polygonPoints.length = 0;
+    if (currentEditor?.pendingPolygon) currentEditor.pendingPolygon = null;
+    clearMaskPreview();
+    cancelEvent(event);
+  });
+  interactionCanvas.addEventListener('pointerleave', (event) => { if (!drawing && !moving) updateCursor(event, false); });
+  interactionCanvas.addEventListener('wheel', wheel, { passive: false });
+  interactionCanvas.tabIndex = 0;
+  interactionCanvas.addEventListener('keydown', polygonKeydown);
+  drawMaskPendingPolygonPreview();
 }
 function maskSnapshot() {
   const editor = state.maskEditor;
@@ -17080,17 +17721,26 @@ function maskSnapshot() {
     originalSourceWidth: Number(editor?.originalSourceWidth || editor?.sourceWidth || canvas.width / imageScale),
     originalSourceHeight: Number(editor?.originalSourceHeight || editor?.sourceHeight || canvas.height / imageScale),
     imageScale,
+    viewport: { panX: Number(editor.panX || 0), panY: Number(editor.panY || 0), zoom: Number(editor.zoom || 1) },
+    pendingPolygon: editor.pendingPolygon?.refId === editor.activeRefId && Array.isArray(editor.pendingPolygon.points)
+      ? { refId: editor.activeRefId, points: editor.pendingPolygon.points.map((point) => ({ x: Number(point.x) || 0, y: Number(point.y) || 0 })) }
+      : null,
+    activeRefId: String(editor.activeRefId || ''),
+    referenceEpoch: Number(editor.operationEpochs?.[editor.activeRefId] || 0),
     width: canvas.width,
     height: canvas.height
   };
 }
 function pushMaskHistory() {
-  const id = state.maskEditor?.activeRefId;
+  const editor = state.maskEditor;
+  const activeRefId = String(editor?.activeRefId || '');
+  const referenceEpoch = Number(editor?.operationEpochs?.[activeRefId] || 0);
   const snapshot = maskSnapshot();
-  if (!maskEditorIsReady() || !id || !snapshot) return;
-  state.maskEditor.history[id] = [...(state.maskEditor.history[id] || []), snapshot].slice(-20);
-  state.maskEditor.redo[id] = [];
-  updateMaskHistoryButtons();
+  if (snapshot) {
+    snapshot.activeRefId = activeRefId;
+    snapshot.referenceEpoch = referenceEpoch;
+  }
+  return pushMaskHistorySnapshot(snapshot, editor, activeRefId);
 }
 function updateMaskHistoryButtons() {
   const editor = state.maskEditor;
@@ -17101,25 +17751,64 @@ function updateMaskHistoryButtons() {
   if (undo) undo.disabled = !(editor.history?.[id] || []).length;
   if (redo) redo.disabled = !(editor.redo?.[id] || []).length;
 }
-async function maskUndo() {
+function enqueueMaskHistoryOperation(operation) {
   const editor = state.maskEditor;
-  const id = editor?.activeRefId;
-  const stack = editor?.history?.[id] || [];
-  const current = maskSnapshot();
-  if (!maskEditorIsReady(editor) || !stack.length || !current) return;
-  editor.redo[id] = [...(editor.redo[id] || []), current].slice(-20);
-  await restoreMaskSnapshot(stack.pop());
-  updateMaskHistoryButtons();
+  if (!editor || typeof operation !== 'function') return Promise.resolve(false);
+  const previous = editor.historyQueue && typeof editor.historyQueue.then === 'function' ? editor.historyQueue : Promise.resolve();
+  const next = previous.then(async () => {
+    if (state.maskEditor !== editor || editor.saving) return false;
+    return operation(editor);
+  });
+  editor.historyQueue = next.catch(() => false);
+  return next;
+}
+async function maskUndo() {
+  return enqueueMaskHistoryOperation(async (editor) => {
+    const activeRefId = String(editor.activeRefId || '');
+    const stack = editor.history?.[activeRefId] || [];
+    const current = maskSnapshot();
+    const loadEpoch = Number(editor.loadEpoch || 0);
+    const referenceEpoch = Number(editor.operationEpochs?.[activeRefId] || 0);
+    if (!maskEditorIsReady(editor) || !stack.length || !current) return false;
+    const snapshot = stack[stack.length - 1];
+    if (snapshot?.activeRefId && String(snapshot.activeRefId) !== activeRefId) return false;
+    const restored = await restoreMaskSnapshot(snapshot, () => state.maskEditor === editor
+      && String(editor.activeRefId || '') === activeRefId
+      && Number(editor.loadEpoch || 0) === loadEpoch
+      && Number(editor.operationEpochs?.[activeRefId] || 0) === referenceEpoch
+      && maskEditorIsReady(editor));
+    if (!restored || state.maskEditor !== editor || String(editor.activeRefId || '') !== activeRefId
+      || Number(editor.loadEpoch || 0) !== loadEpoch || Number(editor.operationEpochs?.[activeRefId] || 0) !== referenceEpoch) return false;
+    stack.pop();
+    editor.redo[activeRefId] = [...(editor.redo[activeRefId] || []), current].slice(-20);
+    bumpMaskEditorOperationEpoch(editor, activeRefId);
+    updateMaskHistoryButtons();
+    return true;
+  });
 }
 async function maskRedo() {
-  const editor = state.maskEditor;
-  const id = editor?.activeRefId;
-  const stack = editor?.redo?.[id] || [];
-  const current = maskSnapshot();
-  if (!maskEditorIsReady(editor) || !stack.length || !current) return;
-  editor.history[id] = [...(editor.history[id] || []), current].slice(-20);
-  await restoreMaskSnapshot(stack.pop());
-  updateMaskHistoryButtons();
+  return enqueueMaskHistoryOperation(async (editor) => {
+    const activeRefId = String(editor.activeRefId || '');
+    const stack = editor.redo?.[activeRefId] || [];
+    const current = maskSnapshot();
+    const loadEpoch = Number(editor.loadEpoch || 0);
+    const referenceEpoch = Number(editor.operationEpochs?.[activeRefId] || 0);
+    if (!maskEditorIsReady(editor) || !stack.length || !current) return false;
+    const snapshot = stack[stack.length - 1];
+    if (snapshot?.activeRefId && String(snapshot.activeRefId) !== activeRefId) return false;
+    const restored = await restoreMaskSnapshot(snapshot, () => state.maskEditor === editor
+      && String(editor.activeRefId || '') === activeRefId
+      && Number(editor.loadEpoch || 0) === loadEpoch
+      && Number(editor.operationEpochs?.[activeRefId] || 0) === referenceEpoch
+      && maskEditorIsReady(editor));
+    if (!restored || state.maskEditor !== editor || String(editor.activeRefId || '') !== activeRefId
+      || Number(editor.loadEpoch || 0) !== loadEpoch || Number(editor.operationEpochs?.[activeRefId] || 0) !== referenceEpoch) return false;
+    stack.pop();
+    editor.history[activeRefId] = [...(editor.history[activeRefId] || []), current].slice(-20);
+    bumpMaskEditorOperationEpoch(editor, activeRefId);
+    updateMaskHistoryButtons();
+    return true;
+  });
 }
 function restoreCanvasDataUrl(url) {
   const canvas = $('#maskCanvas');
@@ -17144,7 +17833,13 @@ async function maskClear() {
   pushMaskHistory();
   canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
   $('#maskAnnotationCanvas')?.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
-  if (state.maskEditor) state.maskEditor.crop = null;
+  $('#maskPreviewCanvas')?.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
+  cancelPendingMaskPolygon();
+  if (state.maskEditor) {
+    state.maskEditor.crop = null;
+    state.maskEditor.derivedTargetOverlay = null;
+  }
+  bumpMaskEditorOperationEpoch(state.maskEditor, state.maskEditor?.activeRefId);
   updateMaskToolUi();
   toast('已清空当前标注（确认保存后生效）');
   return true;
@@ -17156,7 +17851,8 @@ function cancelMaskCrop() {
   editor.cropRatio = 'free';
   editor.tool = 'brush';
   captureMaskDraft();
-  render();
+  syncMaskToolPanels();
+  updateMaskToolUi();
   return true;
 }
 async function confirmMaskCrop() {
@@ -17165,6 +17861,7 @@ async function confirmMaskCrop() {
   const base = $('#maskBaseCanvas');
   const canvas = $('#maskCanvas');
   const annotation = $('#maskAnnotationCanvas');
+  const preview = $('#maskPreviewCanvas');
   if (!maskEditorIsReady(editor) || editor.saving || !crop || !base || !canvas || !annotation) return false;
   const width = Math.max(1, Math.round(Number(crop.width || 0)));
   const height = Math.max(1, Math.round(Number(crop.height || 0)));
@@ -17174,9 +17871,11 @@ async function confirmMaskCrop() {
   const maskCrop = cropCanvasRegion(canvas, { ...crop, width, height });
   const annotationCrop = cropCanvasRegion(annotation, { ...crop, width, height });
   [base, canvas, annotation].forEach((node) => { node.width = width; node.height = height; });
+  if (preview) { preview.width = width; preview.height = height; }
   base.getContext('2d')?.drawImage(baseCrop, 0, 0, width, height);
   canvas.getContext('2d')?.drawImage(maskCrop, 0, 0, width, height);
   annotation.getContext('2d')?.drawImage(annotationCrop, 0, 0, width, height);
+  preview?.getContext?.('2d')?.clearRect(0, 0, width, height);
   const imageScale = Math.max(.01, Number(editor.imageScale) || 1);
   const localSourceCrop = {
     x: Number(crop.x || 0) / imageScale,
@@ -17202,8 +17901,11 @@ async function confirmMaskCrop() {
   editor.panX = 0;
   editor.panY = 0;
   editor.zoom = 1;
+  editor.viewports[editor.activeRefId] = { panX: 0, panY: 0, zoom: 1 };
+  rebuildDerivedTargetOverlay(editor, annotation, canvas);
   captureMaskDraft();
-  render();
+  syncMaskToolPanels();
+  updateMaskToolUi();
   return true;
 }
 async function persistCanvasToRefDraft() {
@@ -17356,11 +18058,13 @@ async function saveMaskEditor() {
     return;
   }
   for (const ref of targets.filter(Boolean)) {
-    revokeMapEntry(state.refUrls, editor.mode === 'agent-attachment' ? `agent:${ref.id}` : ref.id);
+    if (editor.mode === 'agent-attachment') revokeAgentAttachmentObjectUrls(ref, agentAttachmentPreviewKey(ref));
+    else revokeReferenceObjectUrls(ref);
   }
   const oldIds = [...new Set(oldBlobIds.filter(Boolean))].filter((id) => !createdBlobIds.includes(id));
   if (oldIds.length) await deleteUnreferencedBlobIds(oldIds);
   toast(editor.mode === 'agent-attachment' ? 'Agent 附件遮罩已保存' : '遮罩编辑已保存并替换参考图');
+  render();
   return true;
 }
 

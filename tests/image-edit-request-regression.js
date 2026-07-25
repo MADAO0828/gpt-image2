@@ -113,4 +113,134 @@ assert.strictEqual(proxyProbeContext.__isPotentialSsePrefix('d'), true, 'a split
 assert.strictEqual(proxyProbeContext.__isPotentialSsePrefix('ev'), true, 'a split event field must remain probeable');
 assert.strictEqual(proxyProbeContext.__isPotentialSsePrefix('ordinary text'), false, 'ordinary text must not keep the probe open indefinitely');
 
-console.log('[image-edit-request-regression] multipart compatibility rules passed');
+function sourceBetween(source, startMarker, endMarker) {
+  const start = source.indexOf(startMarker);
+  const end = source.indexOf(endMarker, start + startMarker.length);
+  assert(start >= 0 && end > start, `source markers should exist: ${startMarker}`);
+  return source.slice(start, end);
+}
+
+// Exercise the actual mention mapper so a single @图2 request is remapped to
+// the first image slot after the selected reference list is narrowed.
+const mentionSource = sourceBetween(
+  homepageSource,
+  'function referenceMentionLabel',
+  'function appendReferenceEditInstructions'
+);
+const mentionContext = {
+  Array,
+  Map,
+  Number,
+  Object,
+  Set,
+  String,
+  uid: () => 'test-mention'
+};
+mentionContext.globalThis = mentionContext;
+vm.runInNewContext(
+  `${mentionSource}\nthis.__mentionFns = { selectedReferencesForImageGeneration, remapReferenceMentionTokens, resolveComposerPromptForRequest };`,
+  mentionContext
+);
+const mentionFns = mentionContext.__mentionFns;
+const referenceFixtures = [
+  { id: 'ref-1', blobId: 'original-1', originalBlobId: 'original-1' },
+  { id: 'ref-2', blobId: 'original-2', originalBlobId: 'original-2' }
+];
+const secondReferenceToken = {
+  id: 'mention-2',
+  refId: 'ref-2',
+  start: 0,
+  end: 3,
+  text: '@图2',
+  selected: true,
+  removed: false
+};
+const secondOnly = mentionFns.selectedReferencesForImageGeneration(
+  referenceFixtures,
+  [secondReferenceToken],
+  { prompt: '@图2' }
+);
+assert.deepStrictEqual(secondOnly.map((ref) => ref.id), ['ref-2'], '@图2-only should select only the second reference');
+const remappedSecond = mentionFns.remapReferenceMentionTokens([secondReferenceToken], secondOnly)[0];
+assert.strictEqual(remappedSecond.index, 0, 'a standalone @图2 should become request image index 0');
+assert.strictEqual(remappedSecond.label, '@图1', 'a narrowed @图2 request should expose the first request-slot label');
+assert.strictEqual(
+  mentionFns.resolveComposerPromptForRequest('@图2', secondOnly, [secondReferenceToken]),
+  '[image 1]',
+  'a standalone @图2 should resolve to [image 1] for the single-image request'
+);
+
+const sendGenerationSource = sourceBetween(
+  homepageSource,
+  'async function sendGenerationRequest',
+  'function providerPayload'
+);
+assert(
+  /const blobId = provider === 'openai'[\s\S]*index === 0 \? originalBlobId : compositeBlobId/.test(sendGenerationSource),
+  'OpenAI must send the first marked reference original and later marked references as composites'
+);
+assert(
+  /: \(marked \? compositeBlobId : \(ref\?\.blobId \|\| originalBlobId\)\)/.test(sendGenerationSource),
+  'Google/xAI must send the marked composite image rather than an independent mask'
+);
+assert(
+  /fd\.append\(imageFieldName, blob, filename\)/.test(sendGenerationSource)
+    && /if \(prepared\.mask && openAiImagesProfile\(profile\)\) fd\.append\('mask', prepared\.mask, 'mask\.png'\)/.test(sendGenerationSource),
+  'OpenAI edits must use image[] for references and append one transparent mask field'
+);
+assert(
+  /const hasColorAnnotation = provider !== 'openai'/.test(homepageSource)
+    && /const colorLine = '请将参考图中的彩色标注区域作为需要修改的区域，仅编辑这些区域。'/.test(homepageSource)
+    && /if \(hasColorAnnotation && !next\.includes\(colorLine\)\)/.test(homepageSource),
+  'Google/xAI annotated composites must carry an explicit marked-region prompt instruction'
+);
+
+// Closed shapes fill the target canvas (the UI can render a visual outline),
+// while line/arrow/text remain annotation-only and never become OpenAI mask input.
+const shapeSource = sourceBetween(homepageSource, 'function drawMaskShape', 'function drawAnnotationShape');
+assert(/tool === 'rect'[\s\S]*context\.fillRect/.test(shapeSource), 'rectangles must cover their interior in the target mask');
+assert(/tool === 'ellipse'[\s\S]*context\.fill\(\)/.test(shapeSource), 'ellipses must cover their interior in the target mask');
+assert(/tool === 'polygon'[\s\S]*context\.fill\(\)/.test(shapeSource), 'polygons must cover their interior in the target mask');
+const drawingSource = sourceBetween(homepageSource, 'function installCanvasDrawing', 'function maskSnapshot');
+assert(
+  /\(tool === 'line' \|\| tool === 'arrow'\)[\s\S]{0,240}annotationCtx[\s\S]{0,240}drawAnnotationShape\(annotationCtx/.test(drawingSource)
+    && /if \(tool === 'text'\)[\s\S]*pendingText/.test(drawingSource),
+  'line/arrow/text tools must stay on the annotation canvas instead of becoming independent OpenAI targets'
+);
+const maskPixelSource = sourceBetween(homepageSource, 'function openAiMaskPixelsFromOverlay', 'function overlayPixelsFromOpenAiMask');
+const maskPixelContext = { Uint8ClampedArray };
+maskPixelContext.globalThis = maskPixelContext;
+vm.runInNewContext(`${maskPixelSource}\nthis.__openAiMaskPixelsFromOverlay = openAiMaskPixelsFromOverlay;`, maskPixelContext);
+const overlayPixels = new Uint8ClampedArray([
+  239, 68, 68, 220, 0, 0, 0, 0,
+  0, 0, 0, 0, 239, 68, 68, 220
+]);
+const openAiMaskPixels = maskPixelContext.__openAiMaskPixelsFromOverlay(overlayPixels, 2, 2);
+assert.strictEqual(openAiMaskPixels[3], 0, 'selected overlay pixels must become transparent target-mask pixels');
+assert.strictEqual(openAiMaskPixels[7], 255, 'unselected overlay pixels must remain opaque target-mask pixels');
+
+assert(
+  /normalizedOriginal\.info\.width !== normalizedLayer\.info\.width/.test(homepageSource)
+    && /IMAGE_EDIT_MASK_DIMENSIONS_MISMATCH/.test(homepageSource),
+  'mask preflight must require dimensions matching the source image and report a dedicated error'
+);
+assert(
+  /(?:OPENAI_MASK_[A-Z_]*LIMIT|IMAGE_EDIT_MASK_TOO_LARGE)[\s\S]{0,500}(?:prepared\.mask|requestMask|maskBlob)/.test(homepageSource)
+    || /(?:prepared\.mask|requestMask|maskBlob)[\s\S]{0,500}(?:OPENAI_MASK_[A-Z_]*LIMIT|IMAGE_EDIT_MASK_TOO_LARGE)/.test(homepageSource),
+  'OpenAI masks must have a dedicated early size preflight rather than only the generic image limit'
+);
+assert(
+  /const PROXY_REQUEST_BODY_LIMIT = 64 \* 1024 \* 1024/.test(proxySource)
+    && /function requestBodyWithLimit\(request, maxBytes = PROXY_REQUEST_BODY_LIMIT\)/.test(proxySource)
+    && /PROXY_REQUEST_BODY_TOO_LARGE/.test(proxySource)
+    && /const boundedRequest = localOriginalBody \? ctx\.request : requestBodyWithLimit\(ctx\.request\)/.test(proxySource),
+  'the proxy must diagnose requests above 64MB before forwarding or parsing them'
+);
+assert(
+  /maskFormat !== OPENAI_MASK_FORMAT/.test(homepageSource)
+    && /openAiMaskBlobFromLegacyOverlayBlob/.test(homepageSource)
+    && /legacyCompositeId|legacyOriginalBlobId/.test(homepageSource),
+  'legacy overlay masks and legacy reference snapshots must remain readable through the compatibility path'
+);
+
+console.log('[image-edit-request-regression] provider mask request and multipart compatibility rules passed');

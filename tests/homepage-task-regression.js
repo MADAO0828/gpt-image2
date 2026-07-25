@@ -267,16 +267,23 @@ const singleMaskEditorHtml = hooks.renderMaskEditor();
 const singleMaskToolValues = [...singleMaskEditorHtml.matchAll(/data-action="mask-tool"[^>]*data-tool="([^"]+)"/g)].map((match) => match[1]);
 ok(!singleMaskEditorHtml.includes('mask-topbar'), 'mask editor should use the full-screen layout without the removed topbar');
 ok(singleMaskToolValues.join(',') === 'move,rect,ellipse,line,arrow,brush,polygon,text,fill,crop,eraser', 'mask editor tools should keep the Center/Move/Rect/Ellipse/Line/Arrow/Brush/Polygon/Text/Fill/Crop/Eraser order');
-ok(singleMaskEditorHtml.includes('mask-draw-options')
+const maskPanelTools = [...singleMaskEditorHtml.matchAll(/data-mask-panel="([^"]+)"/g)].map((match) => match[1]);
+ok(maskPanelTools.join(',') === 'brush,rect,ellipse,line,arrow,polygon'
+  && singleMaskEditorHtml.includes('mask-draw-options')
   && /class="mask-size-slider" type="range" min="1" max="100" step="1"/.test(singleMaskEditorHtml)
-  && singleMaskEditorHtml.includes('--mask-cursor-color:#ef4444'), 'brush mode should expose the red default and a 1-100 size range');
+  && singleMaskEditorHtml.includes('--mask-cursor-color:#ef4444')
+  && singleMaskEditorHtml.includes('id="maskBaseCanvas" data-mask-layer="interaction"'), 'mask tools should expose color/thickness panels for brush and every shape tool, with the base canvas as the interaction layer');
 ok(!singleMaskEditorHtml.includes('class="mask-refs"'), 'single-reference mask editing should omit the thumbnail rail');
 hooks.openMaskEditor('missing-mask-ui-ref');
 ok(vm.runInContext("state.maskEditor?.activeRefId === 'mask-ui-single'", sandbox), 'opening the mask editor with an invalid reference ID should use the first real reference');
 hooks.setTestState({ maskEditorReady: true });
 hooks.setMaskTool('rect');
 const nonBrushMaskEditorHtml = hooks.renderMaskEditor();
-ok(!nonBrushMaskEditorHtml.includes('mask-draw-options') && !nonBrushMaskEditorHtml.includes('mask-size-slider'), 'brush controls should only render while the brush tool is active');
+const maskPanelVisibility = Object.fromEntries([...nonBrushMaskEditorHtml.matchAll(/data-mask-panel="([^"]+)"[^>]*style="display:([^"]*)"/g)].map((match) => [match[1], match[2]]));
+ok(maskPanelVisibility.rect === undefined
+  && maskPanelVisibility.brush === 'none'
+  && nonBrushMaskEditorHtml.includes('data-mask-panel="rect"')
+  && nonBrushMaskEditorHtml.includes('aria-label="矩形设置"'), 'selecting a shape should show its own usable panel while hiding the brush panel');
 hooks.setTestState({
   references: [
     { id: 'mask-ui-single', name: 'single.png', blobId: 'ref-blob', originalBlobId: 'ref-blob' },
@@ -518,6 +525,20 @@ ok(saveMaskSource.includes('previous.forEach(({ ref, snapshot }) => Object.assig
   && saveMaskSource.includes('catch (error) {\n    persistError = error;')
   && saveMaskSource.includes('遮罩状态保存失败，请重试'),
   'mask save must roll back metadata and newly-created Blobs when the committed state write fails');
+const maskSaveSuccessOffset = saveMaskSource.indexOf('if (committed !== true && committed !== \'idb\')');
+const maskSaveSuccessSource = maskSaveSuccessOffset >= 0 ? saveMaskSource.slice(maskSaveSuccessOffset) : '';
+const maskSaveSuccessToastOffset = maskSaveSuccessSource.lastIndexOf('toast(');
+const maskSaveSuccessTail = maskSaveSuccessToastOffset >= 0 ? maskSaveSuccessSource.slice(maskSaveSuccessToastOffset) : '';
+ok(saveMaskSource.includes('ref.compositedBlobId = nextCompositedBlobId')
+  && saveMaskSource.includes('ref.blobId = editor.mode === \'agent-attachment\' ? nextOriginalBlobId : nextCompositedBlobId')
+  && saveMaskSource.includes('revokeAgentAttachmentObjectUrls(ref, agentAttachmentPreviewKey(ref))')
+  && saveMaskSource.includes('revokeReferenceObjectUrls(ref)')
+  && maskSaveSuccessTail.includes('render()'),
+  'a committed mask save must publish the new composite/display Blob and refresh the preview in the success path');
+ok(saveMaskSource.includes('oldBlobIds.push(ref.maskBlobId, ref.annotationBlobId, ref.compositedBlobId, ref.originalBlobId, ref.blobId)')
+  && saveMaskSource.includes('createdBlobIds.push(id)')
+  && saveMaskSource.includes('deleteUnreferencedBlobIds(oldIds)'),
+  'mask save cleanup must protect and then reclaim target, annotation, original, composite, and legacy display Blob IDs transactionally');
 const cropConfirmSource = source.slice(source.indexOf('async function confirmMaskCrop('), source.indexOf('async function persistCanvasToRefDraft('));
 ok(cropConfirmSource.includes('cropCanvasRegion(base')
   && cropConfirmSource.includes('cropCanvasRegion(canvas')
@@ -530,6 +551,97 @@ ok(prepareMaskSource.includes('first.ref.maskFormat !== OPENAI_MASK_FORMAT')
   'legacy color overlay masks must be converted to OpenAI alpha semantics only at send time');
 ok(source.includes('maskBaseCanvas') && source.includes('maskCanvas') && source.includes('maskAnnotationCanvas'),
   'mask editor must preserve separate base, mask, and annotation canvas layers');
+const maskRenderSource = source.slice(source.indexOf('function renderMaskEditor('), source.indexOf('function bindTransientEvents('));
+const maskDrawingSource = source.slice(source.indexOf('function installCanvasDrawing('), source.indexOf('function maskSnapshot('));
+const maskShapeSource = source.slice(source.indexOf('function drawMaskShape('), source.indexOf('function fillMaskRegion('));
+const maskAnnotationShapeSource = source.slice(source.indexOf('function drawAnnotationShape('), source.indexOf('function fillMaskRegion('));
+ok(maskRenderSource.includes('maskPreviewCanvas')
+  && maskRenderSource.includes('maskCanvas')
+  && maskRenderSource.includes('maskAnnotationCanvas')
+  && maskRenderSource.includes('data-mask-layer="interaction"'),
+  'mask editor markup must expose distinct target, shape-preview, and annotation canvas layers');
+ok(maskDrawingSource.includes('pendingPolygon')
+  && maskDrawingSource.includes('pointercancel')
+  && /event\.key\s*===\s*[\'\"]Enter[\'\"]/.test(maskDrawingSource)
+  && /event\.key\s*===\s*[\'\"]Escape[\'\"]/.test(maskDrawingSource)
+  && /polygonPoints\s*\.length\s*>=\s*3/.test(maskDrawingSource),
+  'polygon drawing must use an explicit pending state with first-point/Enter completion and Escape/pointercancel cancellation');
+ok(maskDrawingSource.includes('closePath()')
+  && /polygonPoints\[0\][\s\S]{0,900}(?:distance|threshold|close)/i.test(maskDrawingSource)
+  && /pointercancel[\s\S]{0,900}(?:pendingPolygon|polygonPoints\s*=\s*\[\]|cancel)/i.test(maskDrawingSource),
+  'polygon drawing must close from the first point and clear pending points without committing on pointercancel');
+ok(maskShapeSource.includes("tool === 'rect'")
+  && maskShapeSource.includes("tool === 'ellipse'")
+  && maskShapeSource.includes("tool === 'polygon'")
+  && maskShapeSource.includes('fill'),
+  'rect, ellipse, and polygon targets must retain filled edit-mask semantics on the hidden target layer');
+ok(maskAnnotationShapeSource.includes("tool === 'rect'")
+  && maskAnnotationShapeSource.includes("tool === 'ellipse'")
+  && maskAnnotationShapeSource.includes("tool === 'polygon'")
+  && maskAnnotationShapeSource.includes('stroke')
+  && !/tool\s*===\s*[\'\"](?:rect|ellipse|polygon)[\'\"][\s\S]{0,700}\bfill\s*\(/.test(maskAnnotationShapeSource),
+  'rect, ellipse, and polygon visual previews must be outline strokes rather than solid visible fills');
+const derivedOverlaySource = source.slice(source.indexOf('function drawVisibleMaskOverlayFromTarget('), source.indexOf('function drawDataUrlIntoCanvas('));
+ok(derivedOverlaySource.includes('derivedTargetOverlay')
+  && derivedOverlaySource.includes('MASK_DERIVED_OVERLAY_ALPHA')
+  && derivedOverlaySource.includes('matchesDerived')
+  && /targetSelected[\s\S]{0,900}output\[offset \+ 3\]\s*=\s*0/.test(derivedOverlaySource),
+  'legacy target-only masks must track target-derived visible overlays and clear only matching pixels when fill removes a region');
+const previousMaskEditorForDerivedOverlay = vm.runInContext('state.maskEditor', sandbox);
+const makeDerivedOverlayCanvas = (width, height, initialPixels) => {
+  let pixels = new Uint8ClampedArray(initialPixels);
+  const context = {
+    getImageData: () => ({ data: new Uint8ClampedArray(pixels) }),
+    createImageData: (nextWidth, nextHeight) => ({ data: new Uint8ClampedArray(nextWidth * nextHeight * 4), width: nextWidth, height: nextHeight }),
+    putImageData: (image) => { pixels = new Uint8ClampedArray(image.data); },
+    clearRect: () => { pixels = new Uint8ClampedArray(width * height * 4); }
+  };
+  return { width, height, getContext: () => context, readPixels: () => pixels };
+};
+const derivedTargetCanvas = makeDerivedOverlayCanvas(2, 1, [255, 0, 0, 255, 0, 0, 0, 0]);
+const derivedAnnotationCanvas = makeDerivedOverlayCanvas(2, 1, [0, 0, 0, 0, 0, 0, 255, 255]);
+vm.runInContext("state.maskEditor = { color: '#ef4444', crop: null, derivedTargetOverlay: null };", sandbox);
+hooks.drawVisibleMaskOverlayFromTarget(derivedAnnotationCanvas.getContext('2d'), derivedTargetCanvas, 2, 1, '#ef4444');
+const annotationWithDerivedAndAuxiliary = derivedAnnotationCanvas.readPixels();
+annotationWithDerivedAndAuxiliary[4] = 0;
+annotationWithDerivedAndAuxiliary[5] = 0;
+annotationWithDerivedAndAuxiliary[6] = 255;
+annotationWithDerivedAndAuxiliary[7] = 255;
+derivedAnnotationCanvas.getContext('2d').putImageData({ data: annotationWithDerivedAndAuxiliary }, 0, 0);
+hooks.fillMaskRegion(derivedTargetCanvas, { x: 0, y: 0 });
+hooks.syncVisibleTargetOverlay(derivedAnnotationCanvas, derivedTargetCanvas, '#ef4444');
+const derivedClearedPixels = derivedTargetCanvas.readPixels();
+const derivedClearedAnnotation = derivedAnnotationCanvas.readPixels();
+ok(derivedClearedPixels[3] === 0
+  && derivedClearedAnnotation[3] === 0
+  && derivedClearedAnnotation[7] === 255,
+  'fill clear should remove a target-derived overlay pixel while preserving an auxiliary annotation pixel in the same canvas');
+vm.runInContext('state.maskEditor = null', sandbox);
+void previousMaskEditorForDerivedOverlay;
+const maskCancelSource = source.slice(source.indexOf('function cancelMaskEditor('), source.indexOf('async function switchMaskRef('));
+const escapeHandlerSource = source.slice(source.indexOf("document.addEventListener('keydown'"), source.indexOf("document.addEventListener('click'"));
+ok(/state\.maskEditor[^\n]{0,120}saving/.test(escapeHandlerSource)
+  || /editor\.saving/.test(maskCancelSource),
+  'Escape must not cancel or discard a mask editor while its save transaction is still in progress');
+const maskHistorySource = source.slice(source.indexOf('function pushMaskHistory('), source.indexOf('function restoreCanvasDataUrl('));
+ok(maskHistorySource.includes('activeRefId')
+  && /(?:history|reference)[A-Za-z]*Epoch/i.test(maskHistorySource)
+  && source.slice(source.indexOf('async function maskUndo('), source.indexOf('async function maskRedo(')).includes('activeRefId')
+  && source.slice(source.indexOf('async function maskRedo('), source.indexOf('function restoreCanvasDataUrl(')).includes('activeRefId'),
+  'mask history undo/redo must stay bound to the current reference and its epoch instead of crossing references');
+ok(homeCss.includes('.mask-layer')
+  && homeCss.includes('.mask-body')
+  && homeCss.includes('.mask-canvas-wrap')
+  && homeCss.includes('.mask-canvas-shell')
+  && homeCss.includes('.mask-tool-options')
+  && homeCss.includes('#maskBaseCanvas')
+  && homeCss.includes('data-mask-tool="move"')
+  && homeCss.includes('.mask-editor-resize-handle')
+  && homeCss.includes('[data-mask-resize-handle]')
+  && homeCss.includes('.mask-input-resize-handle')
+  && homeCss.includes('.mask-draw-options')
+  && homeCss.includes('.mask-tool-row'),
+  'mask editor CSS hooks must remain present for full-screen layout, canvas sizing, resize handles, brush controls, and toolbar scrolling');
 ok(!/\b(alert|confirm|prompt)\s*\(/.test(source)
   && source.includes('pendingText')
   && source.includes('mask-text-input')
@@ -1211,6 +1323,129 @@ const orderedRefs = hooks.selectedReferencesForImageGeneration(generationRefs, o
 ok(orderedRefs.map((ref) => ref.id).join(',') === 'generation-ref-a,generation-ref-b'
   && hooks.resolveComposerPromptForRequest(orderedPrompt, orderedRefs, orderedTokens) === '  [image 2] [image 1]',
   'joint @图1/@图2 references should keep the original image-array order while preserving each mention\'s placeholder mapping');
+const hydrateImagesSource = source.slice(source.indexOf('async function hydrateImages('), source.indexOf('function imageFilenameExtension('));
+const finishGalleryScrollSource = source.slice(source.indexOf('function finishGalleryScroll('), source.indexOf('function finishGalleryScrollForNode('));
+ok((hydrateImagesSource.match(/img\[data-task-ref-task-id\]:not\(\[src\]\)/g) || []).length >= 2
+  && hydrateImagesSource.includes('if (galleryOnly)')
+  && hydrateImagesSource.includes('hydrateTaskReferenceImage(img, task')
+  && hydrateImagesSource.includes('const expectedBlobId = String(ref.blobId || \'\')')
+  && hydrateImagesSource.includes('state.references.find((item) => String(item?.id || \'\') === refId)?.blobId')
+  && hydrateImagesSource.includes('img?.dataset?.refId')
+  && finishGalleryScrollSource.includes('scheduleGalleryHydrationFlush()')
+  && finishGalleryScrollSource.includes('forceHydrate: true'),
+  'task-reference images must hydrate in both gallery-only virtual and full non-virtual paths after the gallery scroll idle boundary');
+const taskRefPreviewOriginalId = 'task-ref-preview-original';
+const taskRefPreviewCompositeId = 'task-ref-preview-composite';
+const taskRefPreviewOriginalBlob = new Blob(['immutable-original-layer'], { type: 'image/png' });
+const taskRefPreviewCompositeBlob = new Blob(['edited-composite-layer'], { type: 'image/png' });
+fakeIndexedDbStore.set(taskRefPreviewOriginalId, taskRefPreviewOriginalBlob);
+fakeIndexedDbStore.set(taskRefPreviewCompositeId, taskRefPreviewCompositeBlob);
+const editedPreviewTask = {
+  id: 'task-ref-edited-preview',
+  referenceSnapshots: [{
+    id: 'task-ref-edited-1',
+    name: 'edited-reference.png',
+    blobId: taskRefPreviewCompositeId,
+    compositedBlobId: taskRefPreviewCompositeId,
+    originalBlobId: taskRefPreviewOriginalId
+  }]
+};
+const editedPreviewImage = {
+  dataset: {},
+  isConnected: true,
+  src: '',
+  removeAttribute(name) { delete this.dataset[name.replace(/^data-/, '').replace(/-([a-z])/g, (_, char) => char.toUpperCase())]; },
+  closest: () => ({ classList: { add: () => {}, remove: () => {} } })
+};
+const editedPreviewHydrated = await hooks.hydrateTaskReferenceImage(editedPreviewImage, editedPreviewTask, 0);
+ok(editedPreviewHydrated === true
+  && createdObjectUrlBlobs.get(editedPreviewImage.src) === taskRefPreviewCompositeBlob,
+  'task-reference hydration should use the edited/composited preview Blob by default');
+const editedPreviewBadgeHtml = hooks.renderReferenceBadge(editedPreviewTask);
+const editedPreviewDetailHtml = hooks.renderTaskReferenceStrip(editedPreviewTask);
+const editedPreviewOriginalViewerHtml = hooks.renderViewer({
+  kind: 'reference',
+  taskId: editedPreviewTask.id,
+  refIndex: 0,
+  blobId: taskRefPreviewOriginalId,
+  name: 'edited-reference.png'
+});
+ok(editedPreviewBadgeHtml.includes('data-image-kind="task-reference"')
+  && editedPreviewDetailHtml.includes('data-image-kind="task-reference"')
+  && editedPreviewOriginalViewerHtml.includes('data-image-kind="task-reference-original"')
+  && editedPreviewOriginalViewerHtml.includes(`data-blob-id="${taskRefPreviewOriginalId}"`),
+  'task detail should expose edited previews and a separate original-image viewer entry point');
+const agentAttachmentHydrateSource = source.slice(source.indexOf('async function hydrateAgentAttachmentImage('), source.indexOf('async function getReferenceBlobWithFallback('));
+const agentAttachmentTraySource = source.slice(source.indexOf('function renderAgentAttachmentTray('), source.indexOf('function formatFileSize('));
+ok(agentAttachmentHydrateSource.includes('agentAttachmentPreviewKey')
+  && agentAttachmentHydrateSource.includes('agentAttachmentDisplayBlobId')
+  && agentAttachmentTraySource.includes('agentAttachmentObjectUrl')
+  && agentAttachmentTraySource.includes('data-agent-attachment-id'),
+  'Agent attachment hydration and tray rendering must share one stable attachment URL key and display Blob selector');
+const agentPreviewAttachment = {
+  id: 'agent-preview-key',
+  kind: 'image',
+  name: 'agent-preview.png',
+  type: 'image/png',
+  blobId: 'agent-preview-base',
+  originalBlobId: 'agent-preview-original',
+  compositedBlobId: 'agent-preview-composite'
+};
+fakeIndexedDbStore.set(agentPreviewAttachment.compositedBlobId, new Blob(['agent-composite-preview'], { type: 'image/png' }));
+const agentPreviewUrl = TestURL.createObjectURL(fakeIndexedDbStore.get(agentPreviewAttachment.compositedBlobId));
+const agentPreviewKey = `agent:${agentPreviewAttachment.id}:${agentPreviewAttachment.compositedBlobId}`;
+vm.runInContext(`state.refUrls.set(${JSON.stringify(agentPreviewKey)}, ${JSON.stringify(agentPreviewUrl)});`, sandbox);
+const agentPreviewTrayHtml = hooks.renderAgentAttachmentTray([agentPreviewAttachment], false);
+ok(agentPreviewTrayHtml.includes(`src="${agentPreviewUrl}"`)
+  && agentPreviewTrayHtml.includes(`data-agent-attachment-id="${agentPreviewAttachment.id}"`),
+  'Agent attachment tray should immediately render the same composite preview URL used by attachment hydration');
+vm.runInContext(`state.refUrls.delete(${JSON.stringify(agentPreviewKey)});`, sandbox);
+const agentUrlCleanupAttachment = { id: 'agent-url-cleanup', compositedBlobId: 'agent-url-current' };
+const agentUrlCleanupCurrentKey = `agent:${agentUrlCleanupAttachment.id}:${agentUrlCleanupAttachment.compositedBlobId}`;
+const agentUrlCleanupStaleKey = `agent:${agentUrlCleanupAttachment.id}:agent-url-stale`;
+const agentUrlCleanupCurrentUrl = TestURL.createObjectURL(new Blob(['agent-url-current'], { type: 'image/png' }));
+const agentUrlCleanupStaleUrl = TestURL.createObjectURL(new Blob(['agent-url-stale'], { type: 'image/png' }));
+vm.runInContext(`state.refUrls.set(${JSON.stringify(agentUrlCleanupCurrentKey)}, ${JSON.stringify(agentUrlCleanupCurrentUrl)}); state.refUrls.set(${JSON.stringify(agentUrlCleanupStaleKey)}, ${JSON.stringify(agentUrlCleanupStaleUrl)}); revokeAgentAttachmentObjectUrls(${JSON.stringify(agentUrlCleanupAttachment)}, ${JSON.stringify(agentUrlCleanupCurrentKey)});`, sandbox);
+ok(vm.runInContext(`state.refUrls.has(${JSON.stringify(agentUrlCleanupCurrentKey)})`, sandbox)
+  && !vm.runInContext(`state.refUrls.has(${JSON.stringify(agentUrlCleanupStaleKey)})`, sandbox)
+  && revokedObjectUrls.includes(agentUrlCleanupStaleUrl)
+  && !revokedObjectUrls.includes(agentUrlCleanupCurrentUrl),
+  'Agent mask save URL cleanup must revoke only stale keys for the same attachment and preserve the current display URL');
+const mentionTransportRefs = [
+  { ...generationRefs[0], blobId: 'mention-transport-a', originalBlobId: 'mention-transport-a' },
+  { ...generationRefs[1], blobId: 'mention-transport-b', originalBlobId: 'mention-transport-b' }
+];
+fakeIndexedDbStore.set('mention-transport-a', new Blob(['mention-a'], { type: 'image/png' }));
+fakeIndexedDbStore.set('mention-transport-b', new Blob(['mention-b'], { type: 'image/png' }));
+const previousMentionFetch = sandbox.fetch;
+let mentionTransportRequest = null;
+sandbox.fetch = async (url, options) => {
+  mentionTransportRequest = { url, options };
+  return {
+    ok: true,
+    status: 200,
+    headers: { get: () => 'application/json' },
+    text: async () => JSON.stringify({ data: [] })
+  };
+};
+await hooks.sendGenerationRequest('edit @图2', { format: 'png', count: 1 }, {
+  profile: { id: 'mention-openai', name: 'Mention OpenAI', provider: 'openai', apiMode: 'images', model: 'gpt-image-2' },
+  references: [mentionTransportRefs[1]]
+});
+const secondOnlyImageParts = mentionTransportRequest?.options?.body?.getAll?.('image[]') || [];
+ok(secondOnlyImageParts.length === 1 && await secondOnlyImageParts[0]?.text?.() === 'mention-b',
+  'a single @图2 edit should submit exactly the selected second reference as image[]');
+mentionTransportRequest = null;
+await hooks.sendGenerationRequest('edit @图2 @图1', { format: 'png', count: 1 }, {
+  profile: { id: 'mention-openai', name: 'Mention OpenAI', provider: 'openai', apiMode: 'images', model: 'gpt-image-2' },
+  references: mentionTransportRefs
+});
+const orderedImageParts = mentionTransportRequest?.options?.body?.getAll?.('image[]') || [];
+ok(orderedImageParts.length === 2
+  && await orderedImageParts[0]?.text?.() === 'mention-a'
+  && await orderedImageParts[1]?.text?.() === 'mention-b',
+  'multi-reference edit image[] fields should preserve the stable reference-array order');
+sandbox.fetch = previousMentionFetch;
 const invalidMentionPrompt = '  修改 @图9';
 const invalidMentionTokens = [{ id: 'generation-mention-invalid', refId: 'missing-reference', start: 5, end: 8, text: '@图9', selected: true, removed: false }];
 ok(hooks.selectedReferencesForImageGeneration(generationRefs, invalidMentionTokens, { prompt: invalidMentionPrompt }).length === 2
@@ -4573,6 +4808,35 @@ ok(String(preservedTermsPayload.instructions).includes('保留用户输入中的
     const missingImg = { isConnected: true, dataset: { blobId: 'missing-hydration-blob' }, src: '', alt: '' };
     await hooks.hydrateBlobImage(missingImg, 'missing-hydration-blob');
     ok(missingImg.dataset.imageMissing === '1' && /本地图片缓存已丢失/.test(missingImg.alt), 'missing historical Blob must render an explicit cache-missing fallback instead of a silent blank image');
+  }
+
+  if (typeof hooks.hydrateImages === 'function') {
+    const previousQuerySelectorAllForRefHydration = sandbox.document.querySelectorAll;
+    const previousReferencesForRefHydration = vm.runInContext('state.references', sandbox);
+    const cachedSwitchReference = { id: 'hydrate-ref-cache-switch', blobId: 'hydrate-ref-cache-new', name: 'hydrate-ref-cache-switch.png' };
+    const cachedSwitchOldKey = `ref:${cachedSwitchReference.id}:hydrate-ref-cache-old`;
+    const cachedSwitchOldUrl = TestURL.createObjectURL(new Blob(['hydrate-ref-cache-old'], { type: 'image/png' }));
+    const cachedSwitchNewBlob = new Blob(['hydrate-ref-cache-new'], { type: 'image/png' });
+    const cachedSwitchImage = { isConnected: true, dataset: { refId: cachedSwitchReference.id }, src: '' };
+    fakeIndexedDbStore.set(cachedSwitchReference.blobId, cachedSwitchNewBlob);
+    sandbox.document.querySelectorAll = (selector) => String(selector).includes('img[data-ref-id]') ? [cachedSwitchImage] : [];
+    vm.runInContext(`state.references = [{ id: ${JSON.stringify(cachedSwitchReference.id)}, blobId: ${JSON.stringify(cachedSwitchReference.blobId)}, name: ${JSON.stringify(cachedSwitchReference.name)} }]; state.refUrls.set(${JSON.stringify(cachedSwitchOldKey)}, ${JSON.stringify(cachedSwitchOldUrl)});`, sandbox);
+    await hooks.hydrateImages();
+    ok(cachedSwitchImage.src
+      && createdObjectUrlBlobs.get(cachedSwitchImage.src) === cachedSwitchNewBlob
+      && revokedObjectUrls.includes(cachedSwitchOldUrl), 'reference hydration must invalidate a cached old ref Blob URL when the reference blobId changes before reading the new Blob');
+    const deferredReference = { id: 'hydrate-ref-race', blobId: 'hydrate-ref-old', name: 'hydrate-ref-race.png' };
+    const deferredRefImage = { isConnected: true, dataset: { refId: deferredReference.id }, src: '' };
+    fakeIndexedDbStore.set(deferredReference.blobId, new Blob(['hydrate-ref-old'], { type: 'image/png' }));
+    sandbox.document.querySelectorAll = (selector) => String(selector).includes('img[data-ref-id]') ? [deferredRefImage] : [];
+    vm.runInContext('state.references = [{ id: "hydrate-ref-race", blobId: "hydrate-ref-old", name: "hydrate-ref-race.png" }]; state.refUrls.delete("hydrate-ref-race");', sandbox);
+    setTimeout(() => { deferredReference.blobId = 'hydrate-ref-new'; vm.runInContext('state.references[0].blobId = "hydrate-ref-new";', sandbox); }, 0);
+    await hooks.hydrateImages();
+    ok(deferredRefImage.src === ''
+      && !vm.runInContext('state.refUrls.has("hydrate-ref-race")', sandbox), 'reference hydration must drop a deferred old-Blob result after save retargets the reference and must not write a stale preview URL');
+    sandbox.document.querySelectorAll = previousQuerySelectorAllForRefHydration;
+    sandbox.__previousRefHydrationReferences = previousReferencesForRefHydration;
+    vm.runInContext('state.references = globalThis.__previousRefHydrationReferences; delete globalThis.__previousRefHydrationReferences;', sandbox);
   }
 
   const sseText = [

@@ -1556,6 +1556,7 @@ button { cursor: pointer; }
   position: absolute;
   left: 4px;
   top: 23px;
+  pointer-events: none;
   padding: 1px 4px;
   border-radius: 999px;
   color: #fff;
@@ -4020,6 +4021,10 @@ button { cursor: pointer; }
   position: fixed;
   inset: 0;
   display: block;
+  width: 100vw;
+  height: 100dvh;
+  min-width: 0;
+  min-height: 0;
   padding: 0;
   overflow: hidden;
   isolation: isolate;
@@ -4030,6 +4035,8 @@ button { cursor: pointer; }
 .mask-body {
   position: absolute;
   inset: 0;
+  width: 100%;
+  height: 100%;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -4038,11 +4045,13 @@ button { cursor: pointer; }
   position: absolute;
   z-index: 12;
   top: 50%;
-  left: clamp(10px, 2.8vw, 34px);
+  left: 0;
   display: none;
-  width: 68px;
+  width: min(76px, calc(100vw - 16px));
   max-height: calc(100% - 168px);
-  transform: translateY(-50%);
+  box-sizing: border-box;
+  transform: translate3d(0, -50%, 0);
+  clip-path: inset(0 calc(100% - var(--mask-rail-hit-area, 14px)) 0 0);
   flex-direction: column;
   gap: 8px;
   overflow-x: hidden;
@@ -4053,6 +4062,25 @@ button { cursor: pointer; }
   background: rgba(255, 255, 255, .94);
   box-shadow: 0 12px 30px rgba(9, 15, 25, .2);
   scrollbar-width: thin;
+  transition: transform .2s var(--ease), clip-path .2s var(--ease), box-shadow .2s var(--ease), opacity .2s ease;
+  will-change: transform;
+}
+.mask-refs:focus-within,
+.mask-refs[data-expanded="true"],
+.mask-refs.is-expanded,
+.mask-refs.is-open,
+.mask-body.is-refs-open .mask-refs,
+.mask-body[data-refs-expanded="true"] .mask-refs {
+  transform: translate3d(0, -50%, 0);
+  clip-path: inset(0 0 0 0);
+  box-shadow: 0 16px 34px rgba(9, 15, 25, .26);
+}
+@media (hover: hover) {
+  .mask-refs:hover {
+    transform: translate3d(0, -50%, 0);
+    clip-path: inset(0 0 0 0);
+    box-shadow: 0 16px 34px rgba(9, 15, 25, .26);
+  }
 }
 .mask-refs:has(> .mask-ref:nth-child(2)),
 .mask-body:has(.mask-refs > .mask-ref:nth-child(2)) .mask-refs,
@@ -4070,6 +4098,12 @@ button { cursor: pointer; }
   border: 2px solid transparent;
   border-radius: 9px;
   background: #e7ebf1;
+}
+.mask-ref:focus-visible {
+  position: relative;
+  z-index: 1;
+  outline: 3px solid rgba(45, 127, 249, .52);
+  outline-offset: 2px;
 }
 .mask-ref.active { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(45, 127, 249, .18); }
 .mask-ref:disabled { opacity: .58; cursor: wait; }
@@ -4105,10 +4139,11 @@ button { cursor: pointer; }
   inset: 0;
   display: grid;
   place-items: center;
+  box-sizing: border-box;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  padding: clamp(28px, 5vh, 58px) clamp(16px, 7vw, 108px) clamp(138px, 21vh, 214px);
+  padding: max(24px, env(safe-area-inset-top)) clamp(12px, 2.5vw, 34px) calc(var(--mask-toolbar-reserve, clamp(122px, 18vh, 182px)) + env(safe-area-inset-bottom));
   background: transparent;
 }
 .mask-load-status {
@@ -4148,28 +4183,45 @@ button { cursor: pointer; }
   z-index: 2;
   display: grid;
   place-items: stretch;
-  max-width: 100%;
-  max-height: 100%;
-  cursor: none;
+  inline-size: auto;
+  block-size: auto;
+  width: auto !important;
+  height: auto !important;
+  max-inline-size: 100%;
+  max-block-size: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: visible;
+  cursor: default;
   transform-origin: top left;
 }
 .mask-canvas-shell canvas {
   display: block;
-  width: 100%;
-  height: 100%;
+  width: auto;
+  height: auto;
   max-width: 100%;
   max-height: 100%;
+  min-width: 0;
+  min-height: 0;
+  object-fit: contain;
   border-radius: 3px;
   background: #fff;
   box-shadow: 0 18px 48px rgba(9, 15, 25, .26), 0 0 0 1px rgba(255, 255, 255, .58);
 }
 #maskBaseCanvas { position: relative; z-index: 0; grid-area: 1 / 1; }
+#maskBaseCanvas {
+  pointer-events: auto;
+  touch-action: none;
+  cursor: default;
+}
 #maskCanvas {
   position: absolute;
   z-index: 1;
   inset: 0;
   width: 100%;
   height: 100%;
+  max-width: none;
+  max-height: none;
   background: transparent;
   touch-action: none;
 }
@@ -4179,9 +4231,26 @@ button { cursor: pointer; }
   inset: 0;
   width: 100%;
   height: 100%;
+  max-width: none;
+  max-height: none;
   pointer-events: none;
   background: transparent;
 }
+.mask-canvas-shell #maskCanvas,
+.mask-canvas-shell #maskAnnotationCanvas { box-shadow: none; }
+.mask-layer[data-mask-ready="0"] #maskBaseCanvas { cursor: wait; }
+.mask-canvas-shell[data-mask-tool="brush"] #maskBaseCanvas { cursor: crosshair; }
+.mask-canvas-shell[data-mask-tool="eraser"] #maskBaseCanvas { cursor: cell; }
+.mask-canvas-shell[data-mask-tool="move"] #maskBaseCanvas { cursor: grab; }
+.mask-canvas-shell[data-mask-tool="move"] #maskBaseCanvas:active { cursor: grabbing; }
+.mask-canvas-shell[data-mask-tool="text"] #maskBaseCanvas { cursor: text; }
+.mask-canvas-shell[data-mask-tool="fill"] #maskBaseCanvas { cursor: copy; }
+.mask-canvas-shell[data-mask-tool="crop"] #maskBaseCanvas,
+.mask-canvas-shell[data-mask-tool="rect"] #maskBaseCanvas,
+.mask-canvas-shell[data-mask-tool="ellipse"] #maskBaseCanvas,
+.mask-canvas-shell[data-mask-tool="line"] #maskBaseCanvas,
+.mask-canvas-shell[data-mask-tool="arrow"] #maskBaseCanvas,
+.mask-canvas-shell[data-mask-tool="polygon"] #maskBaseCanvas { cursor: crosshair; }
 .mask-cursor {
   position: absolute;
   z-index: 5;
@@ -4273,6 +4342,53 @@ button { cursor: pointer; }
   background: rgba(255, 255, 255, .97);
   box-shadow: 0 12px 28px rgba(9, 15, 25, .22);
 }
+.mask-input-shell,
+.mask-editor-input-shell,
+[data-mask-input-shell] {
+  position: relative;
+  min-width: 0;
+}
+.mask-editor-resize-handle,
+.mask-input-resize-handle,
+[data-mask-resize-handle] {
+  position: absolute;
+  z-index: 2;
+  top: 4px;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 4px;
+  padding: 0;
+  color: #758197;
+  background: transparent;
+  cursor: nwse-resize;
+  touch-action: none;
+  opacity: .72;
+  transition: color .16s ease, background-color .16s ease, opacity .16s ease;
+}
+.mask-editor-resize-handle::before,
+.mask-input-resize-handle::before,
+[data-mask-resize-handle]::before {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border-top: 2px solid currentColor;
+  border-right: 2px solid currentColor;
+  border-radius: 1px;
+}
+.mask-editor-resize-handle:hover,
+.mask-editor-resize-handle:focus-visible,
+.mask-input-resize-handle:hover,
+.mask-input-resize-handle:focus-visible,
+[data-mask-resize-handle]:hover,
+[data-mask-resize-handle]:focus-visible {
+  color: var(--accent);
+  background: rgba(45, 127, 249, .1);
+  opacity: 1;
+  outline: 2px solid rgba(45, 127, 249, .34);
+  outline-offset: 1px;
+}
 .mask-text-inline { grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; }
 .mask-text-inline label,
 .mask-text-editor label { display: grid; gap: 5px; font-size: 11px; font-weight: 760; }
@@ -4281,7 +4397,7 @@ button { cursor: pointer; }
 .mask-text-editor textarea {
   min-height: 52px;
   max-height: 120px;
-  resize: vertical;
+  resize: none;
   border: 1px solid #cfd6e0;
   border-radius: 7px;
   padding: 7px;
@@ -4322,12 +4438,13 @@ button { cursor: pointer; }
   position: absolute;
   z-index: 20;
   right: auto;
-  bottom: max(12px, env(safe-area-inset-bottom));
+  bottom: max(10px, env(safe-area-inset-bottom));
   left: 50%;
-  width: min(780px, calc(100vw - 24px));
-  max-width: calc(100vw - 24px);
+  width: min(780px, calc(100vw - 20px));
+  max-width: calc(100vw - 20px);
   min-width: 0;
   min-height: 50px;
+  box-sizing: border-box;
   transform: translateX(-50%);
   border: 1px solid rgba(17, 24, 39, .14);
   border-radius: 15px;
@@ -4341,8 +4458,11 @@ button { cursor: pointer; }
   justify-content: center;
   flex-wrap: nowrap;
   gap: 6px;
-  overflow: visible;
+  overflow-x: auto;
+  overflow-y: visible;
   padding: 8px 10px;
+  scrollbar-width: thin;
+  scrollbar-color: #c8d0dc transparent;
 }
 .mask-toolbar-compose {
   display: flex;
@@ -4351,6 +4471,7 @@ button { cursor: pointer; }
   gap: 7px;
   overflow: visible;
   padding: 8px 10px 9px;
+  --mask-toolbar-reserve: 126px;
 }
 .mask-tools > .mask-toolbar-compose {
   position: static;
@@ -4373,7 +4494,7 @@ button { cursor: pointer; }
 .mask-tool-row {
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 6px;
   min-width: 0;
   overflow-x: auto;
@@ -4381,6 +4502,7 @@ button { cursor: pointer; }
   padding: 1px 1px 2px;
   scrollbar-width: thin;
   scrollbar-color: #c8d0dc transparent;
+  box-shadow: inset 14px 0 10px -14px rgba(17, 24, 39, .7), inset -14px 0 10px -14px rgba(17, 24, 39, .7);
 }
 .mask-tool-row::-webkit-scrollbar { height: 4px; }
 .mask-tool-row::-webkit-scrollbar-thumb { border-radius: 999px; background: #c8d0dc; }
@@ -4391,7 +4513,7 @@ button { cursor: pointer; }
   width: 100%;
   min-height: 34px;
   max-height: 94px;
-  resize: vertical;
+  resize: none;
   overflow: auto;
   padding: 8px 10px;
   border: 1px solid #dce2ea;
@@ -4405,6 +4527,11 @@ button { cursor: pointer; }
 .mask-toolbar-compose textarea:focus,
 .mask-toolbar-compose .mask-prompt:focus,
 .mask-toolbar-compose .mask-prompt-input:focus { border-color: rgba(45, 127, 249, .62); background: #fff; outline: none; }
+.mask-editor-prompt { resize: none; }
+.mask-toolbar-compose > textarea:focus-visible,
+.mask-toolbar-compose textarea:focus-visible,
+.mask-toolbar-compose .mask-prompt:focus-visible,
+.mask-toolbar-compose .mask-prompt-input:focus-visible { outline: 3px solid rgba(45, 127, 249, .34); outline-offset: 2px; }
 .tool-button,
 .color-button {
   width: 32px;
@@ -4476,46 +4603,53 @@ button { cursor: pointer; }
   background: #f5f7fa;
   text-align: center;
 }
+.mask-tool-options,
 .mask-draw-options {
   position: absolute;
   z-index: 40;
   right: auto;
   bottom: calc(100% + 8px);
-  left: var(--mask-draw-options-left, clamp(218px, 36vw, 280px));
+  left: clamp(8px, var(--mask-draw-options-left, 8px), calc(100% - 8px));
   display: flex;
   align-items: center;
   gap: 12px;
-  max-width: calc(100vw - 32px);
+  width: max-content;
+  max-width: calc(100% - 16px);
   min-height: 56px;
-  overflow: visible;
+  overflow-x: auto;
+  overflow-y: hidden;
+  box-sizing: border-box;
   padding: 10px 12px;
   border: 1px solid rgba(17, 24, 39, .14);
   border-radius: 18px;
   background: #fff;
   box-shadow: 0 12px 28px rgba(9, 15, 25, .24);
-  transform: translateX(-50%);
+  transform: none;
   white-space: nowrap;
 }
+.mask-tool-options::after,
 .mask-draw-options::after {
   content: "";
   position: absolute;
   right: auto;
   bottom: -6px;
-  left: 50%;
+  left: 38px;
   width: 0;
   height: 0;
-  margin-left: -6px;
+  margin-left: 0;
   border-top: 6px solid #fff;
   border-right: 6px solid transparent;
   border-left: 6px solid transparent;
 }
 .mask-draw-colors { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.mask-tool-options .color-button,
 .mask-draw-options .color-button {
   width: 30px;
   min-width: 30px;
   height: 30px;
   border-color: rgba(17, 24, 39, .18);
 }
+.mask-tool-options .color-button.active,
 .mask-draw-options .color-button.active {
   outline: none;
   box-shadow: 0 0 0 2px #fff, 0 0 0 4px #ef4444;
@@ -4647,8 +4781,8 @@ button { cursor: pointer; }
   .workflow-settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .mask-tools,
   .mask-toolbar-compose {
-    width: min(780px, calc(100vw - 24px));
-    max-width: calc(100vw - 24px);
+    width: min(780px, calc(100vw - 20px));
+    max-width: calc(100vw - 20px);
     margin: 0;
   }
 }
@@ -4899,15 +5033,18 @@ button { cursor: pointer; }
   .prompt-list { grid-template-columns: 1fr; }
   .size-grid { grid-template-columns: 1fr; }
   .mask-body { inset: 0; }
-  .mask-canvas-wrap { padding: 20px 10px 128px; }
+  .mask-canvas-wrap {
+    padding: max(16px, env(safe-area-inset-top)) 8px calc(var(--mask-toolbar-reserve, 158px) + env(safe-area-inset-bottom));
+  }
   .mask-refs {
     top: 50%;
     right: auto;
     bottom: auto;
-    left: 10px;
-    width: 58px;
+    left: 0;
+    width: min(64px, calc(100vw - 12px));
     max-height: calc(100% - 152px);
-    transform: translateY(-50%);
+    transform: translate3d(0, -50%, 0);
+    clip-path: inset(0 calc(100% - var(--mask-rail-hit-area, 16px)) 0 0);
     flex-direction: column;
     gap: 7px;
     overflow-x: hidden;
@@ -4924,15 +5061,19 @@ button { cursor: pointer; }
     border-radius: 13px;
   }
   .mask-tools { justify-content: flex-start; overflow-x: auto; padding: 7px 8px; }
+  .mask-toolbar-compose { --mask-toolbar-reserve: 158px; }
   .mask-toolbar-compose { padding: 7px 8px 8px; }
   .mask-tool-row { justify-content: flex-start; gap: 5px; scrollbar-width: none; }
-  .mask-tool-row::-webkit-scrollbar { display: none; }
+  .mask-tool-row::-webkit-scrollbar { height: 4px; }
+  .mask-tool-row::-webkit-scrollbar-thumb { border-radius: 999px; background: #c8d0dc; }
+  .mask-tool-options,
   .mask-draw-options {
-    left: var(--mask-draw-options-left, 210px);
-    max-width: calc(100vw - 32px);
+    left: clamp(8px, var(--mask-draw-options-left, 8px), calc(100% - 8px));
+    max-width: calc(100% - 16px);
     gap: 8px;
     padding: 8px;
   }
+  .mask-tool-options .color-button,
   .mask-draw-options .color-button { width: 28px; min-width: 28px; height: 28px; }
   .mask-size-slider { width: 92px; min-width: 92px; }
   .mask-crop-actions { top: 12px; }
