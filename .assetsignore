@@ -15,6 +15,8 @@ tmp-*/
 tmp-*
 node_modules/
 tests/node_modules/
+package.json
+package-lock.json
 scripts/
 tests/
 docs/

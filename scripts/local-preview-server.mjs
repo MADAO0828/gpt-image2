@@ -19,6 +19,7 @@ import {
   verifyPassword
 } from '../functions/_lib/password.js';
 import { createLocalUpstreamFetch } from './local-upstream-fetch.mjs';
+import { createMockUpstreamFetch } from './local-mock-upstream.mjs';
 import {
   checkLoginLimit,
   clearLoginFailures,
@@ -48,7 +49,13 @@ const MAX_SETTINGS_KEYS = 64;
 const MAX_SETTING_KEY_LENGTH = 96;
 const MAX_SETTING_VALUE_BYTES = 128 * 1024;
 const SETTING_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_.-]{0,95}$/;
-const LOCAL_UPSTREAM_FETCH = createLocalUpstreamFetch();
+// Opt-in offline mode: answer provider calls locally instead of paying for them.
+// Never enabled by default, so an unattended local run can still reach a real
+// provider exactly as before.
+const LOCAL_MOCK_UPSTREAM = /^(1|true|yes|on)$/i.test(String(process.env.LOCAL_MOCK_UPSTREAM || ''));
+const LOCAL_UPSTREAM_FETCH = LOCAL_MOCK_UPSTREAM
+  ? createMockUpstreamFetch({ log: (message) => console.log(`[${nowStamp()}] ${message}`) })
+  : createLocalUpstreamFetch();
 const pageRoutes = new Map([
   ['/', 'index.html'],
   ['/login', 'login.html'],
@@ -862,4 +869,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(port, host, () => {
   console.log(`[local-preview-server] listening on http://${host}:${port}/ (request body limit: ${MAX_REQUEST_BODY_BYTES} bytes)`);
+  console.log(LOCAL_MOCK_UPSTREAM
+    ? '[local-preview-server] LOCAL_MOCK_UPSTREAM=on — provider calls are answered offline; no requests leave this machine and nothing is billed.'
+    : '[local-preview-server] LOCAL_MOCK_UPSTREAM=off — provider calls reach the real upstream and are billed. Set LOCAL_MOCK_UPSTREAM=1 for offline runs.');
 });

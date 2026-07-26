@@ -28,6 +28,8 @@ Thumbs.db
 .env.local
 .dev.vars
 .dev.vars.*
+# The template carries no secrets and must be committed so a fresh clone has one.
+!.dev.vars.example
 
 # Cloudflare
 .wrangler/

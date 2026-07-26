@@ -1,0 +1,33 @@
+# Local-only secrets for `scripts/start-local-preview.ps1` and `wrangler pages dev`.
+# Copy to `.dev.vars` and fill in. `.dev.vars` is gitignored and excluded from
+# Pages uploads by `.assetsignore` — never commit the real file.
+#
+#   cp .dev.vars.example .dev.vars
+#
+# Production does NOT read this file. Production secrets live in Cloudflare Pages
+# Secrets and must be changed there, not here.
+
+# Required. Signs and verifies the `session` JWT.
+# Generate a fresh one per machine, e.g.:
+#   node -e "console.log(require('node:crypto').randomBytes(48).toString('base64url'))"
+# If this is unset, functions/_lib/auth.js falls back to a hardcoded development
+# secret, which is only acceptable together with ALLOW_INSECURE_JWT_FALLBACK=true.
+JWT_SECRET=
+
+# Local only. Permits the hardcoded development JWT fallback when JWT_SECRET is
+# missing. Keep "true" for local convenience; it must never be set in production.
+ALLOW_INSECURE_JWT_FALLBACK=true
+
+# Optional. Comma-separated upstream hosts the API proxy may reach.
+# Leave empty together with UPSTREAM_ALLOWLIST_REQUIRED=false (the wrangler.jsonc
+# default) to allow any host locally.
+# UPSTREAM_ALLOWED_HOSTS=api.openai.com,generativelanguage.googleapis.com
+
+# Optional. Set to "true" to enforce UPSTREAM_ALLOWED_HOSTS locally, matching a
+# hardened production configuration.
+# UPSTREAM_ALLOWLIST_REQUIRED=false
+
+# Optional. Serves deterministic fake image/model responses instead of calling a
+# real provider, so the full generation pipeline can be exercised locally for
+# free. See scripts/local-mock-upstream.mjs.
+# LOCAL_MOCK_UPSTREAM=false

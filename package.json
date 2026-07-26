@@ -1,0 +1,20 @@
+{
+  "name": "nexgen-gpt-image2",
+  "version": "0.0.0",
+  "private": true,
+  "description": "NexGen AI 工作台 — Cloudflare Pages Functions + D1. This manifest exists only to give the local workflow named entry points; the project has no build step and no runtime dependencies.",
+  "scripts": {
+    "bootstrap": "node scripts/bootstrap-local-db.mjs",
+    "db:status": "node scripts/bootstrap-local-db.mjs --status",
+    "start": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-local-preview.ps1 -NoBrowser",
+    "test": "node scripts/local-quality-gate.mjs",
+    "check": "node scripts/local-quality-gate.mjs",
+    "check:all": "node scripts/local-quality-gate.mjs --tier all",
+    "check:runtime": "node scripts/local-quality-gate.mjs --tier runtime",
+    "check:browser": "node scripts/local-quality-gate.mjs --tier browser",
+    "check:list": "node scripts/local-quality-gate.mjs --list"
+  },
+  "engines": {
+    "node": ">=22.7"
+  }
+}

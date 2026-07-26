@@ -3,7 +3,10 @@ param(
   [ValidateSet('Node', 'Wrangler', 'Auto')]
   [string]$Engine = 'Node',
   [switch]$NoBrowser,
-  [switch]$ReuseExisting
+  [switch]$ReuseExisting,
+  # Answer provider calls from scripts/local-mock-upstream.mjs instead of the real
+  # upstream, so the generation pipeline can be exercised without being billed.
+  [switch]$MockUpstream
 )
 
 $ErrorActionPreference = 'Stop'
@@ -22,6 +25,34 @@ $NodeOutLog = Join-Path $LogDir "node-local-$Stamp.out.log"
 $NodeErrLog = Join-Path $LogDir "node-local-$Stamp.err.log"
 $DefaultLocalJwtSecret = 'gpt-image2-local-preview-jwt-20260705'
 $LauncherMutexName = 'Local\NexGen-GPT-Image2-Local-Preview-8788'
+
+# Only `wrangler pages dev` reads .dev.vars natively. The default Node engine
+# would otherwise silently fall back to $DefaultLocalJwtSecret, which is committed
+# to this repository, so load the file here and let both engines inherit it.
+# Precedence: a value already exported in the shell wins, then .dev.vars, then the
+# built-in default.
+function Import-DevVars {
+  $devVars = Join-Path $ProjectRoot '.dev.vars'
+  if (-not (Test-Path -LiteralPath $devVars)) { return @() }
+  $loaded = @()
+  foreach ($line in Get-Content -LiteralPath $devVars -Encoding utf8) {
+    $trimmed = $line.Trim()
+    if (-not $trimmed -or $trimmed.StartsWith('#')) { continue }
+    $split = $trimmed.IndexOf('=')
+    if ($split -lt 1) { continue }
+    $name = $trimmed.Substring(0, $split).Trim()
+    $value = $trimmed.Substring($split + 1).Trim().Trim('"').Trim("'")
+    if (-not $name -or -not $value) { continue }
+    if ([string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($name))) {
+      Set-Item -Path "env:$name" -Value $value
+      $loaded += $name
+    }
+  }
+  return $loaded
+}
+
+$importedDevVars = Import-DevVars
+if ($MockUpstream) { $env:LOCAL_MOCK_UPSTREAM = '1' }
 
 function Write-LauncherLog {
   param(
@@ -329,11 +360,14 @@ function Start-NodeFallbackHidden {
   $server = Join-Path $ProjectRoot 'scripts\local-preview-server.mjs'
   $quotedNode = ConvertTo-PowerShellLiteral -Value $node
   $quotedServer = ConvertTo-PowerShellLiteral -Value $server
+  # functions/*.js are ESM but the root package.json is deliberately type-less so
+  # the CommonJS tests keep working; silence Node's resulting advisory only.
+  $quotedNodeFlag = ConvertTo-PowerShellLiteral -Value '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON'
   $quotedProject = ConvertTo-PowerShellLiteral -Value $ProjectRoot
   $quotedOut = ConvertTo-PowerShellLiteral -Value $NodeOutLog
   $quotedErr = ConvertTo-PowerShellLiteral -Value $NodeErrLog
   $quotedJwt = ConvertTo-PowerShellLiteral -Value $DefaultLocalJwtSecret
-  $commandLine = "if (-not `$env:JWT_SECRET) { `$env:JWT_SECRET = $quotedJwt }; if (-not `$env:ALLOW_PUBLIC_REGISTRATION) { `$env:ALLOW_PUBLIC_REGISTRATION = 'true' }; `$env:LOCAL_PREVIEW_PORT = '$Port'; `$env:LOCAL_PREVIEW_HOST = '$HostName'; Set-Location -LiteralPath $quotedProject; & $quotedNode $quotedServer > $quotedOut 2> $quotedErr"
+  $commandLine = "if (-not `$env:JWT_SECRET) { `$env:JWT_SECRET = $quotedJwt }; if (-not `$env:ALLOW_PUBLIC_REGISTRATION) { `$env:ALLOW_PUBLIC_REGISTRATION = 'true' }; `$env:LOCAL_PREVIEW_PORT = '$Port'; `$env:LOCAL_PREVIEW_HOST = '$HostName'; Set-Location -LiteralPath $quotedProject; & $quotedNode $quotedNodeFlag $quotedServer > $quotedOut 2> $quotedErr"
 
   return Start-Process `
     -FilePath $powershell `
@@ -390,6 +424,15 @@ function Start-WranglerPreview {
 
 function Invoke-LocalPreview {
   Write-PreviewStatus -State 'starting' -ActiveEngine $Engine
+
+  if ($importedDevVars.Count -gt 0) {
+    Write-LauncherLog -Message ("Loaded {0} setting(s) from .dev.vars: {1}" -f $importedDevVars.Count, ($importedDevVars -join ', '))
+  } elseif (-not (Test-Path -LiteralPath (Join-Path $ProjectRoot '.dev.vars'))) {
+    Write-LauncherLog -Level 'WARN' -Message 'No .dev.vars found; falling back to the development JWT secret committed in this script. Copy .dev.vars.example to .dev.vars and set JWT_SECRET.'
+  }
+  if ($env:LOCAL_MOCK_UPSTREAM) {
+    Write-LauncherLog -Message 'LOCAL_MOCK_UPSTREAM is on: provider calls are answered offline and nothing is billed.'
+  }
 
   if (Test-PortOpen -HostName $HostName -Port $Port) {
     if ($ReuseExisting -and (Test-HttpReady -Url ($Url + 'login'))) {
